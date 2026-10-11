@@ -34,6 +34,7 @@ STYLO_OMBRE = 215          # stylo reserve aux ombres (le tableau des surfaces u
 OMBRE_MURS = True
 OMBRE_POTEAUX = True
 OMBRE_OBJETS = True
+MOTS_RONDS = "round, rond, ronde, circ, cylind, oval, ellip, tabouret, stool, pouf, vasque, lavabo rond"
 MOTS_ARBRES = ("tree", "arbre", "palm", "palmier", "bush", "buisson", "plant", "shrub", "vegetation", "baum")
 
 PORT = 19723
@@ -109,7 +110,8 @@ def load_settings() -> dict:
         angle = DIRECTIONS.get(saved.get("direction"), DIRECTION_DEG)   # anciens reglages
     length = saved.get("decalage_mm", DECALAGE_MM)
     return {"couleur": [float(c) for c in color], "angle_deg": float(angle) % 360.0,
-            "decalage_mm": float(length) if isinstance(length, (int, float)) else DECALAGE_MM}
+            "decalage_mm": float(length) if isinstance(length, (int, float)) else DECALAGE_MM,
+            "mots_ronds": str(saved.get("mots_ronds", MOTS_RONDS))}
 
 
 def settings_window(settings: dict, apply) -> None:
@@ -203,13 +205,18 @@ def settings_window(settings: dict, apply) -> None:
     length_entry.bind("<FocusOut>", read_entries)
     length.trace_add("write", lambda *_: draw_compass())
 
+    ttk.Label(frame, text="Objets ronds si\nle nom contient").grid(row=4, column=0, sticky="w", pady=4)
+    round_words = tk.StringVar(value=state.get("mots_ronds", MOTS_RONDS))
+    ttk.Entry(frame, textvariable=round_words, width=40).grid(row=4, column=1, columnspan=3, sticky="we", padx=8)
+
     status = tk.StringVar(value="Regle puis clique sur Appliquer : tu vois le resultat dans Archicad.")
-    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=420).grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
+    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=420).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
     def do(action):
         read_entries()
         state["angle_deg"] = angle.get() % 360.0
         state["decalage_mm"] = length.get()
+        state["mots_ronds"] = round_words.get()
         save_json("ombres_reglages.json", state)
         status.set("En cours...")
         root.update_idletasks()
@@ -219,7 +226,7 @@ def settings_window(settings: dict, apply) -> None:
             status.set(f"Erreur : {error}")
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=5, column=0, columnspan=4, pady=(12, 0), sticky="e")
+    buttons.grid(row=6, column=0, columnspan=4, pady=(12, 0), sticky="e")
     ttk.Button(buttons, text="Supprimer les ombres", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
@@ -293,7 +300,44 @@ def rectangle(origin: Point, width: float, depth: float, angle: float, mirrored:
     return [(origin[0] + x * c - y * s, origin[1] + x * s + y * c) for x, y in corners]
 
 
-def circle(center: Point, radius: float, sides: int = 24) -> list[Point]:
+def ellipse(center: Point, rx: float, ry: float, angle: float = 0.0, sides: int = 48) -> list[Point]:
+    c, s = math.cos(angle), math.sin(angle)
+    pts = []
+    for k in range(sides):
+        t = 2 * math.pi * k / sides
+        x, y = rx * math.cos(t), ry * math.sin(t)
+        pts.append((center[0] + x * c - y * s, center[1] + x * s + y * c))
+    return pts
+
+
+def arc_points(a: Point, b: Point, center: Point, step_deg: float = 7.5) -> list[Point]:
+    """Points intermediaires de l'arc (le plus court) de a vers b autour de center."""
+    r = math.dist(a, center)
+    t1 = math.atan2(a[1] - center[1], a[0] - center[0])
+    t2 = math.atan2(b[1] - center[1], b[0] - center[0])
+    span = math.remainder(t2 - t1, 2 * math.pi)
+    n = max(1, int(abs(math.degrees(span)) / step_deg))
+    return [(center[0] + r * math.cos(t1 + span * k / n), center[1] + r * math.sin(t1 + span * k / n))
+            for k in range(1, n)]
+
+
+def round_edges(points: list[Point], centers: list[Point]) -> list[Point]:
+    """Les contours lus dans Archicad perdent leurs arcs : on recourbe les aretes dont les deux
+    bouts sont a la meme distance d'un centre d'arc connu (mur courbe)."""
+    out: list[Point] = []
+    n = len(points)
+    for i in range(n):
+        a, b = points[i], points[(i + 1) % n]
+        out.append(a)
+        for c in centers:
+            ra, rb = math.dist(a, c), math.dist(b, c)
+            if ra > 1e-3 and abs(ra - rb) < max(1e-3, ra * 1e-3) and math.dist(a, b) > 1e-3:
+                out.extend(arc_points(a, b, c))
+                break
+    return out
+
+
+def circle(center: Point, radius: float, sides: int = 48) -> list[Point]:
     return [(center[0] + radius * math.cos(2 * math.pi * k / sides),
              center[1] + radius * math.sin(2 * math.pi * k / sides)) for k in range(sides)]
 
@@ -307,18 +351,85 @@ def elements(kind: str) -> list[dict]:
     return tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
 
 
-def cut_polygons(kind: str, story: int) -> list[list[Point]]:
-    elems = elements(kind)
+def wall_shapes(story: int) -> list[list[Point]]:
+    elems = elements("Wall")
     if not elems:
         return []
-    details = tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex", "floorPlanPolygons"]}
+    details = tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex", "floorPlanPolygons", "details"]}
                     ).get("detailsOfElements", [])
     shapes = []
     for detail in details:
         if "error" in detail or detail.get("floorIndex") != story:
             continue
+        d = detail.get("details", {})
+        centers = []
+        angle = d.get("arcAngle", 0.0) or 0.0
+        if abs(angle) > 1e-6 and "begCoordinate" in d and "endCoordinate" in d:   # mur courbe
+            b, e = (d["begCoordinate"]["x"], d["begCoordinate"]["y"]), (d["endCoordinate"]["x"], d["endCoordinate"]["y"])
+            half = math.dist(b, e) / 2
+            if half > 1e-6:
+                m = ((b[0] + e[0]) / 2, (b[1] + e[1]) / 2)
+                ux, uy = (e[0] - b[0]) / (2 * half), (e[1] - b[1]) / (2 * half)
+                h = half / math.tan(abs(angle) / 2)
+                centers = [(m[0] - uy * h, m[1] + ux * h), (m[0] + uy * h, m[1] - ux * h)]
         for poly in detail.get("floorPlanPolygons", []):
-            shapes.append([(c["x"], c["y"]) for c in poly.get("coordinates", [])])
+            pts = clean([(c["x"], c["y"]) for c in poly.get("coordinates", [])])
+            shapes.append(round_edges(pts, centers) if centers else pts)
+    return shapes
+
+
+def looks_round(points: list[Point], center: Point, axis: float) -> float | None:
+    """Rayon si le contour lu est celui d'un poteau rond (arcs perdus), sinon None."""
+    pts = clean(points)
+    if not pts:
+        return None
+    radii = [math.dist(p, center) for p in pts]
+    r = sum(radii) / len(radii)
+    if r <= 1e-4 or max(abs(x - r) for x in radii) > r * 0.02:
+        return None                                  # sommets pas sur un meme cercle
+    if len(pts) <= 3:
+        return r
+    if len(pts) == 4:                                # rond (sommets sur les axes) ou carre (sommets en coin) ?
+        on_axes = all(abs(math.remainder(math.atan2(p[1] - center[1], p[0] - center[0]) - axis, math.pi / 2))
+                      < math.radians(3) for p in pts)
+        return r if on_axes else None
+    return r                                         # 5 sommets ou plus sur un cercle : rond
+
+
+def column_shapes(story: int) -> list[list[Point]]:
+    elems = elements("Column")
+    if not elems:
+        return []
+    details = tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex", "floorPlanPolygons", "details"]}
+                    ).get("detailsOfElements", [])
+    on_story = [(e, d) for e, d in zip(elems, details) if "error" not in d and d.get("floorIndex") == story]
+    boxes: list = [None] * len(on_story)
+    try:
+        answer = tapir("Get3DBoundingBoxes", {"elements": [e for e, _ in on_story]}).get("boundingBoxes3D", [])
+        boxes = [item.get("boundingBox3D") if isinstance(item, dict) else None for item in answer] + boxes[len(answer):]
+    except Exception:  # noqa: BLE001
+        pass
+    shapes = []
+    for (_, detail), box in zip(on_story, boxes):
+        d = detail.get("details", {})
+        origin = d.get("origin", {})
+        center = (origin.get("x", 0.0), origin.get("y", 0.0))
+        axis = d.get("axisRotationAngle", 0.0) or 0.0
+        polys = [clean([(c["x"], c["y"]) for c in p.get("coordinates", [])]) for p in detail.get("floorPlanPolygons", [])]
+        polys = [p for p in polys if p]
+        if box and (box["xMax"] - box["xMin"]) > 1e-6:
+            bc = ((box["xMin"] + box["xMax"]) / 2, (box["yMin"] + box["yMax"]) / 2)
+        else:
+            bc = center
+        if not polys:                                # contour illisible (cercle a 2 arcs) : rond d'apres son emprise
+            if box:
+                shapes.append(ellipse(bc, (box["xMax"] - box["xMin"]) / 2, (box["yMax"] - box["yMin"]) / 2))
+            continue
+        for pts in polys:
+            r = looks_round(pts, center, axis) or looks_round(pts, bc, axis)
+            if r is None and len(pts) < 3 and box:
+                r = (box["xMax"] - box["xMin"]) / 2
+            shapes.append(circle(center if looks_round(pts, center, axis) else bc, r) if r else pts)
     return shapes
 
 
@@ -350,7 +461,7 @@ def centered_rectangle(center: Point, width: float, depth: float, angle: float) 
     return [(center[0] + x * c - y * s, center[1] + x * s + y * c) for x, y in corners]
 
 
-def object_shapes(story: int) -> list[list[Point]]:
+def object_shapes(story: int, round_words: list[str]) -> list[list[Point]]:
     elems = elements("Object")
     if not elems:
         return []
@@ -368,14 +479,17 @@ def object_shapes(story: int) -> list[list[Point]]:
         angle = d.get("angle", 0.0)
         name = d.get("libPart", {}).get("name", "").lower()
         is_tree = any(word in name for word in MOTS_ARBRES)
+        is_round = is_tree or any(word and word in name for word in round_words)
         if box:
             x1, y1, x2, y2 = box["xMin"], box["yMin"], box["xMax"], box["yMax"]
             if x2 - x1 <= 1e-6 or y2 - y1 <= 1e-6:
                 continue
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
             quarter = abs(math.remainder(angle, math.pi / 2)) < math.radians(1)
-            if is_tree:
-                shapes.append(circle(center, min(x2 - x1, y2 - y1) / 2.0))
+            if is_round and (quarter or width <= 1e-6 or depth <= 1e-6):
+                shapes.append(ellipse(center, (x2 - x1) / 2, (y2 - y1) / 2))          # rond / ovale
+            elif is_round:
+                shapes.append(ellipse(center, width / 2, depth / 2, angle))
             elif quarter or width <= 1e-6 or depth <= 1e-6:
                 shapes.append([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])   # cadre exact du symbole
             else:
@@ -383,8 +497,10 @@ def object_shapes(story: int) -> list[list[Point]]:
         elif width > 1e-6 and depth > 1e-6:   # dernier recours : point d'insertion + dimensions
             origin = d.get("origin", {})
             o = (origin.get("x", 0.0), origin.get("y", 0.0))
-            if is_tree:
-                shapes.append(circle(o, max(width, depth) / 2.0))
+            if is_round:
+                c, sn = math.cos(angle), math.sin(angle)
+                mid = (o[0] + (width / 2) * c - (depth / 2) * sn, o[1] + (width / 2) * sn + (depth / 2) * c)
+                shapes.append(ellipse(mid, width / 2, depth / 2, angle))
             else:
                 shapes.append(rectangle(o, width, depth, angle, bool(d.get("reflected"))))
     return shapes
@@ -437,11 +553,11 @@ def run(action: str, settings: dict) -> str:
 
     shapes: list[list[Point]] = []
     if OMBRE_MURS:
-        shapes += cut_polygons("Wall", story)
+        shapes += wall_shapes(story)
     if OMBRE_POTEAUX:
-        shapes += cut_polygons("Column", story)
+        shapes += column_shapes(story)
     if OMBRE_OBJETS:
-        shapes += object_shapes(story)
+        shapes += object_shapes(story, [w.strip().lower() for w in settings.get("mots_ronds", MOTS_RONDS).split(",")])
     if not shapes:
         return "Aucun mur, poteau ou objet sur l'etage courant : pas d'ombre a dessiner."
 
