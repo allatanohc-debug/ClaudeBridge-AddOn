@@ -6,16 +6,29 @@
 Tableau des surfaces - script Tapir (Archicad 28, mode normal)
 
 A placer dans : Documents\\Tapir\\custom-scripts\\
-Puis dans Archicad : barre Tapir > choisir "TableauSurfaces.py" > Executer.
+Puis dans Archicad : palette Tapir > choisir "TableauSurfaces.py" > Executer.
 
-Dessine a droite du plan de l'etage courant un tableau quadrille :
-  case de couleur | numero + nom de la zone | surface
-avec le total en bas. Relancer le script remplace le tableau precedent.
+Une petite fenetre s'ouvre et reste ouverte : couleur du bandeau, titres, texte
+du total et mots qui reperent les surfaces annexes. "Appliquer" dessine, a droite
+du plan de l'etage courant, deux tableaux :
 
-Couleur : Tapir ne permet pas encore de colorer un remplissage en RGB exact.
-Le script reserve donc les derniers stylos du jeu de stylos actif (255, 254, ...)
-et leur donne la couleur exacte de chaque zone. A eviter pour d'autres elements.
-Si ce n'est pas possible, il prend le stylo le plus proche (couleur approchee).
+    SURFACES HABITABLES            (bandeau de couleur, titre en blanc)
+    RDC                            (un intertitre par niveau)
+    piece a vivre        25,04
+    ...
+    ToTaL                48,87
+
+    SURFACES ANNEXES               (terrasse, garage, balcon...)
+    Terrasse             22,84
+    ToTaL                22,84
+
+Toutes les zones du projet sont prises, niveau par niveau.
+Relancer le script remplace les tableaux precedents.
+
+Le bandeau est un vrai remplissage Archicad : apres coup, on peut changer son
+motif, ses stylos, etc. comme n'importe quel remplissage.
+Stylos reserves dans le jeu de stylos actif : 212 (texte et traits, noir),
+213 (texte du bandeau, blanc), 214 (couleur du bandeau).
 """
 
 import argparse
@@ -27,20 +40,31 @@ import urllib.request
 from pathlib import Path
 
 # ---------------------------------------------------------------- reglages ---
-ECHELLE = 100            # echelle du plan (100 = 1:100) : sert a convertir les mm papier
-TEXTE_MM = 2.5           # hauteur du texte courant (mm papier)
-TITRE_MM = 3.5           # hauteur du titre (mm papier)
-LIGNE_MM = 7.0           # hauteur d'une ligne du tableau (mm papier)
-LARGEUR_MM = 95.0        # largeur du tableau (mm papier)
-ECART_MM = 15.0          # espace entre le plan et le tableau (mm papier)
-COL_CASE_MM = (2.0, 14.0)    # case de couleur : debut, fin
-COL_NOM_MM = 17.0            # debut de la colonne Zone
-COL_SEPARATION_MM = 63.0     # trait vertical entre Zone et Surface
-COL_SURFACE_MM = 92.0        # bord droit de la colonne Surface
+ECHELLE = 100                   # echelle du plan (100 = 1:100)
+COULEUR_BANDEAU = (0.93, 0.11, 0.14)   # rouge par defaut (rouge, vert, bleu entre 0 et 1)
+TITRE_HABITABLES = "SURFACES HABITABLES"
+TITRE_ANNEXES = "SURFACES ANNEXES"
+TEXTE_TOTAL = "ToTaL"
+MOTS_ANNEXES = "terrasse, balcon, loggia, garage, parking, carport, veranda, véranda, cour, jardin, patio, porche, auvent, annexe, local technique"
 
-STYLOS_RESERVES = 40     # stylos 255, 254, ... recolores aux couleurs des zones (max de zones)
+COL_NOM_MM = 50.0               # largeur de la colonne des noms (mm papier)
+COL_SURFACE_MM = 22.0           # largeur de la colonne des surfaces (mm papier)
+BANDEAU_MM = 6.0                # hauteur du bandeau de titre
+LIGNE_MM = 4.2                  # hauteur d'une ligne
+TEXTE_MM = 2.5                  # hauteur du texte courant
+TITRE_MM = 3.0                  # hauteur du texte du bandeau
+ECART_PLAN_MM = 15.0            # espace entre le plan et les tableaux
+ECART_TABLEAUX_MM = 8.0         # espace entre les deux tableaux
+TRAIT_FIN_MM = 0.18             # epaisseur des traits interieurs
+TRAIT_CADRE_MM = 0.35           # epaisseur du cadre et du trait du total
+
+STYLO_TRAIT = 212
+STYLO_BLANC = 213
+STYLO_BANDEAU = 214
+
 PORT = 19723
-DIAGNOSTIC = False       # True : details en plus, journal ouvert dans le Bloc-notes a la fin
+MEMOIRE = "tableaux_surfaces.json"
+REGLAGES = "tableau_surfaces_reglages.json"
 
 
 # ------------------------------------------------------------ communication ---
@@ -75,72 +99,76 @@ def tapir(command: str, parameters: dict | None = None) -> dict:
     return response
 
 
-# ------------------------------------------------------------------ outils ---
-def polygon_area(points: list[dict]) -> float:
-    total = 0.0
-    for i, p in enumerate(points):
-        q = points[(i + 1) % len(points)]
-        total += p["x"] * q["y"] - q["x"] * p["y"]
-    return abs(total) / 2.0
-
-
-def format_area(value: float) -> str:
-    return f"{value:.2f}".replace(".", ",") + " m²"
-
-
-def rgb(color: dict) -> tuple[float, float, float]:
-    return (color.get("red", 0.8), color.get("green", 0.8), color.get("blue", 0.8))
-
-
-def hexa(color) -> str:
-    return "#" + "".join(f"{round(max(0.0, min(1.0, c)) * 255):02X}" for c in color)
-
-
-def distance(a, b) -> float:
-    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
-
-
 def ok_items(items: list[dict]) -> list[dict]:
     return [item for item in items if "error" not in item]
 
 
-def memory_file() -> Path:
+# ---------------------------------------------------------------- fichiers ---
+def data_folder() -> Path:
     folder = Path(os.environ.get("APPDATA", Path.home())) / "ClaudeBridge"
     folder.mkdir(parents=True, exist_ok=True)
-    return folder / "tableaux_surfaces.json"
+    return folder
 
 
-def load_memory() -> dict:
+def load_json(name: str) -> dict:
     try:
-        return json.loads(memory_file().read_text(encoding="utf-8"))
+        return json.loads((data_folder() / name).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         return {}
 
 
-def save_memory(data: dict) -> None:
-    memory_file().write_text(json.dumps(data, indent=2), encoding="utf-8")
+def save_json(name: str, data: dict) -> None:
+    (data_folder() / name).write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-# -------------------------------------------------------------- lecture ---
-def current_story() -> tuple[int, str]:
-    info = tapir("GetStories")
-    act = info.get("actStory", 0)
-    name = next((s.get("name", "") for s in info.get("stories", []) if s.get("index") == act), "")
-    return act, name
+def load_settings() -> dict:
+    saved = load_json(REGLAGES)
+    color = saved.get("couleur")
+    if not (isinstance(color, list) and len(color) == 3):
+        color = list(COULEUR_BANDEAU)
+    return {
+        "couleur": [float(c) for c in color],
+        "titre_habitables": str(saved.get("titre_habitables", TITRE_HABITABLES)),
+        "titre_annexes": str(saved.get("titre_annexes", TITRE_ANNEXES)),
+        "texte_total": str(saved.get("texte_total", TEXTE_TOTAL)),
+        "mots_annexes": str(saved.get("mots_annexes", MOTS_ANNEXES)),
+    }
 
 
-def zones_on_story(story: int) -> list[dict]:
+# ----------------------------------------------------------------- outils ---
+def polygon_area(points: list[dict]) -> float:
+    total = 0.0
+    for a, b in zip(points, points[1:] + points[:1]):
+        total += a["x"] * b["y"] - b["x"] * a["y"]
+    return abs(total) / 2.0
+
+
+def format_area(value: float) -> str:
+    return f"{value:.2f}".replace(".", ",")
+
+
+def story_label(index: int) -> str:
+    if index == 0:
+        return "RDC"
+    if index > 0:
+        return f"R+{index}"
+    return "Sous-sol" if index == -1 else f"Sous-sol {-index}"
+
+
+# ---------------------------------------------------------------- lecture ---
+def read_zones() -> list[dict]:
     elements = tapir("GetElementsByType", {"elementType": "Zone"}).get("elements", [])
     if not elements:
         return []
     details = tapir("GetDetailsOfElements", {"elements": elements}).get("detailsOfElements", [])
     zones = []
     for element, detail in zip(elements, details):
-        if "error" in detail or detail.get("floorIndex") != story:
+        if "error" in detail:
             continue
         d = detail.get("details", {})
         zones.append({
             "element": element,
+            "story": detail.get("floorIndex", 0),
             "number": d.get("numberStr", ""),
             "name": d.get("name", ""),
             "category": d.get("categoryAttributeId", {}).get("guid"),
@@ -151,19 +179,16 @@ def zones_on_story(story: int) -> list[dict]:
 
 
 def fill_areas(zones: list[dict]) -> None:
-    # 1) surface calculee par Archicad (propriete integree de la zone)
-    try:
+    try:  # 1) surface calculee par Archicad
         names = api("API.GetAllPropertyNames").get("properties", [])
         builtin = [p["nonLocalizedName"] for p in names if p.get("type") == "BuiltIn" and "nonLocalizedName" in p]
         preferred = ["Zone_CalculatedArea", "Zone_MeasuredArea", "Zone_NetArea", "Zone_ZoneArea", "Zone_GrossArea"]
-        choice = next((n for n in preferred if n in builtin), None)
-        if choice is None:
-            choice = next((n for n in builtin if n.startswith("Zone_") and "Area" in n), None)
+        choice = next((n for n in preferred if n in builtin), None) or \
+            next((n for n in builtin if n.startswith("Zone_") and "Area" in n), None)
         if choice:
             pid = api("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": choice}]})["properties"][0]["propertyId"]
             values = api("API.GetPropertyValuesOfElements", {
-                "elements": [z["element"] for z in zones],
-                "properties": [{"propertyId": pid}],
+                "elements": [z["element"] for z in zones], "properties": [{"propertyId": pid}],
             }).get("propertyValuesForElements", [])
             for zone, value in zip(zones, values):
                 pv = value.get("propertyValues", [{}])[0].get("propertyValue", {})
@@ -171,8 +196,7 @@ def fill_areas(zones: list[dict]) -> None:
                     zone["area"] = float(pv["value"])
     except Exception as error:  # noqa: BLE001
         print(f"(Surface Archicad indisponible, calcul geometrique : {error})")
-    # 2) a defaut : surface du contour moins les trous
-    for zone in zones:
+    for zone in zones:  # 2) a defaut : contour moins les trous
         if "area" not in zone:
             area = polygon_area(zone["outline"]) if len(zone["outline"]) >= 3 else 0.0
             for hole in zone["holes"]:
@@ -182,166 +206,265 @@ def fill_areas(zones: list[dict]) -> None:
             zone["area"] = max(area, 0.0)
 
 
-def fill_colors(zones: list[dict]) -> None:
+def fill_category_names(zones: list[dict]) -> None:
     guids = sorted({z["category"] for z in zones if z["category"]})
-    colors = {}
+    names = {}
     if guids:
-        cats = tapir("GetZoneCategories", {"attributeIds": [{"attributeId": {"guid": g}} for g in guids], "fields": ["color"]})
-        for guid, cat in zip(guids, cats.get("zoneCategories", [])):
-            if "error" in cat:
-                print(f"  ! categorie {guid} illisible : {cat['error']}")
-            elif "color" in cat:
-                colors[guid] = (rgb(cat["color"]), cat.get("name", ""))
-            else:
-                print(f"  ! categorie {cat.get('name', guid)} sans couleur")
+        try:
+            cats = tapir("GetZoneCategories", {"attributeIds": [{"attributeId": {"guid": g}} for g in guids],
+                                               "fields": ["categoryCode"]}).get("zoneCategories", [])
+            for guid, cat in zip(guids, cats):
+                if "error" not in cat:
+                    names[guid] = cat.get("name", "")
+        except Exception:  # noqa: BLE001
+            pass
     for zone in zones:
-        zone["color"], zone["category_name"] = colors.get(zone["category"], ((0.8, 0.8, 0.8), "?"))
+        zone["category_name"] = names.get(zone["category"], "")
 
 
-def make_colors_unique(zones: list[dict]) -> None:
-    """Deux zones de meme couleur : la suivante est eclaircie ou assombrie (une couleur par zone)."""
-    seen = []
-    for zone in zones:
-        base, color, step = zone["color"], zone["color"], 0
-        while any(distance(color, other) < 0.05 for other in seen):
-            step += 1
-            amount = 0.15 * ((step + 1) // 2)
-            if step % 2:   # eclaircir
-                color = tuple(min(1.0, c + (1.0 - c) * amount) for c in base)
-            else:          # assombrir
-                color = tuple(max(0.0, c * (1.0 - amount)) for c in base)
-            if step > 12:
-                break
-        zone["color"] = color
-        seen.append(color)
+def is_annex(zone: dict, words: list[str]) -> bool:
+    text = f"{zone['name']} {zone['category_name']}".lower()
+    return any(word and word in text for word in words)
 
 
-def active_pen_table() -> dict:
+# ------------------------------------------------------------------ stylos ---
+def set_pens(color: list[float]) -> bool:
     tables = tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
     ids = [{"attributeId": t["attributeId"]} for t in tables]
-    details = tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}).get("penTables", [])
-    details = [t for t in details if "error" not in t]
-    active = next((t for t in details if t.get("isActiveForModel")), None)
-    if active is None:
-        print("  ! aucun jeu de stylos marque actif : premier jeu utilise")
-        active = details[0] if details else {}
-    print(f"Jeu de stylos utilise : {active.get('name', '?')}")
-    return active
-
-
-def reserve_pens(zones: list[dict], table: dict) -> bool:
-    """Donne a chaque zone un stylo reserve (255, 254, ...) recolore a la couleur exacte de la zone."""
-    if not table or len(zones) > STYLOS_RESERVES:
+    details = [t for t in tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}
+                                ).get("penTables", []) if "error" not in t]
+    table = next((t for t in details if t.get("isActiveForModel")), details[0] if details else None)
+    if table is None:
         return False
-    widths = {p["index"]: p.get("width", 0.1) for p in table.get("pens", [])}
-    pens = []
-    for i, zone in enumerate(zones):
-        index = 255 - i
-        zone["pen"] = index
-        red, green, blue = zone["color"]
-        pens.append({"index": index, "color": {"red": red, "green": green, "blue": blue},
-                     "width": widths.get(index, 0.1), "description": f"Tableau des surfaces {zone['number']}"[:120]})
-    try:
-        answer = tapir("CreatePenTables", {"overwriteExisting": True, "penTableDataArray": [{
-            "attributeId": table["attributeId"], "name": table["name"], "pens": pens}]})
-        result = answer.get("attributeIds", [{}])[0]
-        if "error" in result:
-            raise RuntimeError(result["error"])
-    except Exception as error:  # noqa: BLE001
-        print(f"  ! stylos reserves impossibles ({error}) : couleurs approchees")
-        return False
-    for zone in zones:
-        zone["pen_color"] = zone["color"]
-    return True
+    widths = {p.get("index"): p.get("width", 0.1) for p in table.get("pens", [])}
 
+    def pen(index, rgb, description):
+        return {"index": index, "width": widths.get(index, 0.1), "description": description,
+                "color": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}
 
-def nearest_pens(zones: list[dict], table: dict) -> None:
-    pens = [(p["index"], rgb(p["color"])) for p in table.get("pens", []) if p.get("index", 0) > 0]
-    used = set()
-    for zone in zones:
-        candidates = [(distance(zone["color"], c), i, c) for i, c in pens if i not in used] or [(0, 1, (0, 0, 0))]
-        _, best, color = min(candidates)
-        zone["pen"], zone["pen_color"] = best, color
-        used.add(best)
+    answer = tapir("CreatePenTables", {"overwriteExisting": True, "penTableDataArray": [{
+        "attributeId": table["attributeId"], "name": table["name"], "pens": [
+            pen(STYLO_TRAIT, (0.0, 0.0, 0.0), "Tableau des surfaces - texte et traits"),
+            pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Tableau des surfaces - titre"),
+            pen(STYLO_BANDEAU, color, "Tableau des surfaces - bandeau"),
+        ]}]})
+    return "error" not in answer.get("attributeIds", [{}])[0]
 
 
 def solid_fill_id() -> dict | None:
     fills = tapir("GetAttributesByType", {"attributeType": "Fill"}).get("attributes", [])
     ids = [{"attributeId": f["attributeId"]} for f in fills]
-    details = tapir("GetFills", {"attributeIds": ids, "fields": ["subType"]}).get("fills", [])
-    for fill in details:
+    for fill in tapir("GetFills", {"attributeIds": ids, "fields": ["subType"]}).get("fills", []):
         if fill.get("subType") == "Solid":
             return fill["attributeId"]
     return None
 
 
-def plan_bounds(zones: list[dict]) -> tuple[float, float, float, float]:
-    xs, ys = [], []
-    for zone in zones:
-        for p in zone["outline"]:
-            xs.append(p["x"])
-            ys.append(p["y"])
-    return min(xs), min(ys), max(xs), max(ys)
+# ------------------------------------------------------------------ dessin ---
+class Drawing:
+    def __init__(self, story: int, solid: dict | None):
+        self.story, self.solid = story, solid
+        self.mm = ECHELLE / 1000.0
+        self.texts, self.hatches, self.lines = [], [], []
+
+    def text(self, content, x, y, anchor, bold=False, size=TEXTE_MM, pen=STYLO_TRAIT):
+        justification = {"L": "Left", "M": "Center", "R": "Right"}[anchor[0]]
+        self.texts.append({
+            "coordinate": {"x": x, "y": y, "z": 0.0}, "text": content, "floorIndex": self.story,
+            "style": {"height": size, "bold": bold, "penIndex": pen, "justification": justification,
+                      "anchor": {"L": "LeftMiddle", "M": "MiddleMiddle", "R": "RightMiddle"}[anchor[0]]},
+        })
+
+    def line(self, xa, ya, xb, yb, weight=TRAIT_FIN_MM):
+        self.lines.append({"floorInd": self.story, "linePenIndex": STYLO_TRAIT, "penWeightMm": weight,
+                           "coordinates": [{"x": xa, "y": ya}, {"x": xb, "y": yb}]})
+
+    def band(self, x1, y1, x2, y2):
+        hatch = {"floorInd": self.story, "showArea": False,
+                 "coordinates": [{"x": x1, "y": y1}, {"x": x2, "y": y1}, {"x": x2, "y": y2}, {"x": x1, "y": y2}],
+                 "fillPenIndex": STYLO_BANDEAU, "fillBackgroundPenIndex": STYLO_BANDEAU,
+                 "contourPenIndex": STYLO_BANDEAU}
+        if self.solid:
+            hatch["fillId"] = self.solid
+        self.hatches.append(hatch)
+
+    def table(self, x0, top, title, groups, total_label, show_headings) -> float:
+        """Dessine un tableau ; renvoie l'ordonnee de son bas."""
+        mm = self.mm
+        width = (COL_NOM_MM + COL_SURFACE_MM) * mm
+        sep = x0 + COL_NOM_MM * mm
+        row = LIGNE_MM * mm
+        pad = 1.2 * mm
+        value_x = sep + COL_SURFACE_MM * mm / 2       # surfaces centrees dans leur colonne
+
+        band_bottom = top - BANDEAU_MM * mm
+        self.band(x0, band_bottom, x0 + width, top)
+        self.text(title, x0 + width / 2, (top + band_bottom) / 2, "M", bold=True, size=TITRE_MM, pen=STYLO_BLANC)
+
+        y = band_bottom
+        total = 0.0
+        for heading, zones in groups:
+            if show_headings:
+                y -= row
+                self.text(heading, x0 + pad, y + row / 2, "L", bold=True)
+            for zone in zones:
+                y -= row
+                label = zone["name"] or zone["number"] or "Zone"
+                self.text(label, x0 + pad, y + row / 2, "L")
+                self.text(format_area(zone["area"]), value_x, y + row / 2, "M")
+                total += zone["area"]
+        body_bottom = y
+        y -= row * 1.1
+        self.text(total_label, x0 + COL_NOM_MM * mm / 2, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
+        self.text(format_area(total), value_x, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
+
+        self.line(x0, band_bottom, x0 + width, band_bottom)                       # sous le bandeau
+        self.line(x0, body_bottom, x0 + width, body_bottom, TRAIT_CADRE_MM)       # au-dessus du total
+        self.line(sep, band_bottom, sep, y)                                       # trait vertical
+        for xa, ya, xb, yb in ((x0, top, x0 + width, top), (x0 + width, top, x0 + width, y),
+                               (x0 + width, y, x0, y), (x0, y, x0, top)):
+            self.line(xa, ya, xb, yb, TRAIT_CADRE_MM)                             # cadre
+        return y
 
 
-# ----------------------------------------------------------- diagnostic ---
-class Journal:
-    def __init__(self, stream):
-        self.stream, self.lines = stream, []
+# -------------------------------------------------------------------- run ---
+def group_by_story(zones: list[dict]) -> list[tuple[str, list[dict]]]:
+    stories = sorted({z["story"] for z in zones})
+    return [(story_label(s), sorted((z for z in zones if z["story"] == s), key=lambda z: (z["number"], z["name"])))
+            for s in stories]
 
-    def write(self, text):
-        self.lines.append(text)
+
+def run(action: str, settings: dict) -> str:
+    stories = tapir("GetStories")
+    current = stories.get("actStory", 0)
+    project = tapir("GetProjectInfo")
+    project_key = project.get("projectPath") or project.get("projectName") or "Sans titre"
+
+    # supprimer les tableaux precedents de ce projet (toutes versions)
+    memory = load_json(MEMOIRE)
+    old = [g for key, guids in memory.items() if key.split("|")[0] == project_key for g in guids]
+    if old:
         try:
-            self.stream.write(text)
+            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in old]})
         except Exception:  # noqa: BLE001
             pass
+    memory = {k: v for k, v in memory.items() if k.split("|")[0] != project_key}
+    save_json(MEMOIRE, memory)
+    if action == "supprimer":
+        return "Tableaux des surfaces supprimes."
 
-    def flush(self):
-        try:
-            self.stream.flush()
-        except Exception:  # noqa: BLE001
-            pass
+    zones = read_zones()
+    if not zones:
+        return "Aucune zone dans le projet : rien a mettre dans le tableau."
+    fill_areas(zones)
+    fill_category_names(zones)
+    words = [w.strip().lower() for w in settings["mots_annexes"].split(",") if w.strip()]
+    habitable = [z for z in zones if not is_annex(z, words)]
+    annexes = [z for z in zones if is_annex(z, words)]
 
+    warning = "" if set_pens(settings["couleur"]) else " Attention : couleurs non appliquees (stylos 212-214)."
+    drawing = Drawing(current, solid_fill_id())
 
-def dump_zone_color_properties(zones: list[dict]) -> None:
+    plan = [z for z in zones if z["story"] == current] or zones
+    xs = [p["x"] for z in plan for p in z["outline"]]
+    ys = [p["y"] for z in plan for p in z["outline"]]
+    mm = drawing.mm
+    x0 = max(xs) + ECART_PLAN_MM * mm
+    top = max(ys)
+
+    if habitable:
+        top = drawing.table(x0, top, settings["titre_habitables"], group_by_story(habitable),
+                            settings["texte_total"], show_headings=True) - ECART_TABLEAUX_MM * mm
+    if annexes:
+        groups = group_by_story(annexes)
+        drawing.table(x0, top, settings["titre_annexes"], groups, settings["texte_total"],
+                      show_headings=len(groups) > 1)
+
+    created = []
+    created += ok_items(tapir("CreateHatches", {"hatchesData": drawing.hatches}).get("elements", []))
+    created += ok_items(tapir("CreatePolylines", {"polylinesData": drawing.lines}).get("elements", []))
+    created += ok_items(tapir("CreateTexts", {"textsData": drawing.texts}).get("elements", []))
     try:
-        names = api("API.GetAllPropertyNames").get("properties", [])
-        keys = ("color", "colour", "pen", "fill", "categ")
-        wanted = [p["nonLocalizedName"] for p in names if p.get("type") == "BuiltIn"
-                  and any(k in p.get("nonLocalizedName", "").lower() for k in keys)
-                  and (p["nonLocalizedName"].startswith("Zone_") or "Fill" in p["nonLocalizedName"] or "Pen" in p["nonLocalizedName"])]
-        print(f"Proprietes candidates : {', '.join(wanted) or 'aucune'}")
-        if not wanted:
-            return
-        ids = api("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": n} for n in wanted]})["properties"]
-        valid = [(n, i["propertyId"]) for n, i in zip(wanted, ids) if "propertyId" in i]
-        values = api("API.GetPropertyValuesOfElements", {
-            "elements": [z["element"] for z in zones],
-            "properties": [{"propertyId": pid} for _, pid in valid],
-        }).get("propertyValuesForElements", [])
-        for zone, value in zip(zones, values):
-            shown = []
-            for (name, _), pv in zip(valid, value.get("propertyValues", [])):
-                v = pv.get("propertyValue", {})
-                if v.get("status", "normal") == "normal":
-                    shown.append(f"{name}={v.get('value')}")
-            print(f"  {zone['number']} : {'; '.join(shown) or '-'}")
-    except Exception as error:  # noqa: BLE001
-        print(f"  (proprietes illisibles : {error})")
-
-
-def open_journal(journal: Journal) -> None:
-    try:
-        path = Path(os.environ.get("APPDATA", Path.home())) / "ClaudeBridge" / "TableauSurfaces_journal.txt"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("".join(journal.lines), encoding="utf-8")
-        if DIAGNOSTIC and os.name == "nt":
-            os.startfile(str(path))  # noqa: S606
+        tapir("CreateGroups", {"elementGroups": [{"elements": created}]})
     except Exception:  # noqa: BLE001
         pass
 
+    memory[f"{project_key}|tableau"] = [e["elementId"]["guid"] for e in created if "elementId" in e]
+    save_json(MEMOIRE, memory)
+    total_h = sum(z["area"] for z in habitable)
+    total_a = sum(z["area"] for z in annexes)
+    return (f"Tableaux dessines : {len(habitable)} zone(s) habitable(s) = {format_area(total_h)} m2, "
+            f"{len(annexes)} annexe(s) = {format_area(total_a)} m2.{warning}")
 
-# --------------------------------------------------------------- dessin ---
+
+# ---------------------------------------------------------------- fenetre ---
+def settings_window(settings: dict, apply) -> None:
+    import tkinter as tk
+    from tkinter import colorchooser, ttk
+
+    def to_hex(c):
+        return "#" + "".join(f"{round(max(0.0, min(1.0, v)) * 255):02X}" for v in c)
+
+    state = dict(settings)
+    root = tk.Tk()
+    root.title("Tableau des surfaces - Claude Bridge")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    frame = ttk.Frame(root, padding=16)
+    frame.grid()
+
+    ttk.Label(frame, text="Couleur du bandeau").grid(row=0, column=0, sticky="w", pady=4)
+    swatch = tk.Label(frame, width=6, bg=to_hex(state["couleur"]), relief="groove")
+    swatch.grid(row=0, column=1, sticky="w", padx=8)
+
+    def pick():
+        rgb, _ = colorchooser.askcolor(color=to_hex(state["couleur"]), title="Couleur du bandeau", parent=root)
+        if rgb:
+            state["couleur"] = [v / 255.0 for v in rgb]
+            swatch.configure(bg=to_hex(state["couleur"]))
+
+    def default_color():
+        state["couleur"] = list(COULEUR_BANDEAU)
+        swatch.configure(bg=to_hex(state["couleur"]))
+
+    colors = ttk.Frame(frame)
+    colors.grid(row=0, column=2, sticky="w")
+    ttk.Button(colors, text="Choisir...", command=pick).grid(row=0, column=0, padx=(0, 4))
+    ttk.Button(colors, text="Rouge par defaut", command=default_color).grid(row=0, column=1)
+
+    fields = {}
+    for row, (key, label) in enumerate((("titre_habitables", "Titre du 1er tableau"),
+                                        ("titre_annexes", "Titre du 2e tableau"),
+                                        ("texte_total", "Texte du total"),
+                                        ("mots_annexes", "Zones annexes si le nom\nou la categorie contient")), start=1):
+        ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w", pady=4)
+        var = tk.StringVar(value=state[key])
+        ttk.Entry(frame, textvariable=var, width=48).grid(row=row, column=1, columnspan=2, sticky="we", padx=8)
+        fields[key] = var
+
+    status = tk.StringVar(value="Regle puis clique sur Appliquer : le tableau est redessine dans Archicad.")
+    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=460).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+
+    def do(action):
+        for key, var in fields.items():
+            state[key] = var.get()
+        save_json(REGLAGES, state)
+        status.set("En cours...")
+        root.update_idletasks()
+        try:
+            status.set(apply(action, dict(state)))
+        except Exception as error:  # noqa: BLE001
+            status.set(f"Erreur : {error}")
+
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=6, column=0, columnspan=3, pady=(12, 0), sticky="e")
+    ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
+    ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
+    ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
+    root.bind("<Escape>", lambda _e: root.destroy())
+    root.mainloop()
+
+
 def main() -> int:
     global PORT
     parser = argparse.ArgumentParser()
@@ -349,120 +472,19 @@ def main() -> int:
     args, _ = parser.parse_known_args()
     PORT = args.port
 
-    story, story_name = current_story()
-    zones = zones_on_story(story)
-    if not zones:
-        print("Aucune zone sur l'etage courant : rien a mettre dans le tableau.")
-        return 0
-
-    fill_areas(zones)
-    fill_colors(zones)
-    zones.sort(key=lambda z: (z["number"], z["name"]))
-    if DIAGNOSTIC:
-        dump_zone_color_properties(zones)
-    make_colors_unique(zones)
-    table = active_pen_table()
-    if not reserve_pens(zones, table):
-        nearest_pens(zones, table)
-    for z in zones:
-        print(f"  {z['number']} {z['name']} | categorie {z['category_name']} | couleur {hexa(z['color'])}"
-              f" -> stylo {z['pen']} {hexa(z['pen_color'])}")
-    solid = solid_fill_id()
-
-    # Supprimer le tableau precedent de cet etage
-    project = tapir("GetProjectInfo")
-    key = f"{project.get('projectPath') or project.get('projectName') or 'Sans titre'}|{story}"
-    memory = load_memory()
-    old = memory.get(key, [])
-    if old:
-        try:
-            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in old]})
-        except Exception:  # noqa: BLE001
-            pass
-
-    mm = ECHELLE / 1000.0
-    _, _, x_max, y_max = plan_bounds(zones)
-    x0 = x_max + ECART_MM * mm
-    top = y_max - 9.0 * mm
-    row = LIGNE_MM * mm
-    width = LARGEUR_MM * mm
-    n = len(zones)
-    bottom = top - row * (n + 2)
-    text_offset = (LIGNE_MM - TEXTE_MM) / 2.0 * mm
-    total = sum(z["area"] for z in zones)
-
-    texts, hatches, lines = [], [], []
-
-    def text(content, x, y, right=False, bold=False, size=TEXTE_MM):
-        texts.append({
-            "coordinate": {"x": x, "y": y, "z": 0.0},
-            "text": content,
-            "floorIndex": story,
-            "style": {"height": size, "bold": bold,
-                      "anchor": "RightBottom" if right else "LeftBottom",
-                      "justification": "Right" if right else "Left"},
-        })
-
-    def line(xa, ya, xb, yb):
-        lines.append({"floorInd": story, "coordinates": [{"x": xa, "y": ya}, {"x": xb, "y": yb}]})
-
-    title = "Tableau des surfaces" + (f" - {story_name}" if story_name else "")
-    text(title, x0, top + 2.5 * mm, bold=True, size=TITRE_MM)
-
-    header_bottom = top - row
-    text("Zone", x0 + COL_NOM_MM * mm, header_bottom + text_offset, bold=True)
-    text("Surface", x0 + COL_SURFACE_MM * mm, header_bottom + text_offset, right=True, bold=True)
-
-    for i, zone in enumerate(zones):
-        row_bottom = header_bottom - row * (i + 1)
-        x1, x2 = x0 + COL_CASE_MM[0] * mm, x0 + COL_CASE_MM[1] * mm
-        y1, y2 = row_bottom + 1.2 * mm, row_bottom + row - 1.2 * mm
-        hatch = {"floorInd": story, "coordinates": [{"x": x1, "y": y1}, {"x": x2, "y": y1}, {"x": x2, "y": y2}, {"x": x1, "y": y2}],
-                 "fillPenIndex": zone["pen"], "fillBackgroundPenIndex": zone["pen"], "contourPenIndex": zone["pen"], "showArea": False}
-        if solid:
-            hatch["fillId"] = solid
-        hatches.append(hatch)
-        label = f"{zone['number']} {zone['name']}".strip()
-        text(label, x0 + COL_NOM_MM * mm, row_bottom + text_offset)
-        text(format_area(zone["area"]), x0 + COL_SURFACE_MM * mm, row_bottom + text_offset, right=True)
-        line(x0, row_bottom, x0 + width, row_bottom)          # trait sous chaque ligne
-
-    text("Total", x0 + COL_NOM_MM * mm, bottom + text_offset, bold=True)
-    text(format_area(total), x0 + COL_SURFACE_MM * mm, bottom + text_offset, right=True, bold=True)
-
-    line(x0, header_bottom, x0 + width, header_bottom)       # sous l'en-tete
-    line(x0 + COL_SEPARATION_MM * mm, top, x0 + COL_SEPARATION_MM * mm, bottom)  # trait vertical
-    line(x0, top, x0 + width, top)                           # cadre
-    line(x0 + width, top, x0 + width, bottom)
-    line(x0 + width, bottom, x0, bottom)
-    line(x0, bottom, x0, top)
-
-    created = []
-    created += ok_items(tapir("CreateHatches", {"hatchesData": hatches}).get("elements", []))
-    created += ok_items(tapir("CreatePolylines", {"polylinesData": lines}).get("elements", []))
-    created += ok_items(tapir("CreateTexts", {"textsData": texts}).get("elements", []))
-
+    settings = load_settings()
     try:
-        tapir("CreateGroups", {"elementGroups": [{"elements": created}]})
-    except Exception:  # noqa: BLE001
-        pass
-
-    memory[key] = [e["elementId"]["guid"] for e in created if "elementId" in e]
-    save_memory(memory)
-
-    print(f"Tableau des surfaces cree : {n} zone(s), total {format_area(total)}.")
+        settings_window(settings, run)
+        return 0
+    except ImportError as error:
+        print(f"(Fenetre de reglages indisponible : {error}. Reglages enregistres utilises.)")
+    print(run("dessiner", settings))
     return 0
 
 
 if __name__ == "__main__":
-    journal = Journal(sys.stdout)
-    sys.stdout = journal
-    code = 1
     try:
-        code = main()
+        sys.exit(main())
     except Exception as error:  # noqa: BLE001
         print(f"Erreur : {error}")
-    finally:
-        sys.stdout = journal.stream
-        open_journal(journal)  # journal toujours ecrit dans %APPDATA%\\ClaudeBridge
-    sys.exit(code)
+        sys.exit(1)
