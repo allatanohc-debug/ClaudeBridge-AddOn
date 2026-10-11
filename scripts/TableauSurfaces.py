@@ -46,6 +46,7 @@ import json
 import math
 import os
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -81,31 +82,31 @@ REGLAGES = "tableau_surfaces_reglages.json"
 
 
 # ------------------------------------------------------------ communication ---
-def _post(payload: dict) -> dict:
+def _post(payload: dict, timeout: float = 120) -> dict:
     request = urllib.request.Request(
         f"http://127.0.0.1:{PORT}",
         data=json.dumps(payload).encode("utf-8"),
         headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 
 
-def api(command: str, parameters: dict | None = None) -> dict:
+def api(command: str, parameters: dict | None = None, timeout: float = 120) -> dict:
     payload = {"command": command}
     if parameters is not None:
         payload["parameters"] = parameters
-    answer = _post(payload)
+    answer = _post(payload, timeout)
     if not answer.get("succeeded"):
         raise RuntimeError(f"{command} : {answer.get('error')}")
     return answer.get("result", {})
 
 
-def tapir(command: str, parameters: dict | None = None) -> dict:
+def tapir(command: str, parameters: dict | None = None, timeout: float = 120) -> dict:
     result = api("API.ExecuteAddOnCommand", {
         "addOnCommandId": {"commandNamespace": "TapirCommand", "commandName": command},
         "addOnCommandParameters": parameters or {},
-    })
+    }, timeout)
     response = result.get("addOnCommandResponse", {})
     if isinstance(response, dict) and response.get("success") is False:
         raise RuntimeError(f"{command} : {response.get('error')}")
@@ -323,16 +324,45 @@ def new_zone(story: int, name: str, number: int, category: dict | None, geometry
     return None
 
 
-def pick_point(prompt: str) -> dict | None:
-    """Attend un clic dans Archicad ; None si Echap."""
+def focus_archicad() -> None:
+    """Remet la fenetre d'Archicad au premier plan (Windows), pour que le clic aille au plan."""
+    if os.name != "nt":
+        return
     try:
-        answer = tapir("GetPointFromUser", {"prompt": prompt})
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        found = []
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def callback(hwnd, _):
+            if user32.IsWindowVisible(hwnd):
+                length = user32.GetWindowTextLengthW(hwnd)
+                buffer = ctypes.create_unicode_buffer(length + 1)
+                user32.GetWindowTextW(hwnd, buffer, length + 1)
+                if "archicad" in buffer.value.lower():
+                    found.append(hwnd)
+                    return False
+            return True
+
+        user32.EnumWindows(callback, 0)
+        if found:
+            user32.ShowWindow(found[0], 9)          # SW_RESTORE si reduite
+            user32.SetForegroundWindow(found[0])
     except Exception:  # noqa: BLE001
-        return None
+        pass
+
+
+def pick_point(prompt: str) -> tuple[dict | None, str]:
+    """Attend un clic dans Archicad. Renvoie (point, "") ou (None, raison)."""
+    try:
+        answer = tapir("GetPointFromUser", {"prompt": prompt}, timeout=3600)
+    except Exception as error:  # noqa: BLE001
+        return None, str(error)
     pos = answer.get("position") if isinstance(answer, dict) else None
     if not pos or "error" in answer:
-        return None
-    return {"x": pos["x"], "y": pos["y"]}
+        return None, str(answer.get("error", "")) if isinstance(answer, dict) else ""
+    return {"x": pos["x"], "y": pos["y"]}, ""
 
 
 def selected_outlines() -> list[tuple[list[dict], list[dict], list[dict]]]:
@@ -580,15 +610,22 @@ def settings_window(settings: dict, apply) -> None:
         state["demander_nom"] = bool(ask_name.get())
 
     def by_clicks():
+        """Piece par piece : chaque clic cree la zone et met le tableau a jour aussitot."""
         remember()
         story = tapir("GetStories").get("actStory", 0)
         number = next_zone_number(read_zones())
-        created, errors = 0, []
+        created, missed = 0, 0
+        last = "Clique dans une piece fermee par des murs. Echap pour terminer."
         root.withdraw()
         try:
             while True:
-                point = pick_point("Clique dans une piece (Echap pour terminer)")
+                focus_archicad()
+                started = time.time()
+                point, reason = pick_point(f"Piece {number} : clique dedans (Echap pour terminer)")
                 if point is None:
+                    if created == 0 and missed == 0 and time.time() - started < 1.0:
+                        last = ("Archicad n'a pas pu attendre le clic. Mets la fenetre du plan au premier plan "
+                                f"puis recommence. ({reason})")
                     break
                 name = f"{base_name.get()} {number}"
                 if ask_name.get():
@@ -600,20 +637,17 @@ def settings_window(settings: dict, apply) -> None:
                     name = answer.strip() or name
                 error = new_zone(story, name, number, chosen_category(), {"referencePosition": point}, point)
                 if error:
-                    errors.append(error)
-                else:
-                    created += 1
-                    number += 1
+                    missed += 1
+                    last = f"Clic hors d'une piece fermee par des murs ({error}). Clique ailleurs ou Echap."
+                    print(last)
+                    continue
+                created += 1
+                number += 1
+                last = f"{name} creee. " + apply("dessiner", dict(collect()))   # tableau mis a jour tout de suite
+                print(last)
         finally:
             root.deiconify()
-        message = f"{created} zone(s) creee(s)."
-        if errors:
-            message += f" {len(errors)} clic(s) hors d'une piece fermee par des murs."
-        busy(message + " Mise a jour du tableau...")
-        if created:
-            status.set(message + " " + apply("dessiner", dict(collect())))
-        else:
-            status.set(message)
+        status.set((f"{created} piece(s) ajoutee(s) au tableau. " if created else "") + last)
 
     def by_selection():
         remember()
@@ -660,7 +694,7 @@ def settings_window(settings: dict, apply) -> None:
 
     zbtn = ttk.Frame(zbox)
     zbtn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
-    ttk.Button(zbtn, text="Cliquer dans les pieces...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(zbtn, text="Cliquer dans les pieces (une par une)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=0, column=1, padx=6)
     ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=0, column=2, padx=6)
 
