@@ -55,6 +55,7 @@ TEXTE_MM = 2.5                  # hauteur du texte courant
 TITRE_MM = 3.0                  # hauteur du texte du bandeau
 ECART_PLAN_MM = 15.0            # espace entre le plan et les tableaux
 ECART_TABLEAUX_MM = 8.0         # espace entre les deux tableaux
+TRAITS_ENTRE_LIGNES = True      # trait horizontal sous chaque ligne (lecture plus facile)
 TRAIT_FIN_MM = 0.18             # epaisseur des traits interieurs
 TRAIT_CADRE_MM = 0.35           # epaisseur du cadre et du trait du total
 
@@ -303,17 +304,23 @@ class Drawing:
 
         y = band_bottom
         total = 0.0
+        row_lines = []
         for heading, zones in groups:
             if show_headings:
                 y -= row
                 self.text(heading, x0 + pad, y + row / 2, "L", bold=True)
+                row_lines.append(y)
             for zone in zones:
                 y -= row
                 label = zone["name"] or zone["number"] or "Zone"
                 self.text(label, x0 + pad, y + row / 2, "L")
                 self.text(format_area(zone["area"]), value_x, y + row / 2, "M")
                 total += zone["area"]
+                row_lines.append(y)
         body_bottom = y
+        if TRAITS_ENTRE_LIGNES:
+            for line_y in row_lines[:-1]:                                     # trait sous chaque ligne
+                self.line(x0, line_y, x0 + width, line_y)
         y -= row * 1.1
         self.text(total_label, x0 + COL_NOM_MM * mm / 2, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
         self.text(format_area(total), value_x, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
