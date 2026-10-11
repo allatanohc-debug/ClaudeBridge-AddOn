@@ -18,6 +18,10 @@ Puis dans Archicad : palette Tapir > choisir "TableauSurfaces.py" > Executer.
    - "Mettre a jour zones + tableau" : apres avoir bouge des murs ou retouche
      des zones, recalcule les zones puis redessine le tableau.
 
+3. Nomenclature : pastille numerotee (01, 02...) dans chaque piece, et legende
+   soit separee en bas du plan (deplacable), soit integree au tableau (colonne N°).
+   "Mettre a jour" garde la place des pastilles et de la legende deplacees a la main.
+
 2. Tableau. La fenetre reste ouverte : couleur du bandeau, titres, texte
 du total et mots qui reperent les surfaces annexes. "Appliquer" dessine, a droite
 du plan de l'etage courant, deux tableaux :
@@ -95,6 +99,25 @@ STYLO_BANDEAU = 214
 PORT = 19723
 MEMOIRE = "tableaux_surfaces.json"
 REGLAGES = "tableau_surfaces_reglages.json"
+
+# --- nomenclature (pastilles numerotees + legende en bas du plan)
+NOM_COULEUR = (0.93, 0.11, 0.14)  # rouge par defaut, comme le tableau des surfaces
+NOM_TITRE = "LÉGENDE"
+NOM_PASTILLE_MM = 7.0             # diametre de la pastille (mm papier)
+NOM_TEXTE_PASTILLE_MM = 2.6       # hauteur du numero dans la pastille
+NOM_LIGNE_MM = 6.0                # hauteur d'une ligne de la legende
+NOM_COLONNE_MM = 55.0             # largeur d'une colonne de la legende
+NOM_LIGNES_MAX = 8                # lignes par colonne avant de passer a la colonne suivante
+NOM_BANDEAU_MM = 6.0
+NOM_TEXTE_MM = 2.5
+NOM_ECART_MM = 15.0          # espace entre le bas du plan et la legende
+STYLO_LEGENDE = 209
+NOM_MEMOIRE = "nomenclature.json"          # guids dessines (exclus de la baguette magique)
+NOM_POSITIONS = "nomenclature_positions.json"
+NOM_REGLAGES = "nomenclature_reglages.json"
+NOM_ORDRES = ("Automatique (sens de lecture)", "En cliquant les pieces dans l'ordre")
+NOM_LEGENDES = ("Separee, en bas du plan (deplacable)", "Integree au tableau des surfaces (colonne N°)")
+NOM_FORMATS = ("01, 02, 03...", "Par niveau : 001 (RDC), 101 (R+1)...")
 
 
 # ------------------------------------------------------------ communication ---
@@ -708,9 +731,25 @@ class Drawing:
                 y -= row
                 label = zone["name"] or zone["number"] or "Zone"
                 text_x = x0 + pad
+                if zone.get("nom_label"):                                   # pastille N° (nomenclature integree)
+                    r = min(row * 0.42, 2.4 * mm)
+                    c = (text_x + r, y + row / 2)
+                    ring = [{"x": c[0] + r * math.cos(2 * math.pi * k / 32), "y": c[1] + r * math.sin(2 * math.pi * k / 32)}
+                            for k in range(32)]
+                    hatch = {"floorInd": self.story, "showArea": False, "coordinates": ring,
+                             "fillPenIndex": STYLO_BLANC, "fillBackgroundPenIndex": STYLO_BLANC, "contourPenIndex": STYLO_BLANC}
+                    if self.solid:
+                        hatch["fillId"] = self.solid
+                    self.hatches.append(hatch)
+                    self.lines.append({"floorInd": self.story, "linePenIndex": STYLO_TRAIT, "penWeightMm": 0.2,
+                                       "coordinates": ring + [ring[0]]})
+                    self.texts.append({"coordinate": {"x": c[0], "y": c[1], "z": 0.0}, "text": zone["nom_label"],
+                                       "floorIndex": self.story, "style": {"height": 1.8, "bold": True, "penIndex": STYLO_TRAIT,
+                                                                            "anchor": "MiddleMiddle", "justification": "Center"}})
+                    text_x += 2 * r + pad
                 if zone.get("pen"):                                         # code couleur de la zone
-                    self.swatch(x0 + pad, y + row * 0.2, x0 + pad + CASE_MM * mm, y + row * 0.8, zone["pen"])
-                    text_x = x0 + pad * 2 + CASE_MM * mm
+                    self.swatch(text_x, y + row * 0.2, text_x + CASE_MM * mm, y + row * 0.8, zone["pen"])
+                    text_x = text_x + pad + CASE_MM * mm
                 self.text(label, text_x, y + row / 2, "L")
                 self.text(format_area(zone["area"]) + UNITE, value_x, y + row / 2, "M")
                 total += zone["area"]
@@ -735,7 +774,8 @@ class Drawing:
 # -------------------------------------------------------------------- run ---
 def group_by_story(zones: list[dict]) -> list[tuple[str, list[dict]]]:
     stories = sorted({z["story"] for z in zones})
-    return [(story_label(s), sorted((z for z in zones if z["story"] == s), key=lambda z: (z["number"], z["name"])))
+    return [(story_label(s), sorted((z for z in zones if z["story"] == s),
+                                    key=lambda z: (z.get("nom_label") or "~", z["number"], z["name"])))
             for s in stories]
 
 
@@ -761,6 +801,11 @@ def run(action: str, settings: dict) -> str:
     zones = read_zones()
     if not zones:
         return "Aucune zone dans le projet : rien a mettre dans le tableau."
+    nom_positions = load_json(NOM_POSITIONS)
+    for zone in zones:   # nomenclature integree : numero de la piece dans le tableau
+        info = nom_positions.get(f"{project_key}|{zone['story']}", {})
+        if info.get("integree"):
+            zone["nom_label"] = info.get("numeros", {}).get(zone["element"]["elementId"]["guid"])
     fill_areas(zones)
     fill_categories(zones)
     words = [w.strip().lower() for w in settings["mots_annexes"].split(",") if w.strip()]
@@ -808,6 +853,326 @@ def run(action: str, settings: dict) -> str:
 
 
 # ---------------------------------------------------------------- fenetre ---
+# ------------------------------------------------------------ nomenclature ---
+def nom_load_settings() -> dict:
+    saved = load_json(NOM_REGLAGES)
+    color = saved.get("couleur")
+    return {
+        "couleur": [float(c) for c in color] if isinstance(color, list) and len(color) == 3 else list(NOM_COULEUR),
+        "titre": str(saved.get("titre", NOM_TITRE)),
+        "ordre": saved.get("ordre") if saved.get("ordre") in NOM_ORDRES else NOM_ORDRES[0],
+        "format": saved.get("format") if saved.get("format") in NOM_FORMATS else NOM_FORMATS[0],
+        "surfaces": bool(saved.get("surfaces", False)),
+        "legende": saved.get("legende") if saved.get("legende") in NOM_LEGENDES else NOM_LEGENDES[0],
+    }
+
+
+def nom_set_pens(color) -> None:
+    tables = tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
+    ids = [{"attributeId": t["attributeId"]} for t in tables]
+    details = [t for t in tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}
+                                  ).get("penTables", []) if "error" not in t]
+    table = next((t for t in details if t.get("isActiveForModel")), details[0] if details else None)
+    if table is None:
+        return
+    widths = {p.get("index"): p.get("width", 0.1) for p in table.get("pens", [])}
+
+    def pen(index, rgb, description):
+        return {"index": index, "width": widths.get(index, 0.1), "description": description,
+                "color": {"red": rgb[0], "green": rgb[1], "blue": rgb[2]}}
+
+    tapir("CreatePenTables", {"overwriteExisting": True, "penTableDataArray": [{
+        "attributeId": table["attributeId"], "name": table["name"], "pens": [
+            pen(STYLO_TRAIT, (0.0, 0.0, 0.0), "Texte et traits"),
+            pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Blanc"),
+            pen(STYLO_LEGENDE, color, "Nomenclature - bandeau de la legende")]}]})
+
+
+def zone_center(zone: dict) -> dict:
+    """Point bien a l'interieur de la piece (pas forcement le centre geometrique)."""
+    pts = zone["outline"]
+    try:
+        from shapely.geometry import Polygon
+        poly = Polygon([(p["x"], p["y"]) for p in pts]).buffer(0)
+        if not poly.is_empty:
+            q = poly.representative_point() if not poly.contains(poly.centroid) else poly.centroid
+            return {"x": q.x, "y": q.y}
+    except Exception:  # noqa: BLE001
+        pass
+    return centroid(pts)
+
+
+def inside(point: dict, pts: list[dict]) -> bool:
+    x, y, result = point["x"], point["y"], False
+    for a, b in zip(pts, pts[1:] + pts[:1]):
+        if (a["y"] > y) != (b["y"] > y) and x < a["x"] + (y - a["y"]) * (b["x"] - a["x"]) / (b["y"] - a["y"]):
+            result = not result
+    return result
+
+
+def reading_order(zones: list[dict]) -> list[dict]:
+    """Sens de lecture : de haut en bas par bandes, puis de gauche a droite."""
+    band = 2.0
+    return sorted(zones, key=lambda z: (-round(z["center"]["y"] / band), z["center"]["x"]))
+
+
+def number_label(index: int, story: int, fmt: str) -> str:
+    if fmt == NOM_FORMATS[1]:
+        return f"{max(story, 0)}{index:02d}"
+    return f"{index:02d}"
+
+
+def write_zone_numbers(zones: list[dict]) -> bool:
+    """Ecrit le numero dans la zone Archicad (propriete Numero de zone), si Archicad l'accepte."""
+    try:
+        names = api("API.GetAllPropertyNames").get("properties", [])
+        builtin = [p["nonLocalizedName"] for p in names if p.get("type") == "BuiltIn"]
+        name = next((n for n in ("Zone_ZoneNumber", "Zone_Number") if n in builtin), None)
+        if not name:
+            return False
+        pid = api("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": name}]}
+                    )["properties"][0]["propertyId"]
+        result = api("API.SetPropertyValuesOfElements", {"elementPropertyValues": [
+            {"elementId": z["element"]["elementId"], "propertyId": pid,
+             "propertyValue": {"value": z["label"]}} for z in zones]})
+        return all(r.get("success", True) for r in result.get("executionResults", []))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def current_offset(ref_guid: str | None, origin: list | None) -> tuple[float, float]:
+    """De combien l'utilisateur a deplace un groupe (d'apres un de ses remplissages)."""
+    if not ref_guid or not origin:
+        return 0.0, 0.0
+    try:
+        detail = tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": ref_guid}}],
+                                                  "fields": ["details"]}).get("detailsOfElements", [{}])[0]
+        pts = detail.get("details", {}).get("coordinates", [])
+        if not pts:
+            return 0.0, 0.0
+        return min(p["x"] for p in pts) - origin[0], min(p["y"] for p in pts) - origin[1]
+    except Exception:  # noqa: BLE001
+        return 0.0, 0.0
+
+
+# ------------------------------------------------------------------ dessin ---
+class NomDraw:
+    def __init__(self, story: int, solid):
+        self.story, self.solid = story, solid
+        self.mm = ECHELLE / 1000.0
+        self.texts, self.hatches, self.lines = [], [], []
+
+    def text(self, content, x, y, anchor="LeftMiddle", bold=False, size=NOM_TEXTE_MM, pen=None):
+        just = {"L": "Left", "M": "Center", "R": "Right"}[anchor[0]]
+        self.texts.append({"coordinate": {"x": x, "y": y, "z": 0.0}, "text": content, "floorIndex": self.story,
+                           "style": {"height": size, "bold": bold, "penIndex": pen or STYLO_TRAIT,
+                                     "anchor": anchor, "justification": just}})
+
+    def hatch(self, pts, pen):
+        h = {"floorInd": self.story, "showArea": False, "coordinates": pts,
+             "fillPenIndex": pen, "fillBackgroundPenIndex": pen, "contourPenIndex": pen}
+        if self.solid:
+            h["fillId"] = self.solid
+        self.hatches.append(h)
+
+    def line(self, pts, weight=0.18):
+        self.lines.append({"floorInd": self.story, "linePenIndex": STYLO_TRAIT, "penWeightMm": weight,
+                           "coordinates": pts})
+
+    def pastille(self, center, label, diameter_mm=NOM_PASTILLE_MM, text_mm=NOM_TEXTE_PASTILLE_MM):
+        r = diameter_mm * self.mm / 2
+        ring = [{"x": center["x"] + r * math.cos(2 * math.pi * k / 40),
+                 "y": center["y"] + r * math.sin(2 * math.pi * k / 40)} for k in range(40)]
+        self.hatch(ring, STYLO_BLANC)
+        self.line(ring + [ring[0]], 0.25)
+        self.text(label, center["x"], center["y"], "MiddleMiddle", bold=True, size=text_mm)
+
+    def flush(self) -> tuple[list[dict], list[str]]:
+        """Cree tout ; renvoie (elements, guids des remplissages dans l'ordre)."""
+        hatches = ok_items(tapir("CreateHatches", {"hatchesData": self.hatches}).get("elements", [])) if self.hatches else []
+        lines = ok_items(tapir("CreatePolylines", {"polylinesData": self.lines}).get("elements", [])) if self.lines else []
+        texts = ok_items(tapir("CreateTexts", {"textsData": self.texts}).get("elements", [])) if self.texts else []
+        self.texts, self.hatches, self.lines = [], [], []
+        return hatches + lines + texts, [h["elementId"]["guid"] for h in hatches]
+
+
+def nom_group(elements: list[dict]) -> None:
+    if elements:
+        try:
+            tapir("CreateGroups", {"elementGroups": [{"elements": elements}]})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+# --------------------------------------------------------------------- nom_run ---
+def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> str:
+    story = tapir("GetStories").get("actStory", 0)
+    project = tapir("GetProjectInfo")
+    key = f"{project.get('projectPath') or project.get('projectName') or 'Sans titre'}|{story}"
+    memory, positions = load_json(NOM_MEMOIRE), load_json(NOM_POSITIONS)
+    previous = positions.get(key, {})
+
+    # positions choisies a la main avant de tout effacer
+    # decalage total = decalage deja retenu + deplacement fait a la main depuis le dernier dessin
+    ddx, ddy = current_offset(previous.get("legende_ref"), previous.get("legende_origine"))
+    base = previous.get("legende_decalage", [0.0, 0.0])
+    legend_offset = (base[0] + ddx, base[1] + ddy)
+    moved = {}
+    for zone_guid, info in previous.get("pastilles", {}).items():
+        dx, dy = current_offset(info.get("ref"), info.get("origine"))
+        bx, by = info.get("decalage", [0.0, 0.0])
+        if abs(bx + dx) > 1e-6 or abs(by + dy) > 1e-6:
+            moved[zone_guid] = (bx + dx, by + dy)
+
+    if memory.get(key):
+        try:
+            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in memory[key]]})
+        except Exception:  # noqa: BLE001
+            pass
+    memory[key] = []
+    if action == "supprimer":
+        positions.pop(key, None)
+        save_json(NOM_MEMOIRE, memory)
+        save_json(NOM_POSITIONS, positions)
+        return "Pastilles et legende supprimees."
+
+    zones = [z for z in read_zones() if z["story"] == story and len(z["outline"]) >= 3]
+    if not zones:
+        save_json(NOM_MEMOIRE, memory)
+        return "Aucune zone sur cet etage : cree d'abord les pieces (outil Tableau des surfaces ou Archicad)."
+    fill_areas(zones)
+    for z in zones:
+        z["center"] = zone_center(z)
+        z["guid"] = z["element"]["elementId"]["guid"]
+
+    if ordered:                                    # ordre clique, puis le reste en sens de lecture
+        rest = [z for z in reading_order(zones) if z["guid"] not in {o["guid"] for o in ordered}]
+        zones = [z for o in ordered for z in zones if z["guid"] == o["guid"]] + rest
+    elif action == "mettre_a_jour" and previous.get("ordre"):
+        rank = {g: i for i, g in enumerate(previous["ordre"])}
+        zones = sorted(zones, key=lambda z: (rank.get(z["guid"], 10 ** 6), -z["center"]["y"], z["center"]["x"]))
+    else:
+        zones = reading_order(zones)
+    for i, z in enumerate(zones, start=1):
+        z["label"] = number_label(i, story, settings["format"])
+
+    try:
+        nom_set_pens(settings["couleur"])
+    except Exception:  # noqa: BLE001
+        pass
+    solid = solid_fill_id()
+    draw = NomDraw(story, solid)
+    all_guids, pastilles = [], {}
+
+    # pastilles (un groupe par pastille, deplacable)
+    for z in zones:
+        dx, dy = moved.get(z["guid"], (0.0, 0.0))
+        center = {"x": z["center"]["x"] + dx, "y": z["center"]["y"] + dy}
+        draw.pastille(center, z["label"])
+        elements, hatch_guids = draw.flush()
+        nom_group(elements)
+        all_guids += [e["elementId"]["guid"] for e in elements]
+        if hatch_guids:
+            r = NOM_PASTILLE_MM * draw.mm / 2
+            pastilles[z["guid"]] = {"ref": hatch_guids[0], "origine": [center["x"] - r, center["y"] - r],
+                                    "decalage": [dx, dy]}
+
+    integrated = settings.get("legende") == NOM_LEGENDES[1]
+    numbers = {z["guid"]: z["label"] for z in zones}
+    if integrated:                                 # legende = colonne N° du tableau des surfaces
+        numbers_written = write_zone_numbers(zones)
+        memory[key] = all_guids
+        positions[key] = {"legende_ref": None, "legende_origine": None, "legende_decalage": list(legend_offset),
+                          "pastilles": pastilles, "ordre": [z["guid"] for z in zones],
+                          "numeros": numbers, "integree": True}
+        save_json(NOM_MEMOIRE, memory)
+        save_json(NOM_POSITIONS, positions)
+        kept = f" {len(moved)} pastille(s) laissee(s) a ta place." if moved else ""
+        return f"{len(zones)} piece(s) numerotee(s), numeros ajoutes au tableau.{kept}"
+
+    # legende en bas du plan (un groupe, deplacable)
+    mm = draw.mm
+    xs = [p["x"] for z in zones for p in z["outline"]]
+    ys = [p["y"] for z in zones for p in z["outline"]]
+    columns = max(1, math.ceil(len(zones) / NOM_LIGNES_MAX))
+    rows = math.ceil(len(zones) / columns)
+    col_w = (NOM_COLONNE_MM + (22 if settings["surfaces"] else 0)) * mm
+    width = columns * col_w
+    x0 = min(xs) + legend_offset[0]
+    top = min(ys) - NOM_ECART_MM * mm + legend_offset[1]
+    band_bottom = top - NOM_BANDEAU_MM * mm
+    bottom = band_bottom - rows * NOM_LIGNE_MM * mm - 2 * mm
+    band = [{"x": x0, "y": band_bottom}, {"x": x0 + width, "y": band_bottom},
+            {"x": x0 + width, "y": top}, {"x": x0, "y": top}]
+    draw.hatch(band, STYLO_LEGENDE)
+    draw.text(settings["titre"], x0 + width / 2, (top + band_bottom) / 2, "MiddleMiddle", bold=True, size=3.0,
+              pen=STYLO_BLANC)
+    for i, z in enumerate(zones):
+        col, row = divmod(i, rows)
+        cx = x0 + col * col_w + 5 * mm
+        cy = band_bottom - 1 * mm - (row + 0.5) * NOM_LIGNE_MM * mm
+        draw.pastille({"x": cx, "y": cy}, z["label"], diameter_mm=5.0, text_mm=2.0)
+        draw.text(z["name"] or "Piece", cx + 4.5 * mm, cy, "LeftMiddle")
+        if settings["surfaces"]:
+            draw.text(format_area(z["area"]) + UNITE, x0 + (col + 1) * col_w - 2 * mm, cy, "RightMiddle")
+    for c in range(1, columns):
+        draw.line([{"x": x0 + c * col_w, "y": band_bottom}, {"x": x0 + c * col_w, "y": bottom}])
+    draw.line([{"x": x0, "y": top}, {"x": x0 + width, "y": top}, {"x": x0 + width, "y": bottom},
+               {"x": x0, "y": bottom}, {"x": x0, "y": top}], 0.35)
+    elements, hatch_guids = draw.flush()
+    nom_group(elements)
+    all_guids += [e["elementId"]["guid"] for e in elements]
+
+    numbers_written = write_zone_numbers(zones)
+
+    memory[key] = all_guids
+    positions[key] = {"legende_ref": hatch_guids[0] if hatch_guids else None,
+                      "legende_origine": [x0, band_bottom], "legende_decalage": list(legend_offset),
+                      "pastilles": pastilles, "ordre": [z["guid"] for z in zones],
+                      "numeros": numbers, "integree": False}
+    save_json(NOM_MEMOIRE, memory)
+    save_json(NOM_POSITIONS, positions)
+    note = "" if numbers_written else " (numeros non ecrits dans les zones Archicad : seulement sur le plan)"
+    kept = f" {len(moved)} pastille(s) laissee(s) a ta place." if moved else ""
+    return f"{len(zones)} piece(s) numerotee(s), legende dessinee.{kept}{note}"
+
+
+def nom_pick_order(story: int) -> list[dict]:
+    """Clique les pieces dans l'ordre voulu (Echap pour finir)."""
+    zones = [z for z in read_zones() if z["story"] == story and len(z["outline"]) >= 3]
+    for z in zones:
+        z["guid"] = z["element"]["elementId"]["guid"]
+    order, marks = [], []
+    try:
+        while True:
+            focus_archicad()
+            point, _ = pick_point(f"Piece n{len(order) + 1} : clique dedans (Echap = fin)")
+            if point is None:
+                break
+            hit = next((z for z in zones if inside(point, z["outline"]) and z not in order), None)
+            if hit is None:
+                continue
+            order.append(hit)
+            # numero provisoire en surbrillance a l'endroit du clic
+            try:
+                answer = tapir("CreateTexts", {"textsData": [{
+                    "coordinate": {"x": point["x"], "y": point["y"], "z": 0.0}, "text": f"{len(order):02d}",
+                    "floorIndex": story, "style": {"height": 4.0, "bold": True, "penIndex": STYLO_CONTOUR,
+                                                   "anchor": "MiddleMiddle", "justification": "Center"}}]})
+                marks += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                highlight(marks)
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        highlight([])
+        if marks:
+            try:
+                tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in marks]})
+            except Exception:  # noqa: BLE001
+                pass
+    return order
+
+
 def settings_window(settings: dict, apply) -> None:
     import tkinter as tk
     from tkinter import colorchooser, simpledialog, ttk
@@ -817,7 +1182,7 @@ def settings_window(settings: dict, apply) -> None:
 
     state = dict(settings)
     root = tk.Tk()
-    root.title("Tableau des surfaces - Claude Bridge")
+    root.title("Tableau des surfaces + nomenclature - Claude Bridge")
     root.attributes("-topmost", True)
     root.resizable(False, False)
     outer = ttk.Frame(root, padding=12)
@@ -955,7 +1320,7 @@ def settings_window(settings: dict, apply) -> None:
                         continue
                 created += 1
                 number += 1
-                last = f"{name} creee. " + apply("dessiner", dict(collect()))   # tableau mis a jour tout de suite
+                last = f"{name} creee. " + refresh_all()   # tableau mis a jour tout de suite
                 print(last)
         finally:
             root.deiconify()
@@ -1186,7 +1551,7 @@ def settings_window(settings: dict, apply) -> None:
                     continue
                 created += 1
                 number += 1
-                last = f"{name} creee. " + apply("dessiner", dict(collect()))
+                last = f"{name} creee. " + refresh_all()
                 print(last)
         finally:
             root.deiconify()
@@ -1224,7 +1589,7 @@ def settings_window(settings: dict, apply) -> None:
         if errors:
             message += f" Echec pour {len(errors)} : {errors[0]}"
         busy(message + " Mise a jour du tableau...")
-        status.set(message + (" " + apply("dessiner", dict(collect())) if created else ""))
+        status.set(message + (" " + refresh_all() if created else ""))
 
     def update_all():
         busy("Recalcul des zones...")
@@ -1233,7 +1598,7 @@ def settings_window(settings: dict, apply) -> None:
         except Exception as error:  # noqa: BLE001
             status.set(f"Recalcul des zones impossible : {error}")
             return
-        status.set("Zones recalculees. " + apply("dessiner", dict(collect())))
+        status.set("Zones recalculees. " + refresh_all())
 
     zbtn = ttk.Frame(zbox)
     zbtn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
@@ -1287,7 +1652,96 @@ def settings_window(settings: dict, apply) -> None:
         save_json(REGLAGES, state)
         return state
 
-    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=520).grid(row=2, column=0, sticky="w", pady=(10, 0))
+    # ------------------------------------------------------------ 3. nomenclature
+    nom_state = nom_load_settings()
+    nbox = ttk.LabelFrame(outer, text=" 3. Nomenclature : numeros dans les pieces + legende en bas du plan ", padding=10)
+    nbox.grid(row=2, column=0, sticky="we", pady=(10, 0))
+    ttk.Label(nbox, text="Ordre des numeros").grid(row=0, column=0, sticky="w", pady=3)
+    nom_order = tk.StringVar(value=nom_state["ordre"])
+    ttk.Combobox(nbox, values=NOM_ORDRES, textvariable=nom_order, state="readonly", width=38).grid(row=0, column=1, columnspan=2, sticky="w", padx=8)
+    ttk.Label(nbox, text="Format").grid(row=1, column=0, sticky="w", pady=3)
+    nom_fmt = tk.StringVar(value=nom_state["format"])
+    ttk.Combobox(nbox, values=NOM_FORMATS, textvariable=nom_fmt, state="readonly", width=38).grid(row=1, column=1, columnspan=2, sticky="w", padx=8)
+    ttk.Label(nbox, text="Legende").grid(row=6, column=0, sticky="w", pady=3)
+    nom_mode = tk.StringVar(value=nom_state["legende"])
+    ttk.Combobox(nbox, values=NOM_LEGENDES, textvariable=nom_mode, state="readonly", width=44).grid(row=6, column=1, columnspan=2, sticky="w", padx=8)
+    ttk.Label(nbox, text="Titre de la legende").grid(row=2, column=0, sticky="w", pady=3)
+    nom_title = tk.StringVar(value=nom_state["titre"])
+    ttk.Entry(nbox, textvariable=nom_title, width=40).grid(row=2, column=1, columnspan=2, sticky="w", padx=8)
+    ttk.Label(nbox, text="Couleur du bandeau").grid(row=3, column=0, sticky="w", pady=3)
+    nom_swatch = tk.Label(nbox, width=6, bg=to_hex(nom_state["couleur"]), relief="groove")
+    nom_swatch.grid(row=3, column=1, sticky="w", padx=8)
+
+    def nom_pick():
+        rgb, _ = colorchooser.askcolor(color=to_hex(nom_state["couleur"]), title="Couleur du bandeau de la legende", parent=root)
+        if rgb:
+            nom_state["couleur"] = [v / 255.0 for v in rgb]
+            nom_swatch.configure(bg=to_hex(nom_state["couleur"]))
+
+    ttk.Button(nbox, text="Choisir...", command=nom_pick).grid(row=3, column=2, sticky="w")
+    nom_surfaces = tk.BooleanVar(value=nom_state["surfaces"])
+    ttk.Checkbutton(nbox, text="Ajouter les surfaces dans la legende", variable=nom_surfaces
+                    ).grid(row=4, column=1, columnspan=2, sticky="w", padx=8)
+
+    def nom_collect() -> dict:
+        nom_state.update(ordre=nom_order.get(), format=nom_fmt.get(), titre=nom_title.get(),
+                         surfaces=bool(nom_surfaces.get()), legende=nom_mode.get())
+        save_json(NOM_REGLAGES, nom_state)
+        return dict(nom_state)
+
+    def nom_do(action):
+        settings_nom = nom_collect()
+        try:
+            ordered = None
+            if action == "numeroter" and settings_nom["ordre"] == NOM_ORDRES[1]:
+                root.withdraw()
+                try:
+                    ordered = nom_pick_order(tapir("GetStories").get("actStory", 0))
+                finally:
+                    root.deiconify()
+            busy("Nomenclature en cours...")
+            message = nom_run(action, settings_nom, ordered)
+            if table_drawn():                       # le tableau suit (ajoute ou retire la colonne N°)
+                message += " " + apply("dessiner", dict(collect()))
+            status.set(message)
+        except Exception as error:  # noqa: BLE001
+            root.deiconify()
+            status.set(f"Erreur : {error}")
+
+    nbtn = ttk.Frame(nbox)
+    nbtn.grid(row=7, column=0, columnspan=3, sticky="w", pady=(8, 0))
+    ttk.Button(nbtn, text="Numeroter + legende", command=lambda: nom_do("numeroter")).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(nbtn, text="Mettre a jour (garde les positions)", command=lambda: nom_do("mettre_a_jour")).grid(row=0, column=1, padx=6)
+    ttk.Button(nbtn, text="Supprimer la nomenclature", command=lambda: nom_do("supprimer")).grid(row=0, column=2, padx=6)
+
+    def table_drawn() -> bool:
+        try:
+            project = tapir("GetProjectInfo")
+            project_key = project.get("projectPath") or project.get("projectName") or "Sans titre"
+            return any(k.split("|")[0] == project_key and v for k, v in load_json(MEMOIRE).items())
+        except Exception:  # noqa: BLE001
+            return False
+
+    def nomenclature_drawn() -> bool:
+        try:
+            story = tapir("GetStories").get("actStory", 0)
+            project = tapir("GetProjectInfo")
+            key = f"{project.get('projectPath') or project.get('projectName') or 'Sans titre'}|{story}"
+            return bool(load_json(NOM_MEMOIRE).get(key))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def refresh_all() -> str:
+        """Apres creation de pieces : tableau redessine, et nomenclature mise a jour si elle existe."""
+        message = ""
+        if nomenclature_drawn():                    # numeros d'abord : le tableau peut les reprendre
+            try:
+                message = nom_run("mettre_a_jour", nom_collect()) + " "
+            except Exception as error:  # noqa: BLE001
+                message = f"(nomenclature : {error}) "
+        return message + apply("dessiner", dict(collect()))
+
+    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=520).grid(row=3, column=0, sticky="w", pady=(10, 0))
 
     def do(action):
         collect()
@@ -1307,7 +1761,7 @@ def settings_window(settings: dict, apply) -> None:
         return wrapped
 
     buttons = ttk.Frame(outer)
-    buttons.grid(row=3, column=0, pady=(12, 0), sticky="e")
+    buttons.grid(row=4, column=0, pady=(12, 0), sticky="e")
     ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
