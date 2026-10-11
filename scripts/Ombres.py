@@ -269,28 +269,71 @@ def cut_polygons(kind: str, story: int) -> list[list[Point]]:
     return shapes
 
 
+def plan_boxes(elems: list[dict]) -> list[dict | None]:
+    """Cadre reel du symbole en plan (xMin, yMin, xMax, yMax) de chaque element, ou None."""
+    boxes: list[dict | None] = [None] * len(elems)
+    try:  # cadre 2D du symbole dessine (API Archicad)
+        answer = api("API.Get2DBoundingBoxes", {"elements": elems}).get("boundingBoxes2D", [])
+        for i, item in enumerate(answer[:len(elems)]):
+            if isinstance(item, dict) and "boundingBox2D" in item:
+                boxes[i] = item["boundingBox2D"]
+    except Exception:  # noqa: BLE001
+        pass
+    missing = [i for i, b in enumerate(boxes) if b is None]
+    if missing:
+        try:  # a defaut, emprise 3D (Tapir)
+            answer = tapir("Get3DBoundingBoxes", {"elements": [elems[i] for i in missing]}).get("boundingBoxes3D", [])
+            for i, item in zip(missing, answer):
+                if isinstance(item, dict) and "boundingBox3D" in item:
+                    boxes[i] = item["boundingBox3D"]
+        except Exception:  # noqa: BLE001
+            pass
+    return boxes
+
+
+def centered_rectangle(center: Point, width: float, depth: float, angle: float) -> list[Point]:
+    c, s = math.cos(angle), math.sin(angle)
+    corners = [(-width / 2, -depth / 2), (width / 2, -depth / 2), (width / 2, depth / 2), (-width / 2, depth / 2)]
+    return [(center[0] + x * c - y * s, center[1] + x * s + y * c) for x, y in corners]
+
+
 def object_shapes(story: int) -> list[list[Point]]:
     elems = elements("Object")
     if not elems:
         return []
     details = tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex", "details"]}
                     ).get("detailsOfElements", [])
+    on_story = [(e, d) for e, d in zip(elems, details) if "error" not in d and d.get("floorIndex") == story]
+    if not on_story:
+        return []
+    boxes = plan_boxes([e for e, _ in on_story])
     shapes = []
-    for detail in details:
-        if "error" in detail or detail.get("floorIndex") != story:
-            continue
+    for (_, detail), box in zip(on_story, boxes):
         d = detail.get("details", {})
-        origin = d.get("origin", {})
         size = d.get("dimensions", {})
         width, depth = size.get("x", 0.0), size.get("y", 0.0)
-        if width <= 1e-6 or depth <= 1e-6:
-            continue
+        angle = d.get("angle", 0.0)
         name = d.get("libPart", {}).get("name", "").lower()
-        o = (origin.get("x", 0.0), origin.get("y", 0.0))
-        if any(word in name for word in MOTS_ARBRES):
-            shapes.append(circle(o, max(width, depth) / 2.0))
-        else:
-            shapes.append(rectangle(o, width, depth, d.get("angle", 0.0), bool(d.get("reflected"))))
+        is_tree = any(word in name for word in MOTS_ARBRES)
+        if box:
+            x1, y1, x2, y2 = box["xMin"], box["yMin"], box["xMax"], box["yMax"]
+            if x2 - x1 <= 1e-6 or y2 - y1 <= 1e-6:
+                continue
+            center = ((x1 + x2) / 2, (y1 + y2) / 2)
+            quarter = abs(math.remainder(angle, math.pi / 2)) < math.radians(1)
+            if is_tree:
+                shapes.append(circle(center, min(x2 - x1, y2 - y1) / 2.0))
+            elif quarter or width <= 1e-6 or depth <= 1e-6:
+                shapes.append([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])   # cadre exact du symbole
+            else:
+                shapes.append(centered_rectangle(center, width, depth, angle))
+        elif width > 1e-6 and depth > 1e-6:   # dernier recours : point d'insertion + dimensions
+            origin = d.get("origin", {})
+            o = (origin.get("x", 0.0), origin.get("y", 0.0))
+            if is_tree:
+                shapes.append(circle(o, max(width, depth) / 2.0))
+            else:
+                shapes.append(rectangle(o, width, depth, angle, bool(d.get("reflected"))))
     return shapes
 
 
