@@ -39,6 +39,7 @@ COL_SEPARATION_MM = 63.0     # trait vertical entre Zone et Surface
 COL_SURFACE_MM = 92.0        # bord droit de la colonne Surface
 
 PORT = 19723
+DIAGNOSTIC = True        # ecrit un journal et l'ouvre dans le Bloc-notes a la fin
 
 
 # ------------------------------------------------------------ communication ---
@@ -236,6 +237,63 @@ def plan_bounds(zones: list[dict]) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs), max(ys)
 
 
+# ----------------------------------------------------------- diagnostic ---
+class Journal:
+    def __init__(self, stream):
+        self.stream, self.lines = stream, []
+
+    def write(self, text):
+        self.lines.append(text)
+        try:
+            self.stream.write(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def flush(self):
+        try:
+            self.stream.flush()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def dump_zone_color_properties(zones: list[dict]) -> None:
+    try:
+        names = api("API.GetAllPropertyNames").get("properties", [])
+        keys = ("color", "colour", "pen", "fill", "categ")
+        wanted = [p["nonLocalizedName"] for p in names if p.get("type") == "BuiltIn"
+                  and any(k in p.get("nonLocalizedName", "").lower() for k in keys)
+                  and (p["nonLocalizedName"].startswith("Zone_") or "Fill" in p["nonLocalizedName"] or "Pen" in p["nonLocalizedName"])]
+        print(f"Proprietes candidates : {', '.join(wanted) or 'aucune'}")
+        if not wanted:
+            return
+        ids = api("API.GetPropertyIds", {"properties": [{"type": "BuiltIn", "nonLocalizedName": n} for n in wanted]})["properties"]
+        valid = [(n, i["propertyId"]) for n, i in zip(wanted, ids) if "propertyId" in i]
+        values = api("API.GetPropertyValuesOfElements", {
+            "elements": [z["element"] for z in zones],
+            "properties": [{"propertyId": pid} for _, pid in valid],
+        }).get("propertyValuesForElements", [])
+        for zone, value in zip(zones, values):
+            shown = []
+            for (name, _), pv in zip(valid, value.get("propertyValues", [])):
+                v = pv.get("propertyValue", {})
+                if v.get("status", "normal") == "normal":
+                    shown.append(f"{name}={v.get('value')}")
+            print(f"  {zone['number']} : {'; '.join(shown) or '-'}")
+    except Exception as error:  # noqa: BLE001
+        print(f"  (proprietes illisibles : {error})")
+
+
+def open_journal(journal: Journal) -> None:
+    try:
+        path = Path(os.environ.get("APPDATA", Path.home())) / "ClaudeBridge" / "TableauSurfaces_journal.txt"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(journal.lines), encoding="utf-8")
+        if os.name == "nt":
+            os.startfile(str(path))  # noqa: S606
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # --------------------------------------------------------------- dessin ---
 def main() -> int:
     global PORT
@@ -253,6 +311,8 @@ def main() -> int:
     fill_areas(zones)
     fill_colors(zones)
     zones.sort(key=lambda z: (z["number"], z["name"]))
+    if DIAGNOSTIC:
+        dump_zone_color_properties(zones)
     pens = active_pens()
     assign_pens(zones, pens)
     pen_colors = dict(pens)
@@ -347,8 +407,15 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    journal = Journal(sys.stdout)
+    sys.stdout = journal
+    code = 1
     try:
-        sys.exit(main())
+        code = main()
     except Exception as error:  # noqa: BLE001
         print(f"Erreur : {error}")
-        sys.exit(1)
+    finally:
+        sys.stdout = journal.stream
+        if DIAGNOSTIC:
+            open_journal(journal)
+    sys.exit(code)
