@@ -8,7 +8,15 @@ Tableau des surfaces - script Tapir (Archicad 28, mode normal)
 A placer dans : Documents\\Tapir\\custom-scripts\\
 Puis dans Archicad : palette Tapir > choisir "TableauSurfaces.py" > Executer.
 
-Une petite fenetre s'ouvre et reste ouverte : couleur du bandeau, titres, texte
+1. Creer les zones (pieces), plusieurs a la fois :
+   - "Cliquer dans les pieces..." : un clic dans chaque piece fermee par des murs,
+     Archicad trouve ses limites tout seul (Echap pour terminer) ;
+   - "Zones depuis la selection" : selectionner des polylignes fermees ou des
+     remplissages dessines comme on veut -> une zone pour chacun, a cette forme ;
+   - "Mettre a jour zones + tableau" : apres avoir bouge des murs ou retouche
+     des zones, recalcule les zones puis redessine le tableau.
+
+2. Tableau. La fenetre reste ouverte : couleur du bandeau, titres, texte
 du total et mots qui reperent les surfaces annexes. "Appliquer" dessine, a droite
 du plan de l'etage courant, deux tableaux :
 
@@ -285,6 +293,87 @@ def solid_fill_id() -> dict | None:
     return None
 
 
+# ------------------------------------------------------------------ zones ---
+def zone_categories() -> list[tuple[str, dict]]:
+    """(nom, attributeId) des categories de zones du projet."""
+    attrs = tapir("GetAttributesByType", {"attributeType": "ZoneCategory"}).get("attributes", [])
+    out = []
+    for a in attrs:
+        if "attributeId" in a:
+            out.append((a.get("name", "?"), a["attributeId"]))
+    return out
+
+
+def next_zone_number(zones: list[dict]) -> int:
+    numbers = [int(z["number"]) for z in zones if str(z.get("number", "")).strip().isdigit()]
+    return (max(numbers) + 1) if numbers else 1
+
+
+def new_zone(story: int, name: str, number: int, category: dict | None, geometry: dict, stamp=None) -> str | None:
+    """Cree une zone ; renvoie un message d'erreur ou None."""
+    data = {"floorIndex": story, "name": name, "numberStr": f"{number:02d}", "geometry": geometry}
+    if category:
+        data["categoryAttributeId"] = category
+    if stamp:
+        data["stampPosition"] = stamp
+    result = tapir("CreateZones", {"zonesData": [data]}).get("elements", [{}])
+    item = result[0] if result else {}
+    if "error" in item:
+        return str(item["error"].get("message", item["error"]) if isinstance(item["error"], dict) else item["error"])
+    return None
+
+
+def pick_point(prompt: str) -> dict | None:
+    """Attend un clic dans Archicad ; None si Echap."""
+    try:
+        answer = tapir("GetPointFromUser", {"prompt": prompt})
+    except Exception:  # noqa: BLE001
+        return None
+    pos = answer.get("position") if isinstance(answer, dict) else None
+    if not pos or "error" in answer:
+        return None
+    return {"x": pos["x"], "y": pos["y"]}
+
+
+def selected_outlines() -> list[tuple[list[dict], list[dict], list[dict]]]:
+    """Contours (points, arcs, trous) des polylignes et remplissages selectionnes."""
+    try:
+        selection = api("API.GetSelectedElements").get("elements", [])
+    except Exception:  # noqa: BLE001
+        selection = tapir("GetSelectedElements").get("elements", [])
+    if not selection:
+        return []
+    details = tapir("GetDetailsOfElements", {"elements": selection, "fields": ["type", "details"]}
+                    ).get("detailsOfElements", [])
+    outlines = []
+    for detail in details:
+        if "error" in detail:
+            continue
+        kind = detail.get("type", "")
+        d = detail.get("details", {})
+        if kind in ("PolyLine", "Hatch"):
+            pts = [{"x": c["x"], "y": c["y"]} for c in d.get("coordinates", [])]   # tel quel : les arcs s'y referent
+            if len(pts) >= 3:
+                holes = [{"polygonOutline": h.get("polygonOutline", []), "polygonArcs": h.get("polygonArcs", [])}
+                         for h in d.get("holes", [])] if kind == "Hatch" else []
+                outlines.append((pts, d.get("arcs", []), holes))
+    return outlines
+
+
+def centroid(points: list[dict]) -> dict:
+    if len(points) > 3 and abs(points[0]["x"] - points[-1]["x"]) < 1e-9 and abs(points[0]["y"] - points[-1]["y"]) < 1e-9:
+        points = points[:-1]
+    a = cx = cy = 0.0
+    for p, q in zip(points, points[1:] + points[:1]):
+        cross = p["x"] * q["y"] - q["x"] * p["y"]
+        a += cross
+        cx += (p["x"] + q["x"]) * cross
+        cy += (p["y"] + q["y"]) * cross
+    if abs(a) < 1e-12:
+        return {"x": sum(p["x"] for p in points) / len(points), "y": sum(p["y"] for p in points) / len(points)}
+    return {"x": cx / (3 * a), "y": cy / (3 * a)}
+
+
 # ------------------------------------------------------------------ dessin ---
 class Drawing:
     def __init__(self, story: int, solid: dict | None):
@@ -442,7 +531,7 @@ def run(action: str, settings: dict) -> str:
 # ---------------------------------------------------------------- fenetre ---
 def settings_window(settings: dict, apply) -> None:
     import tkinter as tk
-    from tkinter import colorchooser, ttk
+    from tkinter import colorchooser, simpledialog, ttk
 
     def to_hex(c):
         return "#" + "".join(f"{round(max(0.0, min(1.0, v)) * 255):02X}" for v in c)
@@ -452,8 +541,132 @@ def settings_window(settings: dict, apply) -> None:
     root.title("Tableau des surfaces - Claude Bridge")
     root.attributes("-topmost", True)
     root.resizable(False, False)
-    frame = ttk.Frame(root, padding=16)
-    frame.grid()
+    outer = ttk.Frame(root, padding=12)
+    outer.grid()
+    status = tk.StringVar(value="1. Cree tes zones   2. Regle le tableau puis Appliquer.")
+
+    def busy(text):
+        status.set(text)
+        root.update_idletasks()
+
+    # ------------------------------------------------------------ 1. zones
+    zbox = ttk.LabelFrame(outer, text=" 1. Creer les zones (pieces) ", padding=10)
+    zbox.grid(row=0, column=0, sticky="we")
+
+    try:
+        categories = zone_categories()
+    except Exception:  # noqa: BLE001
+        categories = []
+    ttk.Label(zbox, text="Categorie").grid(row=0, column=0, sticky="w", pady=3)
+    category_names = ["(reglage par defaut)"] + [n for n, _ in categories]
+    category = tk.StringVar(value=state.get("categorie", category_names[0]) if state.get("categorie") in category_names
+                            else category_names[0])
+    ttk.Combobox(zbox, values=category_names, textvariable=category, state="readonly", width=30
+                 ).grid(row=0, column=1, sticky="w", padx=8)
+
+    ttk.Label(zbox, text="Nom par defaut").grid(row=1, column=0, sticky="w", pady=3)
+    base_name = tk.StringVar(value=state.get("nom_piece", "Piece"))
+    ttk.Entry(zbox, textvariable=base_name, width=32).grid(row=1, column=1, sticky="w", padx=8)
+    ask_name = tk.BooleanVar(value=state.get("demander_nom", True))
+    ttk.Checkbutton(zbox, text="Demander le nom de chaque piece", variable=ask_name
+                    ).grid(row=2, column=1, sticky="w", padx=8)
+
+    def chosen_category():
+        return next((aid for n, aid in categories if n == category.get()), None)
+
+    def remember():
+        state["categorie"] = category.get()
+        state["nom_piece"] = base_name.get()
+        state["demander_nom"] = bool(ask_name.get())
+
+    def by_clicks():
+        remember()
+        story = tapir("GetStories").get("actStory", 0)
+        number = next_zone_number(read_zones())
+        created, errors = 0, []
+        root.withdraw()
+        try:
+            while True:
+                point = pick_point("Clique dans une piece (Echap pour terminer)")
+                if point is None:
+                    break
+                name = f"{base_name.get()} {number}"
+                if ask_name.get():
+                    root.deiconify()
+                    answer = simpledialog.askstring("Nom de la piece", "Nom de cette piece :", initialvalue=name, parent=root)
+                    root.withdraw()
+                    if answer is None:
+                        continue
+                    name = answer.strip() or name
+                error = new_zone(story, name, number, chosen_category(), {"referencePosition": point}, point)
+                if error:
+                    errors.append(error)
+                else:
+                    created += 1
+                    number += 1
+        finally:
+            root.deiconify()
+        message = f"{created} zone(s) creee(s)."
+        if errors:
+            message += f" {len(errors)} clic(s) hors d'une piece fermee par des murs."
+        busy(message + " Mise a jour du tableau...")
+        if created:
+            status.set(message + " " + apply("dessiner", dict(collect())))
+        else:
+            status.set(message)
+
+    def by_selection():
+        remember()
+        busy("Lecture de la selection...")
+        outlines = selected_outlines()
+        if not outlines:
+            status.set("Selectionne d'abord une ou plusieurs polylignes fermees ou remplissages qui delimitent tes pieces.")
+            return
+        story = tapir("GetStories").get("actStory", 0)
+        number = next_zone_number(read_zones())
+        created, errors = 0, []
+        for pts, arcs, holes in outlines:
+            name = f"{base_name.get()} {number}"
+            if ask_name.get():
+                answer = simpledialog.askstring("Nom de la piece", f"Nom de la piece {number} :", initialvalue=name, parent=root)
+                if answer is None:
+                    continue
+                name = answer.strip() or name
+            geometry = {"polygonCoordinates": pts}
+            if arcs:
+                geometry["polygonArcs"] = arcs
+            if holes:
+                geometry["holes"] = holes
+            error = new_zone(story, name, number, chosen_category(), geometry, centroid(pts))
+            if error:
+                errors.append(error)
+            else:
+                created += 1
+                number += 1
+        message = f"{created} zone(s) creee(s) depuis la selection."
+        if errors:
+            message += f" Echec pour {len(errors)} : {errors[0]}"
+        busy(message + " Mise a jour du tableau...")
+        status.set(message + (" " + apply("dessiner", dict(collect())) if created else ""))
+
+    def update_all():
+        busy("Recalcul des zones...")
+        try:
+            tapir("UpdateZones", {"keepStampPosition": True})
+        except Exception as error:  # noqa: BLE001
+            status.set(f"Recalcul des zones impossible : {error}")
+            return
+        status.set("Zones recalculees. " + apply("dessiner", dict(collect())))
+
+    zbtn = ttk.Frame(zbox)
+    zbtn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    ttk.Button(zbtn, text="Cliquer dans les pieces...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=0, column=1, padx=6)
+    ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=0, column=2, padx=6)
+
+    # ------------------------------------------------------------ 2. tableau
+    frame = ttk.LabelFrame(outer, text=" 2. Tableau ", padding=10)
+    frame.grid(row=1, column=0, sticky="we", pady=(10, 0))
 
     ttk.Label(frame, text="Couleur du bandeau").grid(row=0, column=0, sticky="w", pady=4)
     swatch = tk.Label(frame, width=6, bg=to_hex(state["couleur"]), relief="groove")
@@ -488,26 +701,40 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Checkbutton(frame, text="Afficher le code couleur de chaque zone", variable=swatches
                     ).grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=4)
 
-    status = tk.StringVar(value="Regle puis clique sur Appliquer : le tableau est redessine dans Archicad.")
-    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=460).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 0))
-
-    def do(action):
+    def collect() -> dict:
         for key, var in fields.items():
             state[key] = var.get()
         state["codes_couleur"] = bool(swatches.get())
+        remember()
         save_json(REGLAGES, state)
-        status.set("En cours...")
-        root.update_idletasks()
+        return state
+
+    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=520).grid(row=2, column=0, sticky="w", pady=(10, 0))
+
+    def do(action):
+        collect()
+        busy("En cours...")
         try:
             status.set(apply(action, dict(state)))
         except Exception as error:  # noqa: BLE001
             status.set(f"Erreur : {error}")
 
-    buttons = ttk.Frame(frame)
-    buttons.grid(row=7, column=0, columnspan=3, pady=(12, 0), sticky="e")
+    def safe(fn):
+        def wrapped():
+            try:
+                fn()
+            except Exception as error:  # noqa: BLE001
+                root.deiconify()
+                status.set(f"Erreur : {error}")
+        return wrapped
+
+    buttons = ttk.Frame(outer)
+    buttons.grid(row=3, column=0, pady=(12, 0), sticky="e")
     ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
+    for child, fn in zip(zbtn.winfo_children(), (by_clicks, by_selection, update_all)):
+        child.configure(command=safe(fn))
     root.bind("<Escape>", lambda _e: root.destroy())
     root.mainloop()
 
