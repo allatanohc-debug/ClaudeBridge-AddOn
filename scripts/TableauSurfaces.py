@@ -90,6 +90,10 @@ def rgb(color: dict) -> tuple[float, float, float]:
     return (color.get("red", 0.8), color.get("green", 0.8), color.get("blue", 0.8))
 
 
+def hexa(color) -> str:
+    return "#" + "".join(f"{round(max(0.0, min(1.0, c)) * 255):02X}" for c in color)
+
+
 def distance(a, b) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
@@ -182,17 +186,25 @@ def fill_colors(zones: list[dict]) -> None:
     if guids:
         cats = tapir("GetZoneCategories", {"attributeIds": [{"attributeId": {"guid": g}} for g in guids], "fields": ["color"]})
         for guid, cat in zip(guids, cats.get("zoneCategories", [])):
-            if "error" not in cat:
-                colors[guid] = rgb(cat.get("color", {}))
+            if "error" in cat:
+                print(f"  ! categorie {guid} illisible : {cat['error']}")
+            elif "color" in cat:
+                colors[guid] = (rgb(cat["color"]), cat.get("name", ""))
+            else:
+                print(f"  ! categorie {cat.get('name', guid)} sans couleur")
     for zone in zones:
-        zone["color"] = colors.get(zone["category"], (0.8, 0.8, 0.8))
+        zone["color"], zone["category_name"] = colors.get(zone["category"], ((0.8, 0.8, 0.8), "?"))
 
 
 def active_pens() -> list[tuple[int, tuple]]:
     tables = tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
     ids = [{"attributeId": t["attributeId"]} for t in tables]
     details = tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}).get("penTables", [])
-    active = next((t for t in details if t.get("isActiveForModel")), details[0] if details else {})
+    active = next((t for t in details if t.get("isActiveForModel")), None)
+    if active is None:
+        print("  ! aucun jeu de stylos marque actif : premier jeu utilise")
+        active = details[0] if details else {}
+    print(f"Jeu de stylos utilise : {active.get('name', '?')}")
     return [(p["index"], rgb(p["color"])) for p in active.get("pens", []) if p.get("index", 0) > 0]
 
 
@@ -241,7 +253,12 @@ def main() -> int:
     fill_areas(zones)
     fill_colors(zones)
     zones.sort(key=lambda z: (z["number"], z["name"]))
-    assign_pens(zones, active_pens())
+    pens = active_pens()
+    assign_pens(zones, pens)
+    pen_colors = dict(pens)
+    for z in zones:
+        print(f"  {z['number']} {z['name']} | categorie {z['category_name']} | couleur {hexa(z['color'])}"
+              f" -> stylo {z['pen']} {hexa(pen_colors.get(z['pen'], (0, 0, 0)))}")
     solid = solid_fill_id()
 
     # Supprimer le tableau precedent de cet etage
@@ -293,7 +310,7 @@ def main() -> int:
         x1, x2 = x0 + COL_CASE_MM[0] * mm, x0 + COL_CASE_MM[1] * mm
         y1, y2 = row_bottom + 1.2 * mm, row_bottom + row - 1.2 * mm
         hatch = {"floorInd": story, "coordinates": [{"x": x1, "y": y1}, {"x": x2, "y": y1}, {"x": x2, "y": y2}, {"x": x1, "y": y2}],
-                 "fillPenIndex": zone["pen"], "fillBackgroundPenIndex": zone["pen"], "contourPenIndex": zone["pen"]}
+                 "fillPenIndex": zone["pen"], "fillBackgroundPenIndex": zone["pen"], "contourPenIndex": zone["pen"], "showArea": False}
         if solid:
             hatch["fillId"] = solid
         hatches.append(hatch)
