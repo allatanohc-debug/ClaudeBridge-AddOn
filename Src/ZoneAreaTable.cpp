@@ -303,10 +303,42 @@ GSErrCode CreateText (const GS::UniString& content, const API_Coord& location, d
 	element.text.just = alignRight ? APIJust_Right : APIJust_Left;
 	element.text.faceBits = bold ? static_cast<unsigned short> (APIFace_Bold) : static_cast<unsigned short> (0);
 	element.text.nonBreaking = true;
+	element.text.useEolPos = true;
+	element.text.width = 0.0;
+	element.text.height = 0.0;
 	element.text.nLine = 1;
 
+	// Contenu + un paragraphe et un "run" explicites (comme Tapir) : sans eux,
+	// Archicad 28 lit mal les caracteres non ASCII (m² affiche "mÂ²").
+	const Int32 length = static_cast<Int32> (content.GetLength ());
 	API_ElementMemo memo = {};
 	memo.textContent = new GS::UniString (content);
+	memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (sizeof (API_ParagraphType)));
+	if (memo.paragraphs == nullptr) {
+		ACAPI_DisposeElemMemoHdls (&memo);
+		return APIERR_MEMFULL;
+	}
+	API_ParagraphType& paragraph = (*memo.paragraphs)[0];
+	paragraph.from = 0;
+	paragraph.range = length;
+	paragraph.just = element.text.just;
+	paragraph.spacing = -1.0;
+	paragraph.tab = reinterpret_cast<API_TabType*> (BMpAllClear (sizeof (API_TabType)));
+	paragraph.run = reinterpret_cast<API_RunType*> (BMpAllClear (sizeof (API_RunType)));
+	paragraph.eolPos = reinterpret_cast<Int32*> (BMpAllClear (sizeof (Int32)));
+	if (paragraph.tab == nullptr || paragraph.run == nullptr || paragraph.eolPos == nullptr) {
+		ACAPI_DisposeElemMemoHdls (&memo);
+		return APIERR_MEMFULL;
+	}
+	paragraph.run[0].from = 0;
+	paragraph.run[0].range = length;
+	paragraph.run[0].pen = element.text.pen;
+	paragraph.run[0].faceBits = element.text.faceBits;
+	paragraph.run[0].font = element.text.font;
+	paragraph.run[0].effectBits = static_cast<unsigned short> (element.text.effectsBits);
+	paragraph.run[0].size = element.text.size;
+	paragraph.eolPos[0] = length - 1;
+
 	err = ACAPI_Element_Create (&element, &memo);
 	ACAPI_DisposeElemMemoHdls (&memo);
 	if (err == NoError) {
