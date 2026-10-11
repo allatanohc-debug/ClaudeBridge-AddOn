@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = []
+# dependencies = ["shapely>=2.0"]
 # ///
 """
 Tableau des surfaces - script Tapir (Archicad 28, mode normal)
@@ -545,6 +545,114 @@ def centroid(points: list[dict]) -> dict:
     return {"x": cx / (3 * a), "y": cy / (3 * a)}
 
 
+# --------------------------------------------------------- baguette magique ---
+BAGUETTE_TOL = 0.01             # m : petits jours entre murs/traits refermes (comme la baguette d'Archicad)
+
+
+def _own_guids() -> set[str]:
+    """Elements dessines par nos scripts (tableau, ombres) : ils ne delimitent pas les pieces."""
+    own = set()
+    for name in (MEMOIRE, "ombres.json"):
+        for guids in load_json(name).values():
+            if isinstance(guids, list):
+                own.update(guids)
+    return own
+
+
+def wall_body(detail: dict) -> list[list[tuple]]:
+    """Corps du mur en plan. Mur droit : rectangle plein (les baies de portes sont refermees,
+    comme pour la baguette magique qui s'arrete au droit des murs)."""
+    d = detail.get("details", {})
+    polys = [[(c["x"], c["y"]) for c in p.get("coordinates", [])] for p in detail.get("floorPlanPolygons", [])]
+    polys = [p for p in polys if len(p) >= 3]
+    beg, end = d.get("begCoordinate"), d.get("endCoordinate")
+    if not polys or not beg or not end or abs(d.get("arcAngle", 0.0) or 0.0) > 1e-6 or d.get("geometryType") == "Polygonal":
+        return polys
+    bx, by = beg["x"], beg["y"]
+    length = math.hypot(end["x"] - bx, end["y"] - by)
+    if length < 1e-6:
+        return polys
+    ux, uy = (end["x"] - bx) / length, (end["y"] - by) / length
+    nx, ny = -uy, ux
+    ss = [(x - bx) * ux + (y - by) * uy for p in polys for x, y in p]
+    ts = [(x - bx) * nx + (y - by) * ny for p in polys for x, y in p]
+    s1, s2, t1, t2 = min(ss), max(ss), min(ts), max(ts)
+    return [[(bx + s * ux + t * nx, by + s * uy + t * ny) for s, t in ((s1, t1), (s2, t1), (s2, t2), (s1, t2))]]
+
+
+class MagicWand:
+    """Trouve l'espace ferme autour d'un clic, delimite par les murs, poteaux, lignes et polylignes."""
+
+    def __init__(self, story: int):
+        from shapely.geometry import LineString, Polygon, box
+        from shapely.ops import unary_union
+
+        own = _own_guids()
+        shapes = []
+        for kind in ("Wall", "Column"):
+            elems = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+            if not elems:
+                continue
+            fields = ["floorIndex", "floorPlanPolygons"] + (["details"] if kind == "Wall" else [])
+            for detail in tapir("GetDetailsOfElements", {"elements": elems, "fields": fields}).get("detailsOfElements", []):
+                if "error" in detail or detail.get("floorIndex") != story:
+                    continue
+                for poly in (wall_body(detail) if kind == "Wall" else
+                             [[(c["x"], c["y"]) for c in p.get("coordinates", [])] for p in detail.get("floorPlanPolygons", [])]):
+                    if len(poly) >= 3:
+                        g = Polygon(poly).buffer(0)
+                        if not g.is_empty:
+                            shapes.append(g.buffer(BAGUETTE_TOL, join_style=2))
+        for kind in ("Line", "PolyLine"):
+            elems = [e for e in tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+                     if e["elementId"]["guid"] not in own]
+            if not elems:
+                continue
+            for detail in tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex", "details"]}
+                                ).get("detailsOfElements", []):
+                if "error" in detail or detail.get("floorIndex") != story:
+                    continue
+                d = detail.get("details", {})
+                if kind == "Line" and "begCoordinate" in d:
+                    pts = [(d["begCoordinate"]["x"], d["begCoordinate"]["y"]), (d["endCoordinate"]["x"], d["endCoordinate"]["y"])]
+                else:
+                    pts = [(c["x"], c["y"]) for c in d.get("coordinates", [])]
+                if len(pts) >= 2:
+                    shapes.append(LineString(pts).buffer(BAGUETTE_TOL, cap_style=3, join_style=2))
+        self.empty = not shapes
+        if self.empty:
+            self.spaces = []
+            return
+        obstacles = unary_union(shapes)
+        x1, y1, x2, y2 = obstacles.bounds
+        self.frame = box(x1 - 1, y1 - 1, x2 + 1, y2 + 1)
+        free = self.frame.difference(obstacles)
+        self.spaces = list(getattr(free, "geoms", [free]))
+
+    def face(self, point: dict):
+        """Polygone (shapely) de la piece cliquee, ou None si l'espace n'est pas ferme."""
+        from shapely.geometry import Point
+        p = Point(point["x"], point["y"])
+        for space in self.spaces:
+            if space.contains(p):
+                if space.exterior.intersects(self.frame.exterior):
+                    return None                       # l'espace "fuit" vers l'exterieur : pas ferme
+                room = space.buffer(BAGUETTE_TOL, join_style=2).simplify(0.001)
+                return room if room.geom_type == "Polygon" else None
+        return None
+
+
+def face_geometry(face) -> tuple[dict, dict]:
+    """Geometrie de zone Tapir (contour + trous) et position du tampon."""
+    outline = [{"x": x, "y": y} for x, y in face.exterior.coords]
+    holes = [{"polygonOutline": [{"x": x, "y": y} for x, y in ring.coords]} for ring in face.interiors]
+    geometry = {"polygonCoordinates": outline}
+    if holes:
+        geometry["holes"] = holes
+    inside = face.representative_point()
+    return geometry, {"x": inside.x, "y": inside.y}
+
+
 # ------------------------------------------------------------------ dessin ---
 class Drawing:
     def __init__(self, story: int, solid: dict | None):
@@ -765,37 +873,86 @@ def settings_window(settings: dict, apply) -> None:
         state["reperes"] = bool(show_guides.get())
 
     def by_clicks():
-        """Piece par piece : chaque clic cree la zone et met le tableau a jour aussitot."""
+        """Baguette magique : clic dans un espace ferme (murs, poteaux, lignes) -> contour trouve,
+        mis en surbrillance, puis Ajouter au tableau."""
         remember()
         story = tapir("GetStories").get("actStory", 0)
         number = next_zone_number(read_zones())
         created, missed = 0, 0
-        last = "Clique dans une piece fermee par des murs. Echap pour terminer."
+        last = "Clique dans un espace ferme. Echap pour terminer."
+        busy("Lecture des murs et des traits du plan...")
+        try:
+            wand = MagicWand(story)
+        except ImportError:
+            wand = None
+            print("(Baguette magique indisponible : module shapely absent. Detection d'Archicad utilisee.)")
+        try:
+            set_pens(state["couleur"], [])
+        except Exception:  # noqa: BLE001
+            pass
         root.withdraw()
         try:
             while True:
                 focus_archicad()
                 started = time.time()
-                point, reason = pick_point(f"Piece {number} : clique dedans (Echap pour terminer)")
+                point, reason = pick_point(f"Piece {number} : clic dans l'espace (Echap pour terminer)")
                 if point is None:
                     if created == 0 and missed == 0 and time.time() - started < 1.0:
                         last = ("Archicad n'a pas pu attendre le clic. Mets la fenetre du plan au premier plan "
                                 f"puis recommence. ({reason})")
                     break
-                name = f"{base_name.get()} {number}"
-                if ask_name.get():
-                    root.deiconify()
-                    answer = ask_room_name(number, name)
-                    root.withdraw()
-                    if answer is None:
+                face = wand.face(point) if wand and not wand.empty else None
+                if face is None:
+                    # a defaut : detection automatique d'Archicad (murs uniquement)
+                    name = f"{base_name.get()} {number}"
+                    if ask_name.get():
+                        root.deiconify()
+                        answer = ask_room_name(number, name)
+                        root.withdraw()
+                        if answer is None:
+                            continue
+                        name = answer.strip() or name
+                    error = new_zone(story, name, number, chosen_category(), {"referencePosition": point}, point)
+                    if error:
+                        missed += 1
+                        last = "Espace pas ferme a cet endroit (murs ou traits ouverts). Clique ailleurs ou Echap."
+                        print(last)
                         continue
-                    name = answer.strip() or name
-                error = new_zone(story, name, number, chosen_category(), {"referencePosition": point}, point)
-                if error:
-                    missed += 1
-                    last = f"Clic hors d'une piece fermee par des murs ({error}). Clique ailleurs ou Echap."
-                    print(last)
-                    continue
+                else:
+                    # apercu en surbrillance du contour trouve
+                    rings = [list(face.exterior.coords)] + [list(r.coords) for r in face.interiors]
+                    temp = []
+                    try:
+                        answer = tapir("CreatePolylines", {"polylinesData": [{
+                            "floorInd": story, "linePenIndex": STYLO_CONTOUR, "penWeightMm": TRAIT_CONTOUR_MM,
+                            "coordinates": [{"x": x, "y": y} for x, y in ring]} for ring in rings]})
+                        temp = [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                    except Exception:  # noqa: BLE001
+                        pass
+                    highlight(temp)
+                    root.deiconify()
+                    choice, name = name_dialog(f"Piece {number} trouvee - {format_area(face.area)} m2",
+                                               "Espace trouve. Nom de la piece :", f"{base_name.get()} {number}",
+                                               [("Terminer", "terminer"), ("Ignorer ce clic", "ignorer"),
+                                                ("Ajouter au tableau", "ajouter")])
+                    root.withdraw()
+                    highlight([])
+                    if temp:
+                        try:
+                            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if choice == "terminer":
+                        break
+                    if choice == "ignorer":
+                        continue
+                    geometry, stamp = face_geometry(face)
+                    error = new_zone(story, name, number, chosen_category(), geometry, stamp)
+                    if error:
+                        missed += 1
+                        last = f"Zone impossible ({error})."
+                        print(last)
+                        continue
                 created += 1
                 number += 1
                 last = f"{name} creee. " + apply("dessiner", dict(collect()))   # tableau mis a jour tout de suite
@@ -1080,7 +1237,7 @@ def settings_window(settings: dict, apply) -> None:
 
     zbtn = ttk.Frame(zbox)
     zbtn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
-    ttk.Button(zbtn, text="Cliquer dans les pieces (une par une)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(zbtn, text="Baguette magique (clic dans la piece)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(zbtn, text="Dessiner une piece (contour)...", command=by_drawing).grid(row=0, column=1, padx=6)
     ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=1, column=0, padx=(0, 6), pady=(6, 0), sticky="we")
     ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=1, column=1, padx=6, pady=(6, 0), sticky="we")
