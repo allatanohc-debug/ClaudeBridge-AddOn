@@ -13,9 +13,9 @@ Dessine a droite du plan de l'etage courant un tableau quadrille :
 avec le total en bas. Relancer le script remplace le tableau precedent.
 
 Couleur : Tapir ne permet pas encore de colorer un remplissage en RGB exact.
-Le script prend, pour chaque zone, le stylo du jeu de stylos actif dont la
-couleur est la plus proche de la couleur de la zone, et ne reutilise jamais
-deux fois le meme stylo (chaque zone a sa propre couleur).
+Le script reserve donc les derniers stylos du jeu de stylos actif (255, 254, ...)
+et leur donne la couleur exacte de chaque zone. A eviter pour d'autres elements.
+Si ce n'est pas possible, il prend le stylo le plus proche (couleur approchee).
 """
 
 import argparse
@@ -38,8 +38,9 @@ COL_NOM_MM = 17.0            # debut de la colonne Zone
 COL_SEPARATION_MM = 63.0     # trait vertical entre Zone et Surface
 COL_SURFACE_MM = 92.0        # bord droit de la colonne Surface
 
+STYLOS_RESERVES = 40     # stylos 255, 254, ... recolores aux couleurs des zones (max de zones)
 PORT = 19723
-DIAGNOSTIC = True        # ecrit un journal et l'ouvre dans le Bloc-notes a la fin
+DIAGNOSTIC = False       # True : details en plus, journal ouvert dans le Bloc-notes a la fin
 
 
 # ------------------------------------------------------------ communication ---
@@ -197,24 +198,70 @@ def fill_colors(zones: list[dict]) -> None:
         zone["color"], zone["category_name"] = colors.get(zone["category"], ((0.8, 0.8, 0.8), "?"))
 
 
-def active_pens() -> list[tuple[int, tuple]]:
+def make_colors_unique(zones: list[dict]) -> None:
+    """Deux zones de meme couleur : la suivante est eclaircie ou assombrie (une couleur par zone)."""
+    seen = []
+    for zone in zones:
+        base, color, step = zone["color"], zone["color"], 0
+        while any(distance(color, other) < 0.05 for other in seen):
+            step += 1
+            amount = 0.15 * ((step + 1) // 2)
+            if step % 2:   # eclaircir
+                color = tuple(min(1.0, c + (1.0 - c) * amount) for c in base)
+            else:          # assombrir
+                color = tuple(max(0.0, c * (1.0 - amount)) for c in base)
+            if step > 12:
+                break
+        zone["color"] = color
+        seen.append(color)
+
+
+def active_pen_table() -> dict:
     tables = tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
     ids = [{"attributeId": t["attributeId"]} for t in tables]
     details = tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}).get("penTables", [])
+    details = [t for t in details if "error" not in t]
     active = next((t for t in details if t.get("isActiveForModel")), None)
     if active is None:
         print("  ! aucun jeu de stylos marque actif : premier jeu utilise")
         active = details[0] if details else {}
     print(f"Jeu de stylos utilise : {active.get('name', '?')}")
-    return [(p["index"], rgb(p["color"])) for p in active.get("pens", []) if p.get("index", 0) > 0]
+    return active
 
 
-def assign_pens(zones: list[dict], pens: list[tuple[int, tuple]]) -> None:
+def reserve_pens(zones: list[dict], table: dict) -> bool:
+    """Donne a chaque zone un stylo reserve (255, 254, ...) recolore a la couleur exacte de la zone."""
+    if not table or len(zones) > STYLOS_RESERVES:
+        return False
+    widths = {p["index"]: p.get("width", 0.1) for p in table.get("pens", [])}
+    pens = []
+    for i, zone in enumerate(zones):
+        index = 255 - i
+        zone["pen"] = index
+        red, green, blue = zone["color"]
+        pens.append({"index": index, "color": {"red": red, "green": green, "blue": blue},
+                     "width": widths.get(index, 0.1), "description": f"Tableau des surfaces {zone['number']}"[:120]})
+    try:
+        answer = tapir("CreatePenTables", {"overwriteExisting": True, "penTableDataArray": [{
+            "attributeId": table["attributeId"], "name": table["name"], "pens": pens}]})
+        result = answer.get("attributeIds", [{}])[0]
+        if "error" in result:
+            raise RuntimeError(result["error"])
+    except Exception as error:  # noqa: BLE001
+        print(f"  ! stylos reserves impossibles ({error}) : couleurs approchees")
+        return False
+    for zone in zones:
+        zone["pen_color"] = zone["color"]
+    return True
+
+
+def nearest_pens(zones: list[dict], table: dict) -> None:
+    pens = [(p["index"], rgb(p["color"])) for p in table.get("pens", []) if p.get("index", 0) > 0]
     used = set()
     for zone in zones:
-        candidates = [(distance(zone["color"], c), i) for i, c in pens if i not in used] or [(0, 1)]
-        _, best = min(candidates)
-        zone["pen"] = best
+        candidates = [(distance(zone["color"], c), i, c) for i, c in pens if i not in used] or [(0, 1, (0, 0, 0))]
+        _, best, color = min(candidates)
+        zone["pen"], zone["pen_color"] = best, color
         used.add(best)
 
 
@@ -288,7 +335,7 @@ def open_journal(journal: Journal) -> None:
         path = Path(os.environ.get("APPDATA", Path.home())) / "ClaudeBridge" / "TableauSurfaces_journal.txt"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("".join(journal.lines), encoding="utf-8")
-        if os.name == "nt":
+        if DIAGNOSTIC and os.name == "nt":
             os.startfile(str(path))  # noqa: S606
     except Exception:  # noqa: BLE001
         pass
@@ -313,12 +360,13 @@ def main() -> int:
     zones.sort(key=lambda z: (z["number"], z["name"]))
     if DIAGNOSTIC:
         dump_zone_color_properties(zones)
-    pens = active_pens()
-    assign_pens(zones, pens)
-    pen_colors = dict(pens)
+    make_colors_unique(zones)
+    table = active_pen_table()
+    if not reserve_pens(zones, table):
+        nearest_pens(zones, table)
     for z in zones:
         print(f"  {z['number']} {z['name']} | categorie {z['category_name']} | couleur {hexa(z['color'])}"
-              f" -> stylo {z['pen']} {hexa(pen_colors.get(z['pen'], (0, 0, 0)))}")
+              f" -> stylo {z['pen']} {hexa(z['pen_color'])}")
     solid = solid_fill_id()
 
     # Supprimer le tableau precedent de cet etage
@@ -416,6 +464,5 @@ if __name__ == "__main__":
         print(f"Erreur : {error}")
     finally:
         sys.stdout = journal.stream
-        if DIAGNOSTIC:
-            open_journal(journal)
+        open_journal(journal)  # journal toujours ecrit dans %APPDATA%\\ClaudeBridge
     sys.exit(code)
