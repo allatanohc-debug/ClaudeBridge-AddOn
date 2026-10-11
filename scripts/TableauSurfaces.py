@@ -1100,25 +1100,19 @@ def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> s
     width = columns * col_w
     x0 = min(xs) + legend_offset[0]
     top = min(ys) - NOM_ECART_MM * mm + legend_offset[1]
-    band_bottom = top - NOM_BANDEAU_MM * mm
-    bottom = band_bottom - rows * NOM_LIGNE_MM * mm - 2 * mm
-    band = [{"x": x0, "y": band_bottom}, {"x": x0 + width, "y": band_bottom},
-            {"x": x0 + width, "y": top}, {"x": x0, "y": top}]
-    draw.hatch(band, STYLO_LEGENDE)
-    draw.text(settings["titre"], x0 + width / 2, (top + band_bottom) / 2, "MiddleMiddle", bold=True, size=3.0,
-              pen=STYLO_BLANC)
+    # legende libre (pas de tableau) : titre, puis "pastille + nom" en colonnes
+    draw.text(settings["titre"], x0, top, "LeftTop", bold=True, size=3.2, pen=STYLO_LEGENDE)
+    first_row = top - 3.2 * mm - 3.5 * mm
+    r_leg = 5.0 * mm / 2
     for i, z in enumerate(zones):
         col, row = divmod(i, rows)
-        cx = x0 + col * col_w + 5 * mm
-        cy = band_bottom - 1 * mm - (row + 0.5) * NOM_LIGNE_MM * mm
+        cx = x0 + col * col_w + r_leg
+        cy = first_row - row * NOM_LIGNE_MM * mm
         draw.pastille({"x": cx, "y": cy}, z["label"], diameter_mm=5.0, text_mm=2.0)
-        draw.text(z["name"] or "Piece", cx + 4.5 * mm, cy, "LeftMiddle")
+        draw.text(z["name"] or "Piece", cx + r_leg + 2 * mm, cy, "LeftMiddle")
         if settings["surfaces"]:
-            draw.text(format_area(z["area"]) + UNITE, x0 + (col + 1) * col_w - 2 * mm, cy, "RightMiddle")
-    for c in range(1, columns):
-        draw.line([{"x": x0 + c * col_w, "y": band_bottom}, {"x": x0 + c * col_w, "y": bottom}])
-    draw.line([{"x": x0, "y": top}, {"x": x0 + width, "y": top}, {"x": x0 + width, "y": bottom},
-               {"x": x0, "y": bottom}, {"x": x0, "y": top}], 0.35)
+            draw.text(format_area(z["area"]) + UNITE, x0 + (col + 1) * col_w - 4 * mm, cy, "RightMiddle")
+    legend_origin = [x0, first_row - r_leg]          # coin bas-gauche de la 1re pastille (repere de position)
     elements, hatch_guids = draw.flush()
     nom_group(elements)
     all_guids += [e["elementId"]["guid"] for e in elements]
@@ -1127,7 +1121,7 @@ def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> s
 
     memory[key] = all_guids
     positions[key] = {"legende_ref": hatch_guids[0] if hatch_guids else None,
-                      "legende_origine": [x0, band_bottom], "legende_decalage": list(legend_offset),
+                      "legende_origine": legend_origin, "legende_decalage": list(legend_offset),
                       "pastilles": pastilles, "ordre": [z["guid"] for z in zones],
                       "numeros": numbers, "integree": False}
     save_json(NOM_MEMOIRE, memory)
@@ -1668,7 +1662,7 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Label(nbox, text="Titre de la legende").grid(row=2, column=0, sticky="w", pady=3)
     nom_title = tk.StringVar(value=nom_state["titre"])
     ttk.Entry(nbox, textvariable=nom_title, width=40).grid(row=2, column=1, columnspan=2, sticky="w", padx=8)
-    ttk.Label(nbox, text="Couleur du bandeau").grid(row=3, column=0, sticky="w", pady=3)
+    ttk.Label(nbox, text="Couleur du titre").grid(row=3, column=0, sticky="w", pady=3)
     nom_swatch = tk.Label(nbox, width=6, bg=to_hex(nom_state["couleur"]), relief="groove")
     nom_swatch.grid(row=3, column=1, sticky="w", padx=8)
 
