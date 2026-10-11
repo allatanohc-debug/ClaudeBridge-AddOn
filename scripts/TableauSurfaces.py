@@ -60,6 +60,7 @@ TITRE_ANNEXES = "SURFACES ANNEXES"
 TEXTE_TOTAL = "ToTaL"
 MOTS_ANNEXES = "terrasse, balcon, loggia, garage, parking, carport, veranda, véranda, cour, jardin, patio, porche, auvent, annexe, local technique"
 
+UNITE = " m\u00b2"               # unite ecrite apres chaque surface ("" pour ne rien mettre)
 COL_NOM_MM = 50.0               # largeur de la colonne des noms (mm papier)
 COL_SURFACE_MM = 22.0           # largeur de la colonne des surfaces (mm papier)
 BANDEAU_MM = 6.0                # hauteur du bandeau de titre
@@ -569,7 +570,7 @@ class Drawing:
                     self.swatch(x0 + pad, y + row * 0.2, x0 + pad + CASE_MM * mm, y + row * 0.8, zone["pen"])
                     text_x = x0 + pad * 2 + CASE_MM * mm
                 self.text(label, text_x, y + row / 2, "L")
-                self.text(format_area(zone["area"]), value_x, y + row / 2, "M")
+                self.text(format_area(zone["area"]) + UNITE, value_x, y + row / 2, "M")
                 total += zone["area"]
                 row_lines.append(y)
         body_bottom = y
@@ -578,7 +579,7 @@ class Drawing:
                 self.line(x0, line_y, x0 + width, line_y)
         y -= row * 1.1
         self.text(total_label, x0 + COL_NOM_MM * mm / 2, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
-        self.text(format_area(total), value_x, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
+        self.text(format_area(total) + UNITE, value_x, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
 
         self.line(x0, band_bottom, x0 + width, band_bottom)                       # sous le bandeau
         self.line(x0, body_bottom, x0 + width, body_bottom, TRAIT_CADRE_MM)       # au-dessus du total
