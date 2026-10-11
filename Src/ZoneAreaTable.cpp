@@ -79,7 +79,8 @@ GS::UniString FormatArea (double area)
 {
 	GS::UniString text = GS::UniString::Printf ("%.2f", area);
 	text.ReplaceAll (GS::UniString ("."), GS::UniString (","));
-	text += Utf16 (u" m²");
+	// "m2" en ASCII : le "2" est mis en exposant par CreateText (affiche m²).
+	text += GS::UniString (" m2");
 	return text;
 }
 
@@ -288,7 +289,7 @@ GSErrCode CreateColorRectangle (double x, double y, double width, double height,
 }
 
 GSErrCode CreateText (const GS::UniString& content, const API_Coord& location, double sizeMm,
-					  bool alignRight, bool bold, short story)
+					  bool alignRight, bool bold, short story, bool superscriptLastChar = false)
 {
 	API_Element element = {};
 	element.header.type = API_TextID;
@@ -309,9 +310,13 @@ GSErrCode CreateText (const GS::UniString& content, const API_Coord& location, d
 	element.text.height = 0.0;
 	element.text.nLine = 1;
 
-	// Contenu + un paragraphe et un "run" explicites (comme Tapir) : sans eux,
-	// Archicad 28 lit mal les caracteres non ASCII (m² affiche "mÂ²").
+	// Contenu + un paragraphe et des "runs" explicites (comme Tapir).
+	// Si superscriptLastChar : le dernier caractere est en exposant (m2 -> m²).
 	const Int32 length = static_cast<Int32> (content.GetLength ());
+	const bool useSuperscript = superscriptLastChar && length >= 2;
+	const Int32 runCount = useSuperscript ? 2 : 1;
+	element.text.multiStyle = useSuperscript;
+
 	API_ElementMemo memo = {};
 	memo.textContent = new GS::UniString (content);
 	memo.paragraphs = reinterpret_cast<API_ParagraphType**> (BMhAllClear (sizeof (API_ParagraphType)));
@@ -325,19 +330,30 @@ GSErrCode CreateText (const GS::UniString& content, const API_Coord& location, d
 	paragraph.just = element.text.just;
 	paragraph.spacing = -1.0;
 	paragraph.tab = reinterpret_cast<API_TabType*> (BMpAllClear (sizeof (API_TabType)));
-	paragraph.run = reinterpret_cast<API_RunType*> (BMpAllClear (sizeof (API_RunType)));
+	paragraph.run = reinterpret_cast<API_RunType*> (BMpAllClear (runCount * sizeof (API_RunType)));
 	paragraph.eolPos = reinterpret_cast<Int32*> (BMpAllClear (sizeof (Int32)));
 	if (paragraph.tab == nullptr || paragraph.run == nullptr || paragraph.eolPos == nullptr) {
 		ACAPI_DisposeElemMemoHdls (&memo);
 		return APIERR_MEMFULL;
 	}
-	paragraph.run[0].from = 0;
-	paragraph.run[0].range = length;
-	paragraph.run[0].pen = element.text.pen;
-	paragraph.run[0].faceBits = element.text.faceBits;
-	paragraph.run[0].font = element.text.font;
-	paragraph.run[0].effectBits = static_cast<unsigned short> (element.text.effectsBits);
-	paragraph.run[0].size = element.text.size;
+	for (Int32 r = 0; r < runCount; ++r) {
+		API_RunType& run = paragraph.run[r];
+		run.pen = element.text.pen;
+		run.faceBits = element.text.faceBits;
+		run.font = element.text.font;
+		run.effectBits = static_cast<unsigned short> (element.text.effectsBits);
+		run.size = element.text.size;
+	}
+	if (useSuperscript) {
+		paragraph.run[0].from = 0;
+		paragraph.run[0].range = length - 1;
+		paragraph.run[1].from = length - 1;
+		paragraph.run[1].range = 1;
+		paragraph.run[1].effectBits = static_cast<unsigned short> (paragraph.run[1].effectBits | APIEffect_SuperScript);
+	} else {
+		paragraph.run[0].from = 0;
+		paragraph.run[0].range = length;
+	}
 	paragraph.eolPos[0] = length - 1;
 
 	err = ACAPI_Element_Create (&element, &memo);
@@ -535,7 +551,7 @@ ZoneAreaTableResult CreateZoneAreaTable ()
 				label = row.number + GS::UniString (" ") + row.name;
 			}
 			check (CreateText (label, API_Coord { x0 + NameLeftMm * mm, rowBottom + textOffset }, TextSizeMm, false, false, story));
-			check (CreateText (FormatArea (row.area), API_Coord { x0 + AreaRightMm * mm, rowBottom + textOffset }, TextSizeMm, true, false, story));
+			check (CreateText (FormatArea (row.area), API_Coord { x0 + AreaRightMm * mm, rowBottom + textOffset }, TextSizeMm, true, false, story, true));
 
 			// Trait horizontal sous chaque zone (la derniere est fermee par le trait du total)
 			if (i < rowCount - 1) {
@@ -547,7 +563,7 @@ ZoneAreaTableResult CreateZoneAreaTable ()
 		const double totalTop = tableBottom + rowH;
 		check (CreateLine (API_Coord { x0, totalTop }, API_Coord { x0 + width, totalTop }, story));
 		check (CreateText (GS::UniString ("Total"), API_Coord { x0 + NameLeftMm * mm, tableBottom + textOffset }, TextSizeMm, false, true, story));
-		check (CreateText (FormatArea (totalArea), API_Coord { x0 + AreaRightMm * mm, tableBottom + textOffset }, TextSizeMm, true, true, story));
+		check (CreateText (FormatArea (totalArea), API_Coord { x0 + AreaRightMm * mm, tableBottom + textOffset }, TextSizeMm, true, true, story, true));
 
 		// Trait vertical entre la colonne des zones et celle des surfaces
 		const double separatorX = x0 + ColumnSeparatorMm * mm;
@@ -572,6 +588,6 @@ ZoneAreaTableResult CreateZoneAreaTable ()
 
 	result.success = true;
 	result.message = Utf16 (u"Tableau des surfaces créé : ") + GS::UniString::Printf ("%d", static_cast<int> (rowCount)) +
-					 Utf16 (u" zone(s), total ") + FormatArea (totalArea) + GS::UniString (".");
+					 Utf16 (u" zone(s), total ") + FormatArea (totalArea) + GS::UniString (" (Claude Bridge " ADDON_VERSION ").");
 	return result;
 }

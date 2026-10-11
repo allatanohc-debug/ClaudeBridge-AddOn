@@ -28,7 +28,7 @@ GenerateAddOnProject (CMakeTarget ${AC_VERSION} "${AC_API_DEVKIT_DIR}" ${AddOnSo
 
 # Claude Bridge : les avertissements du compilateur ne bloquent pas la compilation.
 if (WIN32)
-    target_compile_options (CMakeTarget PUBLIC /WX-)
+    target_compile_options (CMakeTarget PUBLIC /WX- /utf-8)
 else ()
     target_compile_options (CMakeTarget PUBLIC -Wno-error)
 endif ()
