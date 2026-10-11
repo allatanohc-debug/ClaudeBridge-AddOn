@@ -775,6 +775,33 @@ class Drawing:
 
 
 # -------------------------------------------------------------------- run ---
+def plan_extent(story: int, zones: list[dict]) -> tuple[float, float, float, float]:
+    """Emprise de TOUT le dessin de l'etage (murs, poteaux, dalles, objets, zones), pas seulement des
+    pieces deja creees : le tableau et la legende se posent hors du plan et ne bougent plus quand
+    on ajoute des pieces."""
+    xs = [p["x"] for z in zones for p in z["outline"]]
+    ys = [p["y"] for z in zones for p in z["outline"]]
+    for kind in ("Wall", "Column", "Slab", "Object", "Window", "Door"):
+        try:
+            elems = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+            if not elems:
+                continue
+            floors = tapir("GetDetailsOfElements", {"elements": elems, "fields": ["floorIndex"]}).get("detailsOfElements", [])
+            mine = [e for e, d in zip(elems, floors) if isinstance(d, dict) and d.get("floorIndex") == story]
+            if not mine:
+                continue
+            for item in tapir("Get3DBoundingBoxes", {"elements": mine}).get("boundingBoxes3D", []):
+                box = item.get("boundingBox3D") if isinstance(item, dict) else None
+                if box:
+                    xs += [box["xMin"], box["xMax"]]
+                    ys += [box["yMin"], box["yMax"]]
+        except Exception:  # noqa: BLE001
+            continue
+    if not xs:
+        return 0.0, 0.0, 0.0, 0.0
+    return min(xs), min(ys), max(xs), max(ys)
+
+
 def group_by_story(zones: list[dict]) -> list[tuple[str, list[dict]]]:
     stories = sorted({z["story"] for z in zones})
     return [(story_label(s), sorted((z for z in zones if z["story"] == s),
@@ -824,11 +851,10 @@ def run(action: str, settings: dict) -> str:
     drawing = Drawing(current, solid_fill_id())
 
     plan = [z for z in zones if z["story"] == current] or zones
-    xs = [p["x"] for z in plan for p in z["outline"]]
-    ys = [p["y"] for z in plan for p in z["outline"]]
+    _, _, x_max, y_max = plan_extent(current, plan)
     mm = drawing.mm
-    x0 = max(xs) + ECART_PLAN_MM * mm
-    top = max(ys)
+    x0 = x_max + ECART_PLAN_MM * mm
+    top = y_max
 
     if habitable:
         top = drawing.table(x0, top, settings["titre_habitables"], group_by_story(habitable),
@@ -1122,14 +1148,13 @@ def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> s
 
     # legende en bas du plan (un groupe, deplacable)
     mm = draw.mm
-    xs = [p["x"] for z in zones for p in z["outline"]]
-    ys = [p["y"] for z in zones for p in z["outline"]]
+    plan_x_min, plan_y_min, _, _ = plan_extent(story, zones)   # sous TOUT le plan, pas sous les seules pieces
     columns = max(1, math.ceil(len(zones) / NOM_LIGNES_MAX))
     rows = math.ceil(len(zones) / columns)
     col_w = (NOM_COLONNE_MM + (22 if settings["surfaces"] else 0)) * mm
     width = columns * col_w
-    x0 = min(xs) + legend_offset[0]
-    top = min(ys) - NOM_ECART_MM * mm + legend_offset[1]
+    x0 = plan_x_min + legend_offset[0]
+    top = plan_y_min - NOM_ECART_MM * mm + legend_offset[1]
     # legende libre, style plan de presentation :
     #   Plan du rez-de-chaussee            (titre gris)
     #   1. Entree           7. Terrasse     (numero en couleur, nom en gris, 2 colonnes ou plus)
