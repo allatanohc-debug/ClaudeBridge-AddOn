@@ -40,34 +40,61 @@ def ellipse(cx, cy, rx, ry, angle=0.0, n=36):
             for t in (2 * math.pi * k / n for k in range(n))]
 
 
+def capsule(x1, y1, x2, y2, r, n=10):
+    """Membre arrondi (bras, jambe, pied) entre deux points."""
+    ang = math.atan2(y2 - y1, x2 - x1)
+    pts = []
+    for k in range(n + 1):                       # demi-cercle au bout 2
+        t = ang - math.pi / 2 + math.pi * k / n
+        pts.append((x2 + r * math.cos(t), y2 + r * math.sin(t)))
+    for k in range(n + 1):                       # demi-cercle au bout 1
+        t = ang + math.pi / 2 + math.pi * k / n
+        pts.append((x1 + r * math.cos(t), y1 + r * math.sin(t)))
+    return pts
+
+
+def mirror(shape):
+    return [(-x, y) for x, y in reversed(shape)]
+
+
 def silhouette(pose: str):
-    """Renvoie (formes du corps a fusionner, contours de detail a tracer par-dessus : la tete)."""
-    head = ellipse(0, 0.03, 0.09, 0.105)
-    shoulders = ellipse(0, 0, 0.23, 0.12)
+    """Renvoie (formes fusionnees = contour exterieur, formes de detail dessinees par-dessus).
+
+    Style "trait blanc" des plans de presentation : silhouette blanche, contour fin, avec les bras,
+    les mains et la tete dessines par-dessus le corps pour lire le geste."""
+    head = ellipse(0, 0.035, 0.092, 0.108)
+    hair = ellipse(0, 0.005, 0.094, 0.08)                    # masse des cheveux vers l'arriere
+    shoulders = ellipse(0, 0, 0.22, 0.115)
+    hand = lambda x, y: ellipse(x, y, 0.033, 0.033, n=16)   # noqa: E731
     if pose == "Qui marche":
-        body = [ellipse(0, 0, 0.235, 0.11, math.radians(-10)),
-                ellipse(-0.20, 0.07, 0.055, 0.12, math.radians(-20)),   # bras gauche vers l'avant
-                ellipse(0.20, -0.06, 0.055, 0.12, math.radians(-20)),   # bras droit vers l'arriere
-                ellipse(-0.07, 0.16, 0.045, 0.085)]                      # pied avant
+        arm_f = capsule(-0.19, 0.01, -0.21, 0.17, 0.04)
+        arm_b = capsule(0.19, -0.01, 0.20, -0.14, 0.04)
+        body = [ellipse(0, 0, 0.22, 0.115, math.radians(-8)),
+                capsule(-0.08, 0.06, -0.09, 0.27, 0.042),          # pied avant
+                capsule(0.08, -0.04, 0.09, -0.19, 0.042)]          # pied arriere
+        details = [arm_f, arm_b, hand(-0.212, 0.20), hand(0.202, -0.17), head, hair]
     elif pose == "Assis":
-        body = [shoulders,
-                ellipse(-0.10, 0.25, 0.08, 0.20), ellipse(0.10, 0.25, 0.08, 0.20),      # cuisses
-                ellipse(-0.22, 0.09, 0.05, 0.13), ellipse(0.22, 0.09, 0.05, 0.13)]      # bras poses
+        arm_l = capsule(-0.19, 0.0, -0.15, 0.22, 0.04)
+        body = [shoulders, capsule(-0.09, 0.04, -0.10, 0.40, 0.075), capsule(0.09, 0.04, 0.10, 0.40, 0.075),
+                capsule(-0.10, 0.40, -0.11, 0.53, 0.045), capsule(0.10, 0.40, 0.11, 0.53, 0.045)]
+        details = [arm_l, mirror(arm_l), hand(-0.145, 0.25), hand(0.145, 0.25), head, hair]
     elif pose.startswith("Au bureau"):
-        body = [shoulders,
-                ellipse(-0.10, 0.25, 0.08, 0.20), ellipse(0.10, 0.25, 0.08, 0.20),
-                ellipse(-0.22, 0.07, 0.05, 0.11), ellipse(0.22, 0.07, 0.05, 0.11),      # bras
-                ellipse(-0.15, 0.25, 0.045, 0.13, math.radians(-25)),                  # avant-bras sur la table
-                ellipse(0.15, 0.25, 0.045, 0.13, math.radians(25))]
+        arm_l = capsule(-0.19, 0.0, -0.13, 0.27, 0.04)
+        body = [shoulders, capsule(-0.09, 0.04, -0.10, 0.38, 0.075), capsule(0.09, 0.04, 0.10, 0.38, 0.075)]
+        details = [arm_l, mirror(arm_l), hand(-0.12, 0.30), hand(0.12, 0.30), head, hair]
     elif pose == "Couche":
-        head = ellipse(0, 0.66, 0.09, 0.105)
-        body = [ellipse(0, 0.50, 0.23, 0.13), ellipse(0, 0.25, 0.20, 0.33),
-                ellipse(-0.215, 0.30, 0.05, 0.24), ellipse(0.215, 0.30, 0.05, 0.24),
-                ellipse(-0.08, -0.33, 0.075, 0.32), ellipse(0.08, -0.33, 0.075, 0.32)]
+        head = ellipse(0, 0.72, 0.085, 0.10)
+        hair = ellipse(0, 0.76, 0.09, 0.07)
+        arm_l = capsule(-0.21, 0.53, -0.23, 0.15, 0.04)
+        body = [ellipse(0, 0.53, 0.22, 0.11), capsule(0, 0.50, 0, 0.05, 0.17),
+                capsule(-0.08, 0.05, -0.10, -0.60, 0.07), capsule(0.08, 0.05, 0.10, -0.60, 0.07),
+                capsule(-0.10, -0.60, -0.13, -0.70, 0.042), capsule(0.10, -0.60, 0.13, -0.70, 0.042)]
+        details = [arm_l, mirror(arm_l), hand(-0.232, 0.11), hand(0.232, 0.11), head, hair]
     else:   # debout
-        body = [ellipse(0, 0, 0.24, 0.11),
-                ellipse(-0.215, -0.01, 0.06, 0.10), ellipse(0.215, -0.01, 0.06, 0.10)]  # bras le long du corps
-    return body, [head]
+        arm_l = capsule(-0.20, 0.01, -0.215, -0.06, 0.04)
+        body = [shoulders, capsule(-0.08, 0.0, -0.09, 0.15, 0.042), capsule(0.08, 0.0, 0.09, 0.15, 0.042)]
+        details = [arm_l, mirror(arm_l), head, hair]
+    return body, details
 
 
 def place(points, x, y, angle):
@@ -83,23 +110,29 @@ def person_elements(pose: str, x: float, y: float, angle: float, story: int, sol
     body, details = silhouette(pose)
     body = [[(px * scale, py * scale) for px, py in shape] for shape in body]
     details = [[(px * scale, py * scale) for px, py in shape] for shape in details]
-    outline = unary_union([Polygon(b) for b in body] + [Polygon(d) for d in details])
-    shapes = list(getattr(outline, "geoms", [outline]))
+    outline = unary_union([Polygon(b).buffer(0) for b in body + details])
+    rings = [list(g.exterior.coords)[:-1] for g in getattr(outline, "geoms", [outline])]
     hatches, lines = [], []
-    for shape in shapes:
-        ring = place(list(shape.exterior.coords)[:-1], x, y, angle)
-        hatch = {"floorInd": story, "showArea": False, "coordinates": ring,
+
+    def white(points):
+        hatch = {"floorInd": story, "showArea": False, "coordinates": place(points, x, y, angle),
                  "fillPenIndex": T.STYLO_BLANC, "fillBackgroundPenIndex": T.STYLO_BLANC,
                  "contourPenIndex": STYLO_CONTOUR_PERSO}
         if solid:
             hatch["fillId"] = solid
         hatches.append(hatch)
-        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": TRAIT_MM,
+
+    def stroke(points, weight):
+        ring = place(points, x, y, angle)
+        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": weight,
                       "coordinates": ring + [ring[0]]})
-    for d in details:                       # la tete dessinee par-dessus les epaules
-        ring = place(d, x, y, angle)
-        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": TRAIT_MM,
-                      "coordinates": ring + [ring[0]]})
+
+    for ring in rings:                     # silhouette blanche + contour exterieur un peu plus epais
+        white(ring)
+        stroke(ring, TRAIT_MM * 1.4)
+    for d in details:                      # bras, mains, tete, cheveux par-dessus (lecture du geste)
+        white(d)
+        stroke(d, TRAIT_MM)
     return hatches, lines
 
 
