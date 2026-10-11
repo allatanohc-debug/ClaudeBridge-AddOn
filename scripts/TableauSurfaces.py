@@ -101,23 +101,24 @@ MEMOIRE = "tableaux_surfaces.json"
 REGLAGES = "tableau_surfaces_reglages.json"
 
 # --- nomenclature (pastilles numerotees + legende en bas du plan)
-NOM_COULEUR = (0.93, 0.11, 0.14)  # rouge par defaut, comme le tableau des surfaces
-NOM_TITRE = "LÉGENDE"
+NOM_COULEUR = (0.62, 0.10, 0.10)  # rouge sombre : cercles et numeros (style plan de presentation)
+NOM_TITRE = ""                    # vide = automatique : "Plan du rez-de-chaussee", "Plan du R+1"...
 NOM_PASTILLE_MM = 7.0             # diametre de la pastille (mm papier)
-NOM_TEXTE_PASTILLE_MM = 2.6       # hauteur du numero dans la pastille
+NOM_TEXTE_PASTILLE_MM = 3.0       # hauteur du numero dans la pastille
 NOM_LIGNE_MM = 6.0                # hauteur d'une ligne de la legende
 NOM_COLONNE_MM = 55.0             # largeur d'une colonne de la legende
-NOM_LIGNES_MAX = 8                # lignes par colonne avant de passer a la colonne suivante
+NOM_LIGNES_MAX = 6                # lignes par colonne avant de passer a la colonne suivante
 NOM_BANDEAU_MM = 6.0
 NOM_TEXTE_MM = 2.5
 NOM_ECART_MM = 15.0          # espace entre le bas du plan et la legende
 STYLO_LEGENDE = 209
+STYLO_GRIS = 208
 NOM_MEMOIRE = "nomenclature.json"          # guids dessines (exclus de la baguette magique)
 NOM_POSITIONS = "nomenclature_positions.json"
 NOM_REGLAGES = "nomenclature_reglages.json"
 NOM_ORDRES = ("Automatique (sens de lecture)", "En cliquant les pieces dans l'ordre")
 NOM_LEGENDES = ("Separee, en bas du plan (deplacable)", "Integree au tableau des surfaces (colonne N°)")
-NOM_FORMATS = ("01, 02, 03...", "Par niveau : 001 (RDC), 101 (R+1)...")
+NOM_FORMATS = ("1, 2, 3...", "01, 02, 03...", "Par niveau : 001 (RDC), 101 (R+1)...")
 
 
 # ------------------------------------------------------------ communication ---
@@ -858,8 +859,9 @@ def nom_load_settings() -> dict:
     saved = load_json(NOM_REGLAGES)
     color = saved.get("couleur")
     return {
-        "couleur": [float(c) for c in color] if isinstance(color, list) and len(color) == 3 else list(NOM_COULEUR),
-        "titre": str(saved.get("titre", NOM_TITRE)),
+        "couleur": ([float(c) for c in color] if isinstance(color, list) and len(color) == 3
+                    and [round(c, 2) for c in color] != [0.93, 0.11, 0.14] else list(NOM_COULEUR)),
+        "titre": "" if str(saved.get("titre", NOM_TITRE)).strip().upper() in ("LÉGENDE", "LEGENDE") else str(saved.get("titre", NOM_TITRE)),
         "ordre": saved.get("ordre") if saved.get("ordre") in NOM_ORDRES else NOM_ORDRES[0],
         "format": saved.get("format") if saved.get("format") in NOM_FORMATS else NOM_FORMATS[0],
         "surfaces": bool(saved.get("surfaces", False)),
@@ -885,7 +887,17 @@ def nom_set_pens(color) -> None:
         "attributeId": table["attributeId"], "name": table["name"], "pens": [
             pen(STYLO_TRAIT, (0.0, 0.0, 0.0), "Texte et traits"),
             pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Blanc"),
-            pen(STYLO_LEGENDE, color, "Nomenclature - bandeau de la legende")]}]})
+            pen(STYLO_LEGENDE, color, "Nomenclature - cercles et numeros"),
+            pen(STYLO_GRIS, (0.33, 0.33, 0.33), "Nomenclature - textes de la legende")]}]})
+
+
+def empty_fill_id() -> dict | None:
+    fills = tapir("GetAttributesByType", {"attributeType": "Fill"}).get("attributes", [])
+    ids = [{"attributeId": f["attributeId"]} for f in fills]
+    for fill in tapir("GetFills", {"attributeIds": ids, "fields": ["subType"]}).get("fills", []):
+        if fill.get("subType") == "Empty":
+            return fill["attributeId"]
+    return None
 
 
 def zone_center(zone: dict) -> dict:
@@ -917,9 +929,11 @@ def reading_order(zones: list[dict]) -> list[dict]:
 
 
 def number_label(index: int, story: int, fmt: str) -> str:
-    if fmt == NOM_FORMATS[1]:
+    if fmt == NOM_FORMATS[2]:
         return f"{max(story, 0)}{index:02d}"
-    return f"{index:02d}"
+    if fmt == NOM_FORMATS[1]:
+        return f"{index:02d}"
+    return str(index)
 
 
 def write_zone_numbers(zones: list[dict]) -> bool:
@@ -957,8 +971,8 @@ def current_offset(ref_guid: str | None, origin: list | None) -> tuple[float, fl
 
 # ------------------------------------------------------------------ dessin ---
 class NomDraw:
-    def __init__(self, story: int, solid):
-        self.story, self.solid = story, solid
+    def __init__(self, story: int, solid, empty=None):
+        self.story, self.solid, self.empty = story, solid, empty
         self.mm = ECHELLE / 1000.0
         self.texts, self.hatches, self.lines = [], [], []
 
@@ -975,17 +989,27 @@ class NomDraw:
             h["fillId"] = self.solid
         self.hatches.append(h)
 
-    def line(self, pts, weight=0.18):
-        self.lines.append({"floorInd": self.story, "linePenIndex": STYLO_TRAIT, "penWeightMm": weight,
+    def line(self, pts, weight=0.18, pen=None):
+        self.lines.append({"floorInd": self.story, "linePenIndex": pen or STYLO_TRAIT, "penWeightMm": weight,
                            "coordinates": pts})
 
+    def ghost(self, pts):
+        """Remplissage transparent (repere de position du groupe). A defaut de motif vide : fond blanc."""
+        h = {"floorInd": self.story, "showArea": False, "coordinates": pts,
+             "fillPenIndex": STYLO_BLANC, "fillBackgroundPenIndex": STYLO_BLANC, "contourPenIndex": STYLO_BLANC}
+        fill = self.empty or self.solid
+        if fill:
+            h["fillId"] = fill
+        self.hatches.append(h)
+
     def pastille(self, center, label, diameter_mm=NOM_PASTILLE_MM, text_mm=NOM_TEXTE_PASTILLE_MM):
+        """Cercle fin de couleur, sans fond, avec le numero de la meme couleur."""
         r = diameter_mm * self.mm / 2
-        ring = [{"x": center["x"] + r * math.cos(2 * math.pi * k / 40),
-                 "y": center["y"] + r * math.sin(2 * math.pi * k / 40)} for k in range(40)]
-        self.hatch(ring, STYLO_BLANC)
-        self.line(ring + [ring[0]], 0.25)
-        self.text(label, center["x"], center["y"], "MiddleMiddle", bold=True, size=text_mm)
+        ring = [{"x": center["x"] + r * math.cos(2 * math.pi * k / 48),
+                 "y": center["y"] + r * math.sin(2 * math.pi * k / 48)} for k in range(48)]
+        self.ghost(ring)
+        self.line(ring + [ring[0]], 0.25, STYLO_LEGENDE)
+        self.text(label, center["x"], center["y"], "MiddleMiddle", size=text_mm, pen=STYLO_LEGENDE)
 
     def flush(self) -> tuple[list[dict], list[str]]:
         """Cree tout ; renvoie (elements, guids des remplissages dans l'ordre)."""
@@ -1061,7 +1085,11 @@ def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> s
     except Exception:  # noqa: BLE001
         pass
     solid = solid_fill_id()
-    draw = NomDraw(story, solid)
+    try:
+        empty = empty_fill_id()
+    except Exception:  # noqa: BLE001
+        empty = None
+    draw = NomDraw(story, solid, empty)
     all_guids, pastilles = [], {}
 
     # pastilles (un groupe par pastille, deplacable)
@@ -1100,19 +1128,28 @@ def nom_run(action: str, settings: dict, ordered: list[dict] | None = None) -> s
     width = columns * col_w
     x0 = min(xs) + legend_offset[0]
     top = min(ys) - NOM_ECART_MM * mm + legend_offset[1]
-    # legende libre (pas de tableau) : titre, puis "pastille + nom" en colonnes
-    draw.text(settings["titre"], x0, top, "LeftTop", bold=True, size=3.2, pen=STYLO_LEGENDE)
-    first_row = top - 3.2 * mm - 3.5 * mm
-    r_leg = 5.0 * mm / 2
+    # legende libre, style plan de presentation :
+    #   Plan du rez-de-chaussee            (titre gris)
+    #   1. Entree           7. Terrasse     (numero en couleur, nom en gris, 2 colonnes ou plus)
+    title = settings["titre"].strip() or (
+        "Plan du rez-de-chaussée" if story == 0 else (f"Plan du R+{story}" if story > 0 else f"Plan du sous-sol {-story}"))
+    title_h, text_h, num_w = 4.2, 3.2, 7.0
+    first_row = top - title_h * mm - 4.0 * mm
+    bottom = first_row - (rows - 1) * NOM_LIGNE_MM * mm - 3 * mm
+    width = columns * col_w
+    draw.ghost([{"x": x0 - 2 * mm, "y": bottom}, {"x": x0 + width, "y": bottom},
+                {"x": x0 + width, "y": top + 2 * mm}, {"x": x0 - 2 * mm, "y": top + 2 * mm}])   # repere de position
+    draw.text(title, x0, top, "LeftTop", size=title_h, pen=STYLO_GRIS)
     for i, z in enumerate(zones):
         col, row = divmod(i, rows)
-        cx = x0 + col * col_w + r_leg
+        cx = x0 + col * col_w
         cy = first_row - row * NOM_LIGNE_MM * mm
-        draw.pastille({"x": cx, "y": cy}, z["label"], diameter_mm=5.0, text_mm=2.0)
-        draw.text(z["name"] or "Piece", cx + r_leg + 2 * mm, cy, "LeftMiddle")
+        draw.text(f"{z['label']}.", cx + num_w * mm, cy, "RightMiddle", size=text_h, pen=STYLO_LEGENDE)
+        draw.text(z["name"] or "Piece", cx + (num_w + 1.2) * mm, cy, "LeftMiddle", size=text_h, pen=STYLO_GRIS)
         if settings["surfaces"]:
-            draw.text(format_area(z["area"]) + UNITE, x0 + (col + 1) * col_w - 4 * mm, cy, "RightMiddle")
-    legend_origin = [x0, first_row - r_leg]          # coin bas-gauche de la 1re pastille (repere de position)
+            draw.text(format_area(z["area"]) + UNITE, cx + col_w - 4 * mm, cy, "RightMiddle", size=text_h * 0.85,
+                      pen=STYLO_GRIS)
+    legend_origin = [x0 - 2 * mm, bottom]            # coin bas-gauche du repere (pour retrouver le deplacement)
     elements, hatch_guids = draw.flush()
     nom_group(elements)
     all_guids += [e["elementId"]["guid"] for e in elements]
@@ -1659,10 +1696,10 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Label(nbox, text="Legende").grid(row=6, column=0, sticky="w", pady=3)
     nom_mode = tk.StringVar(value=nom_state["legende"])
     ttk.Combobox(nbox, values=NOM_LEGENDES, textvariable=nom_mode, state="readonly", width=44).grid(row=6, column=1, columnspan=2, sticky="w", padx=8)
-    ttk.Label(nbox, text="Titre de la legende").grid(row=2, column=0, sticky="w", pady=3)
+    ttk.Label(nbox, text="Titre (vide = auto)").grid(row=2, column=0, sticky="w", pady=3)
     nom_title = tk.StringVar(value=nom_state["titre"])
     ttk.Entry(nbox, textvariable=nom_title, width=40).grid(row=2, column=1, columnspan=2, sticky="w", padx=8)
-    ttk.Label(nbox, text="Couleur du titre").grid(row=3, column=0, sticky="w", pady=3)
+    ttk.Label(nbox, text="Couleur cercles + numeros").grid(row=3, column=0, sticky="w", pady=3)
     nom_swatch = tk.Label(nbox, width=6, bg=to_hex(nom_state["couleur"]), relief="groove")
     nom_swatch.grid(row=3, column=1, sticky="w", padx=8)
 
