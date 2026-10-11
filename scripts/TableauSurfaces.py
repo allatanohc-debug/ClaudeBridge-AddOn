@@ -117,6 +117,7 @@ NOM_MEMOIRE = "nomenclature.json"          # guids dessines (exclus de la baguet
 NOM_POSITIONS = "nomenclature_positions.json"
 NOM_REGLAGES = "nomenclature_reglages.json"
 NOM_ORDRES = ("Automatique (sens de lecture)", "En cliquant les pieces dans l'ordre")
+SORTIES = ("Tableau des surfaces", "Nomenclature seule (sans tableau)", "Tableau + nomenclature")
 NOM_LEGENDES = ("Separee, en bas du plan (deplacable)", "Integree au tableau des surfaces (colonne N°)")
 NOM_FORMATS = ("1, 2, 3...", "01, 02, 03...", "Par niveau : 001 (RDC), 101 (R+1)...")
 
@@ -187,6 +188,7 @@ def load_settings() -> dict:
         "texte_total": str(saved.get("texte_total", TEXTE_TOTAL)).upper(),
         "mots_annexes": str(saved.get("mots_annexes", MOTS_ANNEXES)),
         "codes_couleur": bool(saved.get("codes_couleur", True)),
+        "sortie": saved.get("sortie") if saved.get("sortie") in SORTIES else SORTIES[0],
     }
 
 
@@ -1224,9 +1226,26 @@ def settings_window(settings: dict, apply) -> None:
         status.set(text)
         root.update_idletasks()
 
+    # ------------------------------------------------------------ ce que je veux faire
+    top_bar = ttk.Frame(outer)
+    top_bar.grid(row=0, column=0, sticky="we", pady=(0, 8))
+    ttk.Label(top_bar, text="Je veux faire :", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+    output_mode = tk.StringVar(value=state.get("sortie", SORTIES[0]))
+    ttk.Combobox(top_bar, values=SORTIES, textvariable=output_mode, state="readonly", width=36
+                 ).grid(row=0, column=1, sticky="w", padx=8)
+
+    def wants_table() -> bool:
+        return output_mode.get() != SORTIES[1]
+
+    def wants_nomenclature() -> bool:
+        return output_mode.get() != SORTIES[0]
+
+    def add_label() -> str:
+        return "Ajouter au tableau" if wants_table() else "Ajouter la piece"
+
     # ------------------------------------------------------------ 1. zones
     zbox = ttk.LabelFrame(outer, text=" 1. Creer les zones (pieces) ", padding=10)
-    zbox.grid(row=0, column=0, sticky="we")
+    zbox.grid(row=1, column=0, sticky="we")
 
     try:
         categories = zone_categories()
@@ -1330,7 +1349,7 @@ def settings_window(settings: dict, apply) -> None:
                     choice, name = name_dialog(f"Piece {number} trouvee - {format_area(face.area)} m2",
                                                "Espace trouve. Nom de la piece :", f"{base_name.get()} {number}",
                                                [("Terminer", "terminer"), ("Ignorer ce clic", "ignorer"),
-                                                ("Ajouter au tableau", "ajouter")])
+                                                (add_label(), "ajouter")])
                     root.withdraw()
                     highlight([])
                     if temp:
@@ -1355,7 +1374,7 @@ def settings_window(settings: dict, apply) -> None:
                 print(last)
         finally:
             root.deiconify()
-        status.set((f"{created} piece(s) ajoutee(s) au tableau. " if created else "") + last)
+        status.set((f"{created} piece(s) ajoutee(s). " if created else "") + last)
 
     def name_dialog(title: str, message: str, default_name: str, buttons: list) -> tuple[str, str]:
         """Nom de la piece avec propositions pendant la frappe. buttons = [(texte, choix), ...], le dernier = Entree."""
@@ -1428,7 +1447,7 @@ def settings_window(settings: dict, apply) -> None:
         """Contour ferme : nom de la piece + Ajouter au tableau / Recommencer / Terminer."""
         return name_dialog(f"Piece {number} terminee", "Contour ferme. Nom de la piece :", default_name,
                            [("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
-                            ("Ajouter au tableau", "ajouter")])
+                            (add_label(), "ajouter")])
 
     def ask_room_name(number: int, default_name: str) -> str | None:
         choice, name = name_dialog("Nom de la piece", f"Nom de la piece {number} :", default_name,
@@ -1586,7 +1605,7 @@ def settings_window(settings: dict, apply) -> None:
                 print(last)
         finally:
             root.deiconify()
-        status.set((f"{created} piece(s) dessinee(s) et ajoutee(s) au tableau. " if created else "") + last)
+        status.set((f"{created} piece(s) dessinee(s) et ajoutee(s). " if created else "") + last)
 
     def by_selection():
         remember()
@@ -1636,11 +1655,11 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Button(zbtn, text="Baguette magique (clic dans la piece)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(zbtn, text="Dessiner une piece (contour)...", command=by_drawing).grid(row=0, column=1, padx=6)
     ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=1, column=0, padx=(0, 6), pady=(6, 0), sticky="we")
-    ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=1, column=1, padx=6, pady=(6, 0), sticky="we")
+    ttk.Button(zbtn, text="Mettre a jour (pieces modifiees)", command=update_all).grid(row=1, column=1, padx=6, pady=(6, 0), sticky="we")
 
     # ------------------------------------------------------------ 2. tableau
     frame = ttk.LabelFrame(outer, text=" 2. Tableau ", padding=10)
-    frame.grid(row=1, column=0, sticky="we", pady=(10, 0))
+    frame.grid(row=2, column=0, sticky="we", pady=(10, 0))
 
     ttk.Label(frame, text="Couleur du bandeau").grid(row=0, column=0, sticky="w", pady=4)
     swatch = tk.Label(frame, width=6, bg=to_hex(state["couleur"]), relief="groove")
@@ -1679,6 +1698,7 @@ def settings_window(settings: dict, apply) -> None:
         for key, var in fields.items():
             state[key] = var.get()
         state["codes_couleur"] = bool(swatches.get())
+        state["sortie"] = output_mode.get()
         remember()
         save_json(REGLAGES, state)
         return state
@@ -1686,7 +1706,7 @@ def settings_window(settings: dict, apply) -> None:
     # ------------------------------------------------------------ 3. nomenclature
     nom_state = nom_load_settings()
     nbox = ttk.LabelFrame(outer, text=" 3. Nomenclature : numeros dans les pieces + legende en bas du plan ", padding=10)
-    nbox.grid(row=2, column=0, sticky="we", pady=(10, 0))
+    nbox.grid(row=3, column=0, sticky="we", pady=(10, 0))
     ttk.Label(nbox, text="Ordre des numeros").grid(row=0, column=0, sticky="w", pady=3)
     nom_order = tk.StringVar(value=nom_state["ordre"])
     ttk.Combobox(nbox, values=NOM_ORDRES, textvariable=nom_order, state="readonly", width=38).grid(row=0, column=1, columnspan=2, sticky="w", padx=8)
@@ -1731,8 +1751,10 @@ def settings_window(settings: dict, apply) -> None:
                 finally:
                     root.deiconify()
             busy("Nomenclature en cours...")
+            if not wants_table():                   # sans tableau : legende forcement separee
+                settings_nom["legende"] = NOM_LEGENDES[0]
             message = nom_run(action, settings_nom, ordered)
-            if table_drawn():                       # le tableau suit (ajoute ou retire la colonne N°)
+            if wants_table() and table_drawn():     # le tableau suit (ajoute ou retire la colonne N°)
                 message += " " + apply("dessiner", dict(collect()))
             status.set(message)
         except Exception as error:  # noqa: BLE001
@@ -1765,14 +1787,19 @@ def settings_window(settings: dict, apply) -> None:
     def refresh_all() -> str:
         """Apres creation de pieces : tableau redessine, et nomenclature mise a jour si elle existe."""
         message = ""
-        if nomenclature_drawn():                    # numeros d'abord : le tableau peut les reprendre
+        if wants_nomenclature():                    # numeros d'abord : le tableau peut les reprendre
             try:
-                message = nom_run("mettre_a_jour", nom_collect()) + " "
+                settings_nom = nom_collect()
+                if not wants_table():
+                    settings_nom["legende"] = NOM_LEGENDES[0]
+                message = nom_run("mettre_a_jour" if nomenclature_drawn() else "numeroter", settings_nom) + " "
             except Exception as error:  # noqa: BLE001
                 message = f"(nomenclature : {error}) "
-        return message + apply("dessiner", dict(collect()))
+        if wants_table():
+            message += apply("dessiner", dict(collect()))
+        return message.strip()
 
-    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=520).grid(row=3, column=0, sticky="w", pady=(10, 0))
+    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=520).grid(row=4, column=0, sticky="w", pady=(10, 0))
 
     def do(action):
         collect()
@@ -1792,10 +1819,34 @@ def settings_window(settings: dict, apply) -> None:
         return wrapped
 
     buttons = ttk.Frame(outer)
-    buttons.grid(row=4, column=0, pady=(12, 0), sticky="e")
-    ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
+    buttons.grid(row=5, column=0, pady=(12, 0), sticky="e")
+    table_buttons = [ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")),
+                     ttk.Button(buttons, text="Appliquer le tableau", command=lambda: do("dessiner"))]
+    table_buttons[0].grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
-    ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
+    table_buttons[1].grid(row=0, column=2, padx=4)
+
+    def show_mode(*_):
+        """N'affiche que ce qui sert : tableau, nomenclature, ou les deux."""
+        state["sortie"] = output_mode.get()
+        save_json(REGLAGES, state)
+        if wants_table():
+            frame.grid()
+            for b in table_buttons:
+                b.grid()
+        else:
+            frame.grid_remove()
+            for b in table_buttons:
+                b.grid_remove()
+        if wants_nomenclature():
+            nbox.grid()
+        else:
+            nbox.grid_remove()
+        status.set("1. Cree tes pieces, puis " + ("numerote-les (partie 3)." if output_mode.get() == SORTIES[1]
+                                                 else "le tableau se dessine tout seul."))
+
+    output_mode.trace_add("write", show_mode)
+    show_mode()
     for child, fn in zip(zbtn.winfo_children(), (by_clicks, by_drawing, by_selection, update_all)):
         child.configure(command=safe(fn))
     root.bind("<Escape>", lambda _e: root.destroy())
