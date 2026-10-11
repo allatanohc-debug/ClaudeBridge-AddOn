@@ -80,7 +80,11 @@ PALETTE = [(0.98, 0.84, 0.55), (0.62, 0.78, 0.55), (0.55, 0.72, 0.90), (0.95, 0.
 STYLO_CONTOUR = 211             # stylo des traits provisoires du contour (couleur vive)
 COULEUR_CONTOUR = (1.0, 0.35, 0.0)    # orange vif
 SURBRILLANCE = (255, 90, 0, 255)      # surbrillance Archicad du contour en cours
-TRAIT_CONTOUR_MM = 0.7          # epaisseur des traits provisoires
+TRAIT_CONTOUR_MM = 0.7
+STYLO_REPERE = 210              # stylo des reperes (lignes d'alignement)
+COULEUR_REPERE = (0.0, 0.65, 1.0)     # bleu clair
+TRAIT_REPERE_MM = 0.13
+REPERE_M = 12.0                 # longueur des reperes de chaque cote du point (m)          # epaisseur des traits provisoires
 MARQUE_MM = 2.5                 # taille du repere sur le 1er point
 FERMETURE_MM = 1.5              # clic a moins de 1,5 mm (papier) du 1er point = contour ferme
 STYLO_TRAIT = 212
@@ -294,6 +298,7 @@ def set_pens(color: list[float], zones: list[dict]) -> bool:
             pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Tableau des surfaces - titre"),
             pen(STYLO_BANDEAU, color, "Tableau des surfaces - bandeau"),
             pen(STYLO_CONTOUR, COULEUR_CONTOUR, "Tableau des surfaces - contour en cours"),
+            pen(STYLO_REPERE, COULEUR_REPERE, "Tableau des surfaces - reperes"),
         ] + [pen(z["pen"], z["color"], f"Tableau des surfaces - {z['name'] or z['number']}"[:120])
              for z in zones if z.get("pen")]}]})
     return "error" not in answer.get("attributeIds", [{}])[0]
@@ -702,6 +707,9 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Checkbutton(zbox, text="Demander le nom de chaque piece", variable=ask_name
                     ).grid(row=2, column=1, sticky="w", padx=8)
 
+    show_guides = tk.BooleanVar(value=state.get("reperes", True))
+    ttk.Checkbutton(zbox, text="Reperes (alignements + longueurs des traits)", variable=show_guides
+                    ).grid(row=3, column=2, sticky="w", padx=4)
     ttk.Label(zbox, text="Traits du contour").grid(row=3, column=0, sticky="w", pady=3)
     lines_mode = tk.StringVar(value=state.get("traits", "Droits (0 / 90 degres)")
                               if state.get("traits") in TRAITS else "Droits (0 / 90 degres)")
@@ -719,6 +727,7 @@ def settings_window(settings: dict, apply) -> None:
         state["nom_piece"] = base_name.get()
         state["demander_nom"] = bool(ask_name.get())
         state["traits"] = lines_mode.get()
+        state["reperes"] = bool(show_guides.get())
 
     def by_clicks():
         """Piece par piece : chaque clic cree la zone et met le tableau a jour aussitot."""
@@ -811,13 +820,60 @@ def settings_window(settings: dict, apply) -> None:
                 pass
             highlight(temp)
 
+        def delete(guids: list) -> None:
+            if guids:
+                try:
+                    tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids]})
+                except Exception:  # noqa: BLE001
+                    pass
+            guids.clear()
+
+        def draw_guides(guides: list, points: list) -> None:
+            """Reperes : lignes horizontale et verticale par le dernier point et par le 1er point."""
+            delete(guides)
+            if not points or not show_guides.get():
+                return
+            reach = REPERE_M
+            through = [points[-1]] + ([points[0]] if len(points) > 1 else [])
+            data = []
+            for q in through:
+                data.append({"floorInd": story, "linePenIndex": STYLO_REPERE, "penWeightMm": TRAIT_REPERE_MM,
+                             "coordinates": [{"x": q["x"] - reach, "y": q["y"]}, {"x": q["x"] + reach, "y": q["y"]}]})
+                data.append({"floorInd": story, "linePenIndex": STYLO_REPERE, "penWeightMm": TRAIT_REPERE_MM,
+                             "coordinates": [{"x": q["x"], "y": q["y"] - reach}, {"x": q["x"], "y": q["y"] + reach}]})
+            try:
+                answer = tapir("CreatePolylines", {"polylinesData": data})
+                guides += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+            except Exception:  # noqa: BLE001
+                pass
+
+        def draw_length(labels: list, a: dict, b: dict) -> None:
+            """Longueur du trait ecrite a cote (en m)."""
+            if not show_guides.get():
+                labels.append(None)
+                return
+            length = math.dist((a["x"], a["y"]), (b["x"], b["y"]))
+            mid = {"x": (a["x"] + b["x"]) / 2, "y": (a["y"] + b["y"]) / 2}
+            off = 2.5 * ECHELLE / 1000.0
+            if length > 1e-9:   # decale le texte a cote du trait
+                mid = {"x": mid["x"] - (b["y"] - a["y"]) / length * off, "y": mid["y"] + (b["x"] - a["x"]) / length * off}
+            try:
+                answer = tapir("CreateTexts", {"textsData": [{
+                    "coordinate": {"x": mid["x"], "y": mid["y"], "z": 0.0}, "text": format_area(length),
+                    "floorIndex": story, "style": {"height": 2.5, "bold": True, "penIndex": STYLO_CONTOUR,
+                                                   "anchor": "MiddleMiddle", "justification": "Center"}}]})
+                items = [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                labels.append(items[0] if items else None)
+            except Exception:  # noqa: BLE001
+                labels.append(None)
+
         close_dist = FERMETURE_MM * ECHELLE / 1000.0
         created = 0
         last = "Dessine les pieces une par une ; chaque contour ferme propose \"Ajouter au tableau\"."
         root.withdraw()
         try:
             while True:
-                points, temp = [], []
+                points, temp, guides, labels = [], [], [], []
                 while True:
                     focus_archicad()
                     if points:
@@ -832,11 +888,13 @@ def settings_window(settings: dict, apply) -> None:
                     if len(points) >= 2 and math.dist((point["x"], point["y"]), (points[-2]["x"], points[-2]["y"])) <= close_dist:
                         points.pop()                     # clic sur l'avant-dernier point : annule le dernier
                         if len(temp) > 1:            # (temp[0] = repere du 1er point)
-                            try:
-                                tapir("DeleteElements", {"elements": [{"elementId": {"guid": temp.pop()}}]})
-                            except Exception:  # noqa: BLE001
-                                pass
+                            delete([temp.pop()])
                             highlight(temp)
+                        if labels:
+                            label = labels.pop()
+                            if label:
+                                delete([label])
+                        draw_guides(guides, points)
                         continue
                     if points:
                         point = constrain(points[-1], point, TRAITS.get(lines_mode.get(), 90.0))
@@ -849,22 +907,27 @@ def settings_window(settings: dict, apply) -> None:
                                          {"x": point["x"] - r, "y": point["y"] - r}])
                     if points:   # trait provisoire pour voir le contour se dessiner
                         draw_temp(temp, [points[-1], point])
+                        draw_length(labels, points[-1], point)
                     points.append(point)
+                    draw_guides(guides, points)
                 if len(points) >= 3:             # traits droits jusqu'au bout : coin de fermeture si besoin
                     corner = closing_corner(points, TRAITS.get(lines_mode.get(), 90.0))
                     if corner is not None:
                         draw_temp(temp, [points[-1], corner])
+                        draw_length(labels, points[-1], corner)
                         points.append(corner)
                 if len(points) >= 3 and temp:   # dernier trait : fermer le contour visible
                     draw_temp(temp, [points[-1], points[0]])
 
+                delete(guides)
+                if len(points) >= 3:
+                    draw_length(labels, points[-1], points[0])
+
                 def clear_temp():
                     highlight([])
-                    if temp:
-                        try:
-                            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
-                        except Exception:  # noqa: BLE001
-                            pass
+                    delete(temp)
+                    delete([g for g in labels if g])
+                    delete(guides)
 
                 if len(points) < 3:
                     clear_temp()
