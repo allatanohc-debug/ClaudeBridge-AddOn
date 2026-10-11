@@ -1,0 +1,248 @@
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["shapely>=2.0"]
+# ///
+"""
+Amenagement - personnages vus de dessus - script Tapir (Archicad 28)
+
+A placer dans : Documents\\Tapir\\custom-scripts\\ (a cote de TableauSurfaces.py, qu'il utilise)
+Puis dans Archicad : palette Tapir > "Amenagement.py" > Executer.
+
+Personnages en vue en plan dessines par le script (pas de DWG) : debout, qui marche,
+assis, au bureau, couche. Chaque personnage est un groupe de vrais elements 2D Archicad
+(remplissage blanc + contour), modifiable et deplacable comme le reste.
+
+Placement : 1er clic = position, 2e clic = direction du regard. Echap pour terminer.
+"""
+
+import argparse
+import math
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import TableauSurfaces as T  # noqa: E402
+
+MEMOIRE = "personnages.json"       # guids dessines (exclus de la baguette magique)
+REGLAGES = "amenagement_reglages.json"
+POSES = ("Debout", "Qui marche", "Assis", "Au bureau (assis, bras en avant)", "Couche")
+STYLO_CONTOUR_PERSO = 207          # gris fonce du contour
+COULEUR_CONTOUR = (0.30, 0.30, 0.30)
+TRAIT_MM = 0.18
+
+
+# --------------------------------------------------------------- silhouettes ---
+# Coordonnees en metres, personnage centre sur (0, 0), regard vers +y.
+def ellipse(cx, cy, rx, ry, angle=0.0, n=36):
+    c, s = math.cos(angle), math.sin(angle)
+    return [(cx + rx * math.cos(t) * c - ry * math.sin(t) * s,
+             cy + rx * math.cos(t) * s + ry * math.sin(t) * c)
+            for t in (2 * math.pi * k / n for k in range(n))]
+
+
+def silhouette(pose: str):
+    """Renvoie (formes du corps a fusionner, contours de detail a tracer par-dessus : la tete)."""
+    head = ellipse(0, 0.03, 0.09, 0.105)
+    shoulders = ellipse(0, 0, 0.23, 0.12)
+    if pose == "Qui marche":
+        body = [ellipse(0, 0, 0.235, 0.11, math.radians(-10)),
+                ellipse(-0.20, 0.07, 0.055, 0.12, math.radians(-20)),   # bras gauche vers l'avant
+                ellipse(0.20, -0.06, 0.055, 0.12, math.radians(-20)),   # bras droit vers l'arriere
+                ellipse(-0.07, 0.16, 0.045, 0.085)]                      # pied avant
+    elif pose == "Assis":
+        body = [shoulders,
+                ellipse(-0.10, 0.25, 0.08, 0.20), ellipse(0.10, 0.25, 0.08, 0.20),      # cuisses
+                ellipse(-0.22, 0.09, 0.05, 0.13), ellipse(0.22, 0.09, 0.05, 0.13)]      # bras poses
+    elif pose.startswith("Au bureau"):
+        body = [shoulders,
+                ellipse(-0.10, 0.25, 0.08, 0.20), ellipse(0.10, 0.25, 0.08, 0.20),
+                ellipse(-0.22, 0.07, 0.05, 0.11), ellipse(0.22, 0.07, 0.05, 0.11),      # bras
+                ellipse(-0.15, 0.25, 0.045, 0.13, math.radians(-25)),                  # avant-bras sur la table
+                ellipse(0.15, 0.25, 0.045, 0.13, math.radians(25))]
+    elif pose == "Couche":
+        head = ellipse(0, 0.66, 0.09, 0.105)
+        body = [ellipse(0, 0.50, 0.23, 0.13), ellipse(0, 0.25, 0.20, 0.33),
+                ellipse(-0.215, 0.30, 0.05, 0.24), ellipse(0.215, 0.30, 0.05, 0.24),
+                ellipse(-0.08, -0.33, 0.075, 0.32), ellipse(0.08, -0.33, 0.075, 0.32)]
+    else:   # debout
+        body = [ellipse(0, 0, 0.24, 0.11),
+                ellipse(-0.215, -0.01, 0.06, 0.10), ellipse(0.215, -0.01, 0.06, 0.10)]  # bras le long du corps
+    return body, [head]
+
+
+def place(points, x, y, angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return [{"x": x + px * c - py * s, "y": y + px * s + py * c} for px, py in points]
+
+
+def person_elements(pose: str, x: float, y: float, angle: float, story: int, solid, scale: float = 1.0):
+    """Hatches + polylignes Tapir d'un personnage (angle = direction du regard, 0 = vers +y)."""
+    from shapely.geometry import Polygon
+    from shapely.ops import unary_union
+
+    body, details = silhouette(pose)
+    body = [[(px * scale, py * scale) for px, py in shape] for shape in body]
+    details = [[(px * scale, py * scale) for px, py in shape] for shape in details]
+    outline = unary_union([Polygon(b) for b in body] + [Polygon(d) for d in details])
+    shapes = list(getattr(outline, "geoms", [outline]))
+    hatches, lines = [], []
+    for shape in shapes:
+        ring = place(list(shape.exterior.coords)[:-1], x, y, angle)
+        hatch = {"floorInd": story, "showArea": False, "coordinates": ring,
+                 "fillPenIndex": T.STYLO_BLANC, "fillBackgroundPenIndex": T.STYLO_BLANC,
+                 "contourPenIndex": STYLO_CONTOUR_PERSO}
+        if solid:
+            hatch["fillId"] = solid
+        hatches.append(hatch)
+        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": TRAIT_MM,
+                      "coordinates": ring + [ring[0]]})
+    for d in details:                       # la tete dessinee par-dessus les epaules
+        ring = place(d, x, y, angle)
+        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": TRAIT_MM,
+                      "coordinates": ring + [ring[0]]})
+    return hatches, lines
+
+
+# ------------------------------------------------------------------ actions ---
+def set_pen() -> None:
+    try:
+        tables = T.tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
+        ids = [{"attributeId": t["attributeId"]} for t in tables]
+        details = [t for t in T.tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}
+                                      ).get("penTables", []) if "error" not in t]
+        table = next((t for t in details if t.get("isActiveForModel")), details[0] if details else None)
+        if table is None:
+            return
+        widths = {p.get("index"): p.get("width", 0.1) for p in table.get("pens", [])}
+        T.tapir("CreatePenTables", {"overwriteExisting": True, "penTableDataArray": [{
+            "attributeId": table["attributeId"], "name": table["name"], "pens": [
+                {"index": T.STYLO_BLANC, "width": widths.get(T.STYLO_BLANC, 0.1), "description": "Blanc",
+                 "color": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                {"index": STYLO_CONTOUR_PERSO, "width": widths.get(STYLO_CONTOUR_PERSO, 0.1),
+                 "description": "Personnages - contour",
+                 "color": {"red": COULEUR_CONTOUR[0], "green": COULEUR_CONTOUR[1], "blue": COULEUR_CONTOUR[2]}}]}]})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def project_key(story: int) -> str:
+    project = T.tapir("GetProjectInfo")
+    return f"{project.get('projectPath') or project.get('projectName') or 'Sans titre'}|{story}"
+
+
+def draw_person(pose: str, x: float, y: float, angle: float, story: int, solid, scale: float) -> list[str]:
+    hatches, lines = person_elements(pose, x, y, angle, story, solid, scale)
+    created = T.ok_items(T.tapir("CreateHatches", {"hatchesData": hatches}).get("elements", []))
+    created += T.ok_items(T.tapir("CreatePolylines", {"polylinesData": lines}).get("elements", []))
+    if created:
+        try:
+            T.tapir("CreateGroups", {"elementGroups": [{"elements": created}]})
+        except Exception:  # noqa: BLE001
+            pass
+    return [e["elementId"]["guid"] for e in created if "elementId" in e]
+
+
+def place_people(pose: str, scale: float) -> str:
+    story = T.tapir("GetStories").get("actStory", 0)
+    key = project_key(story)
+    set_pen()
+    solid = T.solid_fill_id()
+    memory = T.load_json(MEMOIRE)
+    count = 0
+    while True:
+        T.focus_archicad()
+        where, _ = T.pick_point(f"{pose} : clique la position (Echap = fin)")
+        if where is None:
+            break
+        T.focus_archicad()
+        towards, _ = T.pick_point("Clique la direction du regard (Echap = vers le haut)")
+        angle = 0.0
+        if towards is not None and math.dist((where["x"], where["y"]), (towards["x"], towards["y"])) > 1e-3:
+            angle = math.atan2(towards["y"] - where["y"], towards["x"] - where["x"]) - math.pi / 2
+        guids = draw_person(pose, where["x"], where["y"], angle, story, solid, scale)
+        memory.setdefault(key, []).extend(guids)
+        T.save_json(MEMOIRE, memory)
+        count += 1
+    return f"{count} personnage(s) place(s)." if count else "Aucun personnage place."
+
+
+def delete_people() -> str:
+    story = T.tapir("GetStories").get("actStory", 0)
+    key = project_key(story)
+    memory = T.load_json(MEMOIRE)
+    guids = memory.pop(key, [])
+    if guids:
+        try:
+            T.tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids]})
+        except Exception:  # noqa: BLE001
+            pass
+    T.save_json(MEMOIRE, memory)
+    return "Personnages de l'étage supprimés." if guids else "Aucun personnage à supprimer."
+
+
+# ------------------------------------------------------------------ fenetre ---
+def window() -> None:
+    import tkinter as tk
+    from tkinter import ttk
+
+    saved = T.load_json(REGLAGES)
+    root = tk.Tk()
+    root.title("Amenagement - Claude Bridge")
+    root.attributes("-topmost", True)
+    root.resizable(False, False)
+    f = ttk.Frame(root, padding=14)
+    f.grid()
+    box = ttk.LabelFrame(f, text=" Personnages vus de dessus ", padding=10)
+    box.grid(row=0, column=0, sticky="we")
+    ttk.Label(box, text="Pose").grid(row=0, column=0, sticky="w", pady=3)
+    pose = tk.StringVar(value=saved.get("pose") if saved.get("pose") in POSES else POSES[0])
+    ttk.Combobox(box, values=POSES, textvariable=pose, state="readonly", width=34).grid(row=0, column=1, sticky="w", padx=8)
+    ttk.Label(box, text="Taille").grid(row=1, column=0, sticky="w", pady=3)
+    size = tk.StringVar(value=saved.get("taille", "Adulte"))
+    ttk.Combobox(box, values=("Adulte", "Grand", "Enfant"), textvariable=size, state="readonly", width=34
+                 ).grid(row=1, column=1, sticky="w", padx=8)
+    ttk.Label(box, text="1er clic = position, 2e clic = direction du regard. Echap pour terminer.",
+              foreground="#666").grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    status = tk.StringVar(value="")
+    ttk.Label(f, textvariable=status, foreground="#555", wraplength=420).grid(row=1, column=0, sticky="w", pady=(10, 0))
+
+    def do(action):
+        T.save_json(REGLAGES, {"pose": pose.get(), "taille": size.get()})
+        scale = {"Adulte": 1.0, "Grand": 1.12, "Enfant": 0.7}[size.get()]
+        try:
+            if action == "placer":
+                root.withdraw()
+                try:
+                    status.set(place_people(pose.get(), scale))
+                finally:
+                    root.deiconify()
+            else:
+                status.set(delete_people())
+        except Exception as error:  # noqa: BLE001
+            root.deiconify()
+            status.set(f"Erreur : {error}")
+
+    b = ttk.Frame(f)
+    b.grid(row=2, column=0, pady=(12, 0), sticky="e")
+    ttk.Button(b, text="Supprimer les personnages", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
+    ttk.Button(b, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
+    ttk.Button(b, text="Placer des personnages...", command=lambda: do("placer")).grid(row=0, column=2, padx=4)
+    root.bind("<Escape>", lambda _e: root.destroy())
+    root.mainloop()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=T.PORT)
+    args, _ = parser.parse_known_args()
+    T.PORT = args.port
+    window()
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception as error:  # noqa: BLE001
+        print(f"Erreur : {error}")
+        sys.exit(1)
