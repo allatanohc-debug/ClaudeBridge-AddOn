@@ -8,11 +8,11 @@ Ombres decoratives en vue en plan - script Tapir (Archicad 28, mode normal)
 A placer dans : Documents\\Tapir\\custom-scripts\\
 Puis dans Archicad : palette Tapir > choisir "Ombres.py" > Executer.
 
-Une petite fenetre s'ouvre : couleur (gris par defaut), longueur et direction.
-"Dessiner les ombres" ajoute sur l'etage courant une ombre unie sous les murs,
-les poteaux et les objets (mobilier, arbres...). Relancer le script remplace
-les ombres precedentes de l'etage (utile apres avoir modifie le plan).
-"Supprimer les ombres" les enleve. Les reglages choisis sont retenus.
+Une petite fenetre s'ouvre et reste ouverte : couleur (gris par defaut),
+longueur et inclinaison (0 a 359 degres, avec apercu). "Appliquer" dessine sur
+l'etage courant une ombre unie sous les murs, les poteaux et les objets, en
+remplacant les ombres precedentes : on ajuste et on reapplique jusqu'au resultat
+voulu. "Supprimer les ombres" les enleve. Les reglages choisis sont retenus.
 
 Les ombres utilisent un stylo reserve (215) du jeu de stylos actif.
 """
@@ -28,7 +28,7 @@ from pathlib import Path
 # ---------------------------------------------------------------- reglages ---
 ECHELLE = 100              # echelle du plan (100 = 1:100)
 DECALAGE_MM = 2.0          # longueur de l'ombre par defaut (mm papier)
-DIRECTION_DEG = -45.0      # direction par defaut : -45 = vers le bas a droite
+DIRECTION_DEG = 315.0      # inclinaison par defaut : 0 = droite, 90 = haut, 315 = bas a droite
 COULEUR_DEFAUT = (0.70, 0.70, 0.70)   # gris (rouge, vert, bleu entre 0 et 1)
 STYLO_OMBRE = 215          # stylo reserve aux ombres (le tableau des surfaces utilise 216-255)
 OMBRE_MURS = True
@@ -104,16 +104,16 @@ def load_settings() -> dict:
     color = saved.get("couleur")
     if not (isinstance(color, list) and len(color) == 3):
         color = list(COULEUR_DEFAUT)
-    direction = saved.get("direction")
-    if direction not in DIRECTIONS:
-        direction = next((k for k, v in DIRECTIONS.items() if v == DIRECTION_DEG), "Bas a droite")
+    angle = saved.get("angle_deg")
+    if not isinstance(angle, (int, float)):
+        angle = DIRECTIONS.get(saved.get("direction"), DIRECTION_DEG)   # anciens reglages
     length = saved.get("decalage_mm", DECALAGE_MM)
-    return {"couleur": [float(c) for c in color], "direction": direction,
+    return {"couleur": [float(c) for c in color], "angle_deg": float(angle) % 360.0,
             "decalage_mm": float(length) if isinstance(length, (int, float)) else DECALAGE_MM}
 
 
-def ask_settings(settings: dict) -> tuple[str, dict] | None:
-    """Fenetre de reglages. Renvoie ("dessiner"|"supprimer", reglages) ou None si annule."""
+def settings_window(settings: dict, apply) -> None:
+    """Fenetre de reglages qui reste ouverte : chaque clic sur Appliquer redessine les ombres."""
     import tkinter as tk
     from tkinter import colorchooser, ttk
 
@@ -121,7 +121,6 @@ def ask_settings(settings: dict) -> tuple[str, dict] | None:
         return "#" + "".join(f"{round(max(0.0, min(1.0, v)) * 255):02X}" for v in c)
 
     state = dict(settings)
-    result: dict = {"value": None}
     root = tk.Tk()
     root.title("Ombres - Claude Bridge")
     root.attributes("-topmost", True)
@@ -129,6 +128,7 @@ def ask_settings(settings: dict) -> tuple[str, dict] | None:
     frame = ttk.Frame(root, padding=16)
     frame.grid()
 
+    # couleur
     ttk.Label(frame, text="Couleur").grid(row=0, column=0, sticky="w", pady=4)
     swatch = tk.Label(frame, width=6, bg=to_hex(state["couleur"]), relief="groove")
     swatch.grid(row=0, column=1, sticky="w", padx=8)
@@ -143,36 +143,89 @@ def ask_settings(settings: dict) -> tuple[str, dict] | None:
         state["couleur"] = list(COULEUR_DEFAUT)
         swatch.configure(bg=to_hex(state["couleur"]))
 
-    ttk.Button(frame, text="Choisir...", command=pick).grid(row=0, column=2, padx=4)
-    ttk.Button(frame, text="Gris par defaut", command=default_color).grid(row=0, column=3, padx=4)
+    ttk.Button(frame, text="Choisir...", command=pick).grid(row=0, column=2, padx=4, sticky="w")
+    ttk.Button(frame, text="Gris par defaut", command=default_color).grid(row=0, column=3, padx=4, sticky="w")
 
+    # longueur
     ttk.Label(frame, text="Longueur (mm papier)").grid(row=1, column=0, sticky="w", pady=4)
-    length = tk.StringVar(value=f"{state['decalage_mm']:g}")
-    ttk.Spinbox(frame, from_=0.5, to=20, increment=0.5, textvariable=length, width=8).grid(row=1, column=1, sticky="w", padx=8)
+    length = tk.DoubleVar(value=state["decalage_mm"])
+    ttk.Scale(frame, from_=0.5, to=15, variable=length, length=200,
+              command=lambda _v: length_text.set(f"{length.get():.1f}")).grid(row=1, column=1, columnspan=2, sticky="we", padx=8)
+    length_text = tk.StringVar(value=f"{state['decalage_mm']:.1f}")
+    length_entry = ttk.Entry(frame, textvariable=length_text, width=6)
+    length_entry.grid(row=1, column=3, sticky="w", padx=4)
 
-    ttk.Label(frame, text="Direction").grid(row=2, column=0, sticky="w", pady=4)
-    direction = tk.StringVar(value=state["direction"])
-    ttk.Combobox(frame, values=list(DIRECTIONS), textvariable=direction, state="readonly", width=16
-                 ).grid(row=2, column=1, columnspan=2, sticky="w", padx=8)
+    # inclinaison
+    ttk.Label(frame, text="Inclinaison (degres)").grid(row=2, column=0, sticky="w", pady=4)
+    angle = tk.DoubleVar(value=state["angle_deg"])
+    angle_text = tk.StringVar(value=f"{state['angle_deg']:.0f}")
+    compass = tk.Canvas(frame, width=90, height=90, highlightthickness=0)
+    compass.grid(row=2, column=3, rowspan=2, padx=4)
 
-    def finish(action):
+    def draw_compass():
+        compass.delete("all")
+        compass.create_oval(8, 8, 82, 82, outline="#999")
+        compass.create_rectangle(37, 37, 53, 53, fill="#333", outline="")      # l'element
+        a = math.radians(angle.get())
+        ln = 14 + 2 * min(15.0, max(0.5, length.get()))
+        dx, dy = ln * math.cos(a), -ln * math.sin(a)
+        compass.create_polygon(37 + dx, 37 + dy, 53 + dx, 37 + dy, 53 + dx, 53 + dy, 37 + dx, 53 + dy,
+                               fill=to_hex(state["couleur"]), outline="")
+        compass.create_rectangle(37, 37, 53, 53, fill="#333", outline="")
+        compass.create_text(45, 4, text="haut", font=("Segoe UI", 7), anchor="n")
+
+    def on_angle(_v=None):
+        angle_text.set(f"{angle.get():.0f}")
+        draw_compass()
+
+    ttk.Scale(frame, from_=0, to=359, variable=angle, length=200, command=on_angle
+              ).grid(row=2, column=1, columnspan=2, sticky="we", padx=8)
+    angle_entry = ttk.Entry(frame, textvariable=angle_text, width=6)
+    angle_entry.grid(row=3, column=1, sticky="w", padx=8)
+    ttk.Label(frame, text="0 = droite, 90 = haut, 180 = gauche, 270 = bas",
+              foreground="#666").grid(row=3, column=2, sticky="w")
+
+    def read_entries(_e=None):
         try:
-            state["decalage_mm"] = max(0.1, float(length.get().replace(",", ".")))
+            angle.set(float(angle_text.get().replace(",", ".")) % 360.0)
         except ValueError:
             pass
-        state["direction"] = direction.get()
-        result["value"] = (action, state)
-        root.destroy()
+        try:
+            length.set(max(0.1, float(length_text.get().replace(",", "."))))
+        except ValueError:
+            pass
+        on_angle()
+        length_text.set(f"{length.get():.1f}")
+
+    angle_entry.bind("<Return>", read_entries)
+    angle_entry.bind("<FocusOut>", read_entries)
+    length_entry.bind("<Return>", read_entries)
+    length_entry.bind("<FocusOut>", read_entries)
+    length.trace_add("write", lambda *_: draw_compass())
+
+    status = tk.StringVar(value="Regle puis clique sur Appliquer : tu vois le resultat dans Archicad.")
+    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=420).grid(row=4, column=0, columnspan=4, sticky="w", pady=(10, 0))
+
+    def do(action):
+        read_entries()
+        state["angle_deg"] = angle.get() % 360.0
+        state["decalage_mm"] = length.get()
+        save_json("ombres_reglages.json", state)
+        status.set("En cours...")
+        root.update_idletasks()
+        try:
+            status.set(apply(action, dict(state)))
+        except Exception as error:  # noqa: BLE001
+            status.set(f"Erreur : {error}")
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=3, column=0, columnspan=4, pady=(12, 0), sticky="e")
-    ttk.Button(buttons, text="Supprimer les ombres", command=lambda: finish("supprimer")).grid(row=0, column=0, padx=4)
-    ttk.Button(buttons, text="Annuler", command=root.destroy).grid(row=0, column=1, padx=4)
-    ttk.Button(buttons, text="Dessiner les ombres", command=lambda: finish("dessiner")).grid(row=0, column=2, padx=4)
-    root.bind("<Return>", lambda _e: finish("dessiner"))
+    buttons.grid(row=5, column=0, columnspan=4, pady=(12, 0), sticky="e")
+    ttk.Button(buttons, text="Supprimer les ombres", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
+    ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
+    ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
     root.bind("<Escape>", lambda _e: root.destroy())
+    draw_compass()
     root.mainloop()
-    return result["value"]
 
 
 # ------------------------------------------------------------- geometrie ---
@@ -364,33 +417,8 @@ def solid_fill_id() -> dict | None:
 
 
 # ------------------------------------------------------------------ main ---
-def main() -> int:
-    global PORT
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=PORT)
-    args, _ = parser.parse_known_args()
-    PORT = args.port
-
-    settings = load_settings()
-    action = "dessiner"
-    try:
-        answer = ask_settings(settings)
-        if answer is None:
-            print("Annule.")
-            return 0
-        action, settings = answer
-        save_json("ombres_reglages.json", settings)
-    except Exception as error:  # noqa: BLE001
-        print(f"(Fenetre de reglages indisponible : {error}. Reglages enregistres utilises.)")
-
+def run(action: str, settings: dict) -> str:
     story = current_story()
-    shapes: list[list[Point]] = []
-    if OMBRE_MURS:
-        shapes += cut_polygons("Wall", story)
-    if OMBRE_POTEAUX:
-        shapes += cut_polygons("Column", story)
-    if OMBRE_OBJETS:
-        shapes += object_shapes(story)
 
     # Supprimer les ombres precedentes de cet etage
     project = tapir("GetProjectInfo")
@@ -405,18 +433,25 @@ def main() -> int:
         save_json("ombres.json", memory)
 
     if action == "supprimer":
-        print("Ombres de l'etage courant supprimees.")
-        return 0
+        return "Ombres de l'etage courant supprimees."
+
+    shapes: list[list[Point]] = []
+    if OMBRE_MURS:
+        shapes += cut_polygons("Wall", story)
+    if OMBRE_POTEAUX:
+        shapes += cut_polygons("Column", story)
+    if OMBRE_OBJETS:
+        shapes += object_shapes(story)
     if not shapes:
-        print("Aucun mur, poteau ou objet sur l'etage courant : pas d'ombre a dessiner.")
-        return 0
+        return "Aucun mur, poteau ou objet sur l'etage courant : pas d'ombre a dessiner."
 
     length = settings["decalage_mm"] * ECHELLE / 1000.0
-    angle = math.radians(DIRECTIONS[settings["direction"]])
+    angle = math.radians(settings["angle_deg"])
     d = (length * math.cos(angle), length * math.sin(angle))
 
+    warning = ""
     if not set_shadow_pen(tuple(settings["couleur"])):
-        print(f"Attention : couleur non appliquee, le stylo {STYLO_OMBRE} garde sa couleur actuelle.")
+        warning = f" Attention : couleur non appliquee (stylo {STYLO_OMBRE})."
     solid = solid_fill_id()
 
     hatches = []
@@ -441,7 +476,24 @@ def main() -> int:
 
     memory[key] = [e["elementId"]["guid"] for e in created if "elementId" in e]
     save_json("ombres.json", memory)
-    print(f"Ombres creees : {len(created)} (murs, poteaux, objets de l'etage courant).")
+    return (f"Ombres dessinees : {len(created)} - inclinaison {settings['angle_deg']:.0f} degres, "
+            f"longueur {settings['decalage_mm']:.1f} mm.{warning}")
+
+
+def main() -> int:
+    global PORT
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=PORT)
+    args, _ = parser.parse_known_args()
+    PORT = args.port
+
+    settings = load_settings()
+    try:
+        settings_window(settings, lambda action, state: run(action, state))
+        return 0
+    except ImportError as error:
+        print(f"(Fenetre de reglages indisponible : {error}. Reglages enregistres utilises.)")
+    print(run("dessiner", settings))
     return 0
 
 
