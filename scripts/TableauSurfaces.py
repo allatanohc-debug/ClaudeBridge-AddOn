@@ -26,11 +26,11 @@ du plan de l'etage courant, deux tableaux :
     RDC                            (un intertitre par niveau)
     piece a vivre        25,04
     ...
-    ToTaL                48,87
+    TOTAL                48,87
 
     SURFACES ANNEXES               (terrasse, garage, balcon...)
     Terrasse             22,84
-    ToTaL                22,84
+    TOTAL                22,84
 
 Toutes les zones du projet sont prises, niveau par niveau.
 Relancer le script remplace les tableaux precedents.
@@ -57,7 +57,7 @@ ECHELLE = 100                   # echelle du plan (100 = 1:100)
 COULEUR_BANDEAU = (0.93, 0.11, 0.14)   # rouge par defaut (rouge, vert, bleu entre 0 et 1)
 TITRE_HABITABLES = "SURFACES HABITABLES"
 TITRE_ANNEXES = "SURFACES ANNEXES"
-TEXTE_TOTAL = "ToTaL"
+TEXTE_TOTAL = "TOTAL"
 MOTS_ANNEXES = "terrasse, balcon, loggia, garage, parking, carport, veranda, véranda, cour, jardin, patio, porche, auvent, annexe, local technique"
 
 UNITE = " m\u00b2"               # unite ecrite apres chaque surface ("" pour ne rien mettre)
@@ -160,7 +160,7 @@ def load_settings() -> dict:
         "couleur": [float(c) for c in color],
         "titre_habitables": str(saved.get("titre_habitables", TITRE_HABITABLES)),
         "titre_annexes": str(saved.get("titre_annexes", TITRE_ANNEXES)),
-        "texte_total": str(saved.get("texte_total", TEXTE_TOTAL)),
+        "texte_total": str(saved.get("texte_total", TEXTE_TOTAL)).upper(),
         "mots_annexes": str(saved.get("mots_annexes", MOTS_ANNEXES)),
         "codes_couleur": bool(saved.get("codes_couleur", True)),
     }
@@ -578,7 +578,7 @@ class Drawing:
             for line_y in row_lines[:-1]:                                     # trait sous chaque ligne
                 self.line(x0, line_y, x0 + width, line_y)
         y -= row * 1.1
-        self.text(total_label, x0 + COL_NOM_MM * mm / 2, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
+        self.text(total_label.upper(), x0 + COL_NOM_MM * mm / 2, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
         self.text(format_area(total) + UNITE, value_x, y + row * 0.55, "M", bold=True, size=TEXTE_MM * 1.1)
 
         self.line(x0, band_bottom, x0 + width, band_bottom)                       # sous le bandeau
