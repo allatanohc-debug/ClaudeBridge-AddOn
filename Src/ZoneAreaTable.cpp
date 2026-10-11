@@ -536,6 +536,11 @@ ZoneAreaTableResult CreateZoneAreaTable ()
 			}
 			check (CreateText (label, API_Coord { x0 + NameLeftMm * mm, rowBottom + textOffset }, TextSizeMm, false, false, story));
 			check (CreateText (FormatArea (row.area), API_Coord { x0 + AreaRightMm * mm, rowBottom + textOffset }, TextSizeMm, true, false, story));
+
+			// Trait horizontal sous chaque zone (la derniere est fermee par le trait du total)
+			if (i < rowCount - 1) {
+				check (CreateLine (API_Coord { x0, rowBottom }, API_Coord { x0 + width, rowBottom }, story));
+			}
 		}
 
 		// Total
