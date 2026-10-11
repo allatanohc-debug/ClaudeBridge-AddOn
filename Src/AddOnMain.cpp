@@ -19,6 +19,7 @@
 #include "ObjectState.hpp"
 
 #include "ZoneAreaTable.hpp"
+#include "AutoUpdate.hpp"
 
 static const GSResID AddOnInfoID			= ID_ADDON_INFO;
 	static const Int32 AddOnNameID			= 1;
@@ -159,6 +160,9 @@ GSErrCode Initialize (void)
 	}
 	if (err == NoError) {
 		err = ACAPI_AddOnAddOnCommunication_InstallAddOnCommandHandler (GS::NewOwned<CreateZoneAreaTableCommand> ());
+	}
+	if (err == NoError) {
+		StartBackgroundUpdateCheck ();
 	}
 	return err;
 }
