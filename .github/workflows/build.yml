@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-2022
@@ -25,9 +28,27 @@ jobs:
         shell: bash
         run: find Build -name "*.apx"
 
-      - name: Publier le fichier .apx
+      - name: Publier le fichier .apx (artifact)
         uses: actions/upload-artifact@v4
         with:
           name: ClaudeBridge-AC28-Windows
           path: Build/**/*.apx
           if-no-files-found: error
+
+      # Chaque compilation reussie sur main devient la "derniere version",
+      # telechargeable sans compte a l'adresse :
+      # https://github.com/<compte>/<depot>/releases/latest/download/ClaudeBridge.apx
+      - name: Publier la derniere version (release)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APX=$(find Build -name "ClaudeBridge.apx" | head -1)
+          cp "$APX" ClaudeBridge.apx
+          VERSION=$(python -c "import json; print(json.load(open('config.json'))['version'])")
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest ClaudeBridge.apx \
+            --title "Claude Bridge $VERSION" \
+            --notes "Version $VERSION, compilee depuis le commit ${GITHUB_SHA::7}." \
+            --latest
