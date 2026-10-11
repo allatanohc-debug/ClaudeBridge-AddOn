@@ -34,6 +34,7 @@ STYLO_OMBRE = 215          # stylo reserve aux ombres (le tableau des surfaces u
 OMBRE_MURS = True
 OMBRE_POTEAUX = True
 OMBRE_OBJETS = True
+MOTS_WC = "wc, toilet, toilette, cuvette, closet, bidet"
 MOTS_RONDS = "round, rond, ronde, circ, cylind, oval, ellip, tabouret, stool, pouf, vasque, lavabo rond"
 MOTS_ARBRES = ("tree", "arbre", "palm", "palmier", "bush", "buisson", "plant", "shrub", "vegetation", "baum")
 
@@ -111,7 +112,8 @@ def load_settings() -> dict:
     length = saved.get("decalage_mm", DECALAGE_MM)
     return {"couleur": [float(c) for c in color], "angle_deg": float(angle) % 360.0,
             "decalage_mm": float(length) if isinstance(length, (int, float)) else DECALAGE_MM,
-            "mots_ronds": str(saved.get("mots_ronds", MOTS_RONDS))}
+            "mots_ronds": str(saved.get("mots_ronds", MOTS_RONDS)),
+            "mots_wc": str(saved.get("mots_wc", MOTS_WC))}
 
 
 def settings_window(settings: dict, apply) -> None:
@@ -209,14 +211,19 @@ def settings_window(settings: dict, apply) -> None:
     round_words = tk.StringVar(value=state.get("mots_ronds", MOTS_RONDS))
     ttk.Entry(frame, textvariable=round_words, width=40).grid(row=4, column=1, columnspan=3, sticky="we", padx=8)
 
+    ttk.Label(frame, text="WC (reservoir + cuvette)\nsi le nom contient").grid(row=5, column=0, sticky="w", pady=4)
+    wc_words = tk.StringVar(value=state.get("mots_wc", MOTS_WC))
+    ttk.Entry(frame, textvariable=wc_words, width=40).grid(row=5, column=1, columnspan=3, sticky="we", padx=8)
+
     status = tk.StringVar(value="Regle puis clique sur Appliquer : tu vois le resultat dans Archicad.")
-    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=420).grid(row=5, column=0, columnspan=4, sticky="w", pady=(10, 0))
+    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=420).grid(row=6, column=0, columnspan=4, sticky="w", pady=(10, 0))
 
     def do(action):
         read_entries()
         state["angle_deg"] = angle.get() % 360.0
         state["decalage_mm"] = length.get()
         state["mots_ronds"] = round_words.get()
+        state["mots_wc"] = wc_words.get()
         save_json("ombres_reglages.json", state)
         status.set("En cours...")
         root.update_idletasks()
@@ -226,7 +233,7 @@ def settings_window(settings: dict, apply) -> None:
             status.set(f"Erreur : {error}")
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=6, column=0, columnspan=4, pady=(12, 0), sticky="e")
+    buttons.grid(row=7, column=0, columnspan=4, pady=(12, 0), sticky="e")
     ttk.Button(buttons, text="Supprimer les ombres", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
@@ -461,7 +468,45 @@ def centered_rectangle(center: Point, width: float, depth: float, angle: float) 
     return [(center[0] + x * c - y * s, center[1] + x * s + y * c) for x, y in corners]
 
 
-def object_shapes(story: int, round_words: list[str]) -> list[list[Point]]:
+def segment_distance(p: Point, a: Point, b: Point) -> float:
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    length2 = dx * dx + dy * dy
+    t = 0.0 if length2 <= 1e-12 else max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2))
+    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def distance_to_walls(p: Point, walls: list[list[Point]]) -> float:
+    best = math.inf
+    for poly in walls:
+        for i in range(len(poly)):
+            best = min(best, segment_distance(p, poly[i], poly[(i + 1) % len(poly)]))
+    return best
+
+
+def wc_shape(center: Point, size_u: float, size_v: float, angle: float, walls: list[list[Point]]) -> list[list[Point]]:
+    """WC : reservoir rectangulaire contre le mur + cuvette ovale devant."""
+    u = (math.cos(angle), math.sin(angle))
+    v = (-math.sin(angle), math.cos(angle))
+    sides = [(u, size_u / 2, size_v), ((-u[0], -u[1]), size_u / 2, size_v),
+             (v, size_v / 2, size_u), ((-v[0], -v[1]), size_v / 2, size_u)]
+    # le dos est le cote le plus proche d'un mur (a defaut : l'arriere de l'objet)
+    def side_gap(side):
+        n, half, _ = side
+        return distance_to_walls((center[0] + n[0] * half, center[1] + n[1] * half), walls) if walls else 0.0
+    n, half, across = min(sides, key=side_gap) if walls else sides[3]
+    depth = 2 * half
+    tank = depth * 0.3
+    back = math.atan2(n[1], n[0])
+    tank_center = (center[0] + n[0] * (half - tank / 2), center[1] + n[1] * (half - tank / 2))
+    bowl_len = depth - tank
+    bowl_center_off = half - tank - bowl_len / 2 + depth * 0.03
+    bowl_center = (center[0] + n[0] * bowl_center_off, center[1] + n[1] * bowl_center_off)
+    return [centered_rectangle(tank_center, tank, across * 0.95, back),
+            ellipse(bowl_center, bowl_len / 2 + depth * 0.03, across * 0.42, back)]
+
+
+def object_shapes(story: int, round_words: list[str], wc_words: list[str] | None = None,
+                  walls: list[list[Point]] | None = None) -> list[list[Point]]:
     elems = elements("Object")
     if not elems:
         return []
@@ -478,31 +523,36 @@ def object_shapes(story: int, round_words: list[str]) -> list[list[Point]]:
         width, depth = size.get("x", 0.0), size.get("y", 0.0)
         angle = d.get("angle", 0.0)
         name = d.get("libPart", {}).get("name", "").lower()
-        is_tree = any(word in name for word in MOTS_ARBRES)
-        is_round = is_tree or any(word and word in name for word in round_words)
+        is_wc = any(word and word in name for word in (wc_words or []))
+        is_round = not is_wc and (any(word in name for word in MOTS_ARBRES) or any(word and word in name for word in round_words))
+
+        # emprise : centre, taille le long de l'axe de l'objet (u) et en travers (v), angle
         if box:
             x1, y1, x2, y2 = box["xMin"], box["yMin"], box["xMax"], box["yMax"]
             if x2 - x1 <= 1e-6 or y2 - y1 <= 1e-6:
                 continue
             center = ((x1 + x2) / 2, (y1 + y2) / 2)
             quarter = abs(math.remainder(angle, math.pi / 2)) < math.radians(1)
-            if is_round and (quarter or width <= 1e-6 or depth <= 1e-6):
-                shapes.append(ellipse(center, (x2 - x1) / 2, (y2 - y1) / 2))          # rond / ovale
-            elif is_round:
-                shapes.append(ellipse(center, width / 2, depth / 2, angle))
-            elif quarter or width <= 1e-6 or depth <= 1e-6:
-                shapes.append([(x1, y1), (x2, y1), (x2, y2), (x1, y2)])   # cadre exact du symbole
+            if quarter or width <= 1e-6 or depth <= 1e-6:
+                size_u, size_v, frame_angle = x2 - x1, y2 - y1, 0.0       # cadre exact du symbole
             else:
-                shapes.append(centered_rectangle(center, width, depth, angle))
+                size_u, size_v, frame_angle = width, depth, angle
         elif width > 1e-6 and depth > 1e-6:   # dernier recours : point d'insertion + dimensions
             origin = d.get("origin", {})
             o = (origin.get("x", 0.0), origin.get("y", 0.0))
-            if is_round:
-                c, sn = math.cos(angle), math.sin(angle)
-                mid = (o[0] + (width / 2) * c - (depth / 2) * sn, o[1] + (width / 2) * sn + (depth / 2) * c)
-                shapes.append(ellipse(mid, width / 2, depth / 2, angle))
-            else:
-                shapes.append(rectangle(o, width, depth, angle, bool(d.get("reflected"))))
+            sx = -1.0 if d.get("reflected") else 1.0
+            c, sn = math.cos(angle), math.sin(angle)
+            center = (o[0] + (sx * width / 2) * c - (depth / 2) * sn, o[1] + (sx * width / 2) * sn + (depth / 2) * c)
+            size_u, size_v, frame_angle = width, depth, angle
+        else:
+            continue
+
+        if is_wc:
+            shapes.extend(wc_shape(center, size_u, size_v, frame_angle, walls or []))
+        elif is_round:
+            shapes.append(ellipse(center, size_u / 2, size_v / 2, frame_angle))       # rond / ovale
+        else:
+            shapes.append(centered_rectangle(center, size_u, size_v, frame_angle))
     return shapes
 
 
@@ -552,12 +602,14 @@ def run(action: str, settings: dict) -> str:
         return "Ombres de l'etage courant supprimees."
 
     shapes: list[list[Point]] = []
+    walls = wall_shapes(story)
     if OMBRE_MURS:
-        shapes += wall_shapes(story)
+        shapes += walls
     if OMBRE_POTEAUX:
         shapes += column_shapes(story)
     if OMBRE_OBJETS:
-        shapes += object_shapes(story, [w.strip().lower() for w in settings.get("mots_ronds", MOTS_RONDS).split(",")])
+        shapes += object_shapes(story, [w.strip().lower() for w in settings.get("mots_ronds", MOTS_RONDS).split(",")],
+                                [w.strip().lower() for w in settings.get("mots_wc", MOTS_WC).split(",")], walls)
     if not shapes:
         return "Aucun mur, poteau ou objet sur l'etage courant : pas d'ombre a dessiner."
 
