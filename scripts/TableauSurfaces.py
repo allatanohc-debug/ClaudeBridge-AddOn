@@ -11,6 +11,8 @@ Puis dans Archicad : palette Tapir > choisir "TableauSurfaces.py" > Executer.
 1. Creer les zones (pieces), plusieurs a la fois :
    - "Cliquer dans les pieces..." : un clic dans chaque piece fermee par des murs,
      Archicad trouve ses limites tout seul (Echap pour terminer) ;
+   - "Dessiner une piece (contour)..." : cliquer les coins de la piece comme on
+     veut (clic sur le 1er point ou Echap pour fermer) ; le tableau suit a chaque piece ;
    - "Zones depuis la selection" : selectionner des polylignes fermees ou des
      remplissages dessines comme on veut -> une zone pour chacun, a cette forme ;
    - "Mettre a jour zones + tableau" : apres avoir bouge des murs ou retouche
@@ -72,6 +74,10 @@ TRAIT_CADRE_MM = 0.35           # epaisseur du cadre et du trait du total
 
 CASE_MM = 6.0                   # largeur de la case de couleur de chaque zone
 STYLOS_ZONES = 40               # stylos 255, 254, ... = couleurs des zones (max de zones colorees)
+PALETTE = [(0.98, 0.84, 0.55), (0.62, 0.78, 0.55), (0.55, 0.72, 0.90), (0.95, 0.62, 0.55),
+           (0.78, 0.66, 0.88), (0.98, 0.72, 0.40), (0.55, 0.82, 0.80), (0.90, 0.60, 0.75),
+           (0.80, 0.80, 0.45), (0.70, 0.60, 0.50)]   # couleurs de secours (jamais de blanc)
+FERMETURE_MM = 1.5              # clic a moins de 1,5 mm (papier) du 1er point = contour ferme
 STYLO_TRAIT = 212
 STYLO_BLANC = 213
 STYLO_BANDEAU = 214
@@ -241,7 +247,9 @@ def fill_categories(zones: list[dict]) -> None:
 def make_colors_unique(zones: list[dict]) -> None:
     """Deux zones de meme couleur : la suivante est eclaircie ou assombrie (une couleur par zone)."""
     seen = []
-    for zone in zones:
+    for index, zone in enumerate(zones):
+        if is_whiteish(zone["color"]):                       # pas de blanc : couleur de la palette
+            zone["color"] = PALETTE[index % len(PALETTE)]
         base, color, step = zone["color"], zone["color"], 0
         light = sum(base) / 3 > 0.6          # couleur claire : on assombrit d'abord
         while any(math.dist(color, other) < 0.12 for other in seen) and step < 12:
@@ -295,14 +303,35 @@ def solid_fill_id() -> dict | None:
 
 
 # ------------------------------------------------------------------ zones ---
-def zone_categories() -> list[tuple[str, dict]]:
-    """(nom, attributeId) des categories de zones du projet."""
-    attrs = tapir("GetAttributesByType", {"attributeType": "ZoneCategory"}).get("attributes", [])
-    out = []
-    for a in attrs:
-        if "attributeId" in a:
-            out.append((a.get("name", "?"), a["attributeId"]))
-    return out
+def zone_categories() -> list[tuple[str, dict, tuple]]:
+    """(nom, attributeId, couleur) des categories de zones du projet."""
+    attrs = [a for a in tapir("GetAttributesByType", {"attributeType": "ZoneCategory"}).get("attributes", [])
+             if "attributeId" in a]
+    colors = {}
+    if attrs:
+        try:
+            cats = tapir("GetZoneCategories", {"attributeIds": [{"attributeId": a["attributeId"]} for a in attrs],
+                                               "fields": ["color"]}).get("zoneCategories", [])
+            for a, cat in zip(attrs, cats):
+                c = cat.get("color", {}) if isinstance(cat, dict) else {}
+                colors[a["attributeId"]["guid"]] = (c.get("red", 1.0), c.get("green", 1.0), c.get("blue", 1.0))
+        except Exception:  # noqa: BLE001
+            pass
+    return [(a.get("name", "?"), a["attributeId"], colors.get(a["attributeId"]["guid"], (1.0, 1.0, 1.0))) for a in attrs]
+
+
+def is_whiteish(color) -> bool:
+    return min(color) > 0.92
+
+
+def auto_category(categories: list, used_guids: list[str]) -> dict | None:
+    """Une categorie coloree (pas blanche), de preference pas encore utilisee : une couleur par piece."""
+    colored = [c for c in categories if not is_whiteish(c[2])]
+    if not colored:
+        return None
+    unused = [c for c in colored if c[1]["guid"] not in used_guids]
+    pick = unused[0] if unused else colored[len(used_guids) % len(colored)]
+    return pick[1]
 
 
 def next_zone_number(zones: list[dict]) -> int:
@@ -588,9 +617,9 @@ def settings_window(settings: dict, apply) -> None:
     except Exception:  # noqa: BLE001
         categories = []
     ttk.Label(zbox, text="Categorie").grid(row=0, column=0, sticky="w", pady=3)
-    category_names = ["(reglage par defaut)"] + [n for n, _ in categories]
-    category = tk.StringVar(value=state.get("categorie", category_names[0]) if state.get("categorie") in category_names
-                            else category_names[0])
+    AUTO = "(automatique : une couleur par piece)"
+    category_names = [AUTO] + [n for n, _, _ in categories]
+    category = tk.StringVar(value=state.get("categorie", AUTO) if state.get("categorie") in category_names else AUTO)
     ttk.Combobox(zbox, values=category_names, textvariable=category, state="readonly", width=30
                  ).grid(row=0, column=1, sticky="w", padx=8)
 
@@ -602,7 +631,10 @@ def settings_window(settings: dict, apply) -> None:
                     ).grid(row=2, column=1, sticky="w", padx=8)
 
     def chosen_category():
-        return next((aid for n, aid in categories if n == category.get()), None)
+        if category.get() == AUTO:
+            used = [z["category"] for z in read_zones() if z.get("category")]
+            return auto_category(categories, used)
+        return next((aid for n, aid, _ in categories if n == category.get()), None)
 
     def remember():
         state["categorie"] = category.get()
@@ -648,6 +680,64 @@ def settings_window(settings: dict, apply) -> None:
         finally:
             root.deiconify()
         status.set((f"{created} piece(s) ajoutee(s) au tableau. " if created else "") + last)
+
+    def by_drawing():
+        """Dessiner soi-meme le contour de chaque piece, point par point ; le tableau suit a chaque piece."""
+        remember()
+        story = tapir("GetStories").get("actStory", 0)
+        number = next_zone_number(read_zones())
+        close_dist = FERMETURE_MM * ECHELLE / 1000.0
+        created = 0
+        last = "Clique les coins de la piece. Clique sur le 1er point (ou Echap) pour fermer ; Echap sans point pour finir."
+        root.withdraw()
+        try:
+            while True:
+                points, temp = [], []
+                while True:
+                    focus_archicad()
+                    if points:
+                        prompt = f"Piece {number} : point {len(points) + 1} (1er point ou Echap = fermer)"
+                    else:
+                        prompt = f"Piece {number} : 1er coin (Echap = terminer)"
+                    point, _ = pick_point(prompt)
+                    if point is None:
+                        break
+                    if len(points) >= 3 and math.dist((point["x"], point["y"]), (points[0]["x"], points[0]["y"])) <= close_dist:
+                        break
+                    if points:   # trait provisoire pour voir le contour se dessiner
+                        try:
+                            answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], point]}]})
+                            temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                        except Exception:  # noqa: BLE001
+                            pass
+                    points.append(point)
+                if temp:
+                    try:
+                        tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
+                    except Exception:  # noqa: BLE001
+                        pass
+                if len(points) < 3:
+                    break                                   # Echap sans contour : fin
+                name = f"{base_name.get()} {number}"
+                if ask_name.get():
+                    root.deiconify()
+                    answer = simpledialog.askstring("Nom de la piece", "Nom de cette piece :", initialvalue=name, parent=root)
+                    root.withdraw()
+                    if answer is None:
+                        continue
+                    name = answer.strip() or name
+                error = new_zone(story, name, number, chosen_category(), {"polygonCoordinates": points}, centroid(points))
+                if error:
+                    last = f"Zone impossible avec ce contour ({error})."
+                    print(last)
+                    continue
+                created += 1
+                number += 1
+                last = f"{name} creee. " + apply("dessiner", dict(collect()))
+                print(last)
+        finally:
+            root.deiconify()
+        status.set((f"{created} piece(s) dessinee(s) et ajoutee(s) au tableau. " if created else "") + last)
 
     def by_selection():
         remember()
@@ -695,8 +785,9 @@ def settings_window(settings: dict, apply) -> None:
     zbtn = ttk.Frame(zbox)
     zbtn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
     ttk.Button(zbtn, text="Cliquer dans les pieces (une par une)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
-    ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=0, column=1, padx=6)
-    ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=0, column=2, padx=6)
+    ttk.Button(zbtn, text="Dessiner une piece (contour)...", command=by_drawing).grid(row=0, column=1, padx=6)
+    ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=1, column=0, padx=(0, 6), pady=(6, 0), sticky="we")
+    ttk.Button(zbtn, text="Mettre a jour zones + tableau", command=update_all).grid(row=1, column=1, padx=6, pady=(6, 0), sticky="we")
 
     # ------------------------------------------------------------ 2. tableau
     frame = ttk.LabelFrame(outer, text=" 2. Tableau ", padding=10)
@@ -767,7 +858,7 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
-    for child, fn in zip(zbtn.winfo_children(), (by_clicks, by_selection, update_all)):
+    for child, fn in zip(zbtn.winfo_children(), (by_clicks, by_drawing, by_selection, update_all)):
         child.configure(command=safe(fn))
     root.bind("<Escape>", lambda _e: root.destroy())
     root.mainloop()
