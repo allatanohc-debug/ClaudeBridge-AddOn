@@ -681,6 +681,36 @@ def settings_window(settings: dict, apply) -> None:
             root.deiconify()
         status.set((f"{created} piece(s) ajoutee(s) au tableau. " if created else "") + last)
 
+    def room_done_dialog(number: int, default_name: str) -> tuple[str, str]:
+        """Contour ferme : nom de la piece + Ajouter au tableau / Recommencer / Terminer."""
+        result = {"choice": "terminer", "name": default_name}
+        win = tk.Toplevel(root)
+        win.title(f"Piece {number} terminee")
+        win.attributes("-topmost", True)
+        win.resizable(False, False)
+        box = ttk.Frame(win, padding=14)
+        box.grid()
+        ttk.Label(box, text="Contour ferme. Nom de la piece :").grid(row=0, column=0, columnspan=3, sticky="w")
+        name_var = tk.StringVar(value=default_name)
+        entry = ttk.Entry(box, textvariable=name_var, width=34)
+        entry.grid(row=1, column=0, columnspan=3, sticky="we", pady=(4, 10))
+        entry.select_range(0, "end")
+        entry.focus_set()
+
+        def close(choice):
+            result["choice"], result["name"] = choice, (name_var.get().strip() or default_name)
+            win.destroy()
+
+        ttk.Button(box, text="Terminer", command=lambda: close("terminer")).grid(row=2, column=0, padx=3)
+        ttk.Button(box, text="Recommencer le contour", command=lambda: close("recommencer")).grid(row=2, column=1, padx=3)
+        ttk.Button(box, text="Ajouter au tableau", command=lambda: close("ajouter")).grid(row=2, column=2, padx=3)
+        win.bind("<Return>", lambda _e: close("ajouter"))
+        win.protocol("WM_DELETE_WINDOW", lambda: close("terminer"))
+        win.lift()
+        win.focus_force()
+        root.wait_window(win)
+        return result["choice"], result["name"]
+
     def by_drawing():
         """Dessiner soi-meme le contour de chaque piece, point par point ; le tableau suit a chaque piece."""
         remember()
@@ -688,7 +718,7 @@ def settings_window(settings: dict, apply) -> None:
         number = next_zone_number(read_zones())
         close_dist = FERMETURE_MM * ECHELLE / 1000.0
         created = 0
-        last = "Clique les coins de la piece. Clique sur le 1er point (ou Echap) pour fermer ; Echap sans point pour finir."
+        last = "Dessine les pieces une par une ; chaque contour ferme propose \"Ajouter au tableau\"."
         root.withdraw()
         try:
             while True:
@@ -711,21 +741,29 @@ def settings_window(settings: dict, apply) -> None:
                         except Exception:  # noqa: BLE001
                             pass
                     points.append(point)
-                if temp:
+                if len(points) >= 3 and temp:   # dernier trait : fermer le contour visible
                     try:
-                        tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
+                        answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], points[0]]}]})
+                        temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
                     except Exception:  # noqa: BLE001
                         pass
+
+                def clear_temp():
+                    if temp:
+                        try:
+                            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
+                        except Exception:  # noqa: BLE001
+                            pass
+
                 if len(points) < 3:
+                    clear_temp()
                     break                                   # Echap sans contour : fin
-                name = f"{base_name.get()} {number}"
-                if ask_name.get():
-                    root.deiconify()
-                    answer = simpledialog.askstring("Nom de la piece", "Nom de cette piece :", initialvalue=name, parent=root)
-                    root.withdraw()
-                    if answer is None:
-                        continue
-                    name = answer.strip() or name
+                choice, name = room_done_dialog(number, f"{base_name.get()} {number}")
+                clear_temp()
+                if choice == "terminer":
+                    break
+                if choice == "recommencer":
+                    continue
                 error = new_zone(story, name, number, chosen_category(), {"polygonCoordinates": points}, centroid(points))
                 if error:
                     last = f"Zone impossible avec ce contour ({error})."
