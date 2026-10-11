@@ -27,8 +27,10 @@ Relancer le script remplace les tableaux precedents.
 
 Le bandeau est un vrai remplissage Archicad : apres coup, on peut changer son
 motif, ses stylos, etc. comme n'importe quel remplissage.
+Chaque zone a son code couleur (case a gauche du nom) : la couleur de sa
+categorie de zone, une couleur differente par zone.
 Stylos reserves dans le jeu de stylos actif : 212 (texte et traits, noir),
-213 (texte du bandeau, blanc), 214 (couleur du bandeau).
+213 (texte du bandeau, blanc), 214 (couleur du bandeau), 255, 254... (zones).
 """
 
 import argparse
@@ -59,6 +61,8 @@ TRAITS_ENTRE_LIGNES = True      # trait horizontal sous chaque ligne (lecture pl
 TRAIT_FIN_MM = 0.18             # epaisseur des traits interieurs
 TRAIT_CADRE_MM = 0.35           # epaisseur du cadre et du trait du total
 
+CASE_MM = 6.0                   # largeur de la case de couleur de chaque zone
+STYLOS_ZONES = 40               # stylos 255, 254, ... = couleurs des zones (max de zones colorees)
 STYLO_TRAIT = 212
 STYLO_BLANC = 213
 STYLO_BANDEAU = 214
@@ -133,6 +137,7 @@ def load_settings() -> dict:
         "titre_annexes": str(saved.get("titre_annexes", TITRE_ANNEXES)),
         "texte_total": str(saved.get("texte_total", TEXTE_TOTAL)),
         "mots_annexes": str(saved.get("mots_annexes", MOTS_ANNEXES)),
+        "codes_couleur": bool(saved.get("codes_couleur", True)),
     }
 
 
@@ -207,20 +212,38 @@ def fill_areas(zones: list[dict]) -> None:
             zone["area"] = max(area, 0.0)
 
 
-def fill_category_names(zones: list[dict]) -> None:
+def fill_categories(zones: list[dict]) -> None:
     guids = sorted({z["category"] for z in zones if z["category"]})
     names = {}
     if guids:
         try:
             cats = tapir("GetZoneCategories", {"attributeIds": [{"attributeId": {"guid": g}} for g in guids],
-                                               "fields": ["categoryCode"]}).get("zoneCategories", [])
+                                               "fields": ["categoryCode", "color"]}).get("zoneCategories", [])
             for guid, cat in zip(guids, cats):
                 if "error" not in cat:
-                    names[guid] = cat.get("name", "")
+                    c = cat.get("color", {})
+                    names[guid] = (cat.get("name", ""), (c.get("red", 0.8), c.get("green", 0.8), c.get("blue", 0.8)))
         except Exception:  # noqa: BLE001
             pass
     for zone in zones:
-        zone["category_name"] = names.get(zone["category"], "")
+        zone["category_name"], zone["color"] = names.get(zone["category"], ("", (0.8, 0.8, 0.8)))
+
+
+def make_colors_unique(zones: list[dict]) -> None:
+    """Deux zones de meme couleur : la suivante est eclaircie ou assombrie (une couleur par zone)."""
+    seen = []
+    for zone in zones:
+        base, color, step = zone["color"], zone["color"], 0
+        light = sum(base) / 3 > 0.6          # couleur claire : on assombrit d'abord
+        while any(math.dist(color, other) < 0.12 for other in seen) and step < 12:
+            step += 1
+            amount = 0.18 * ((step + 1) // 2)
+            if (step % 2 == 1) != light:
+                color = tuple(min(1.0, c + (1.0 - c) * amount) for c in base)
+            else:
+                color = tuple(max(0.0, c * (1.0 - amount)) for c in base)
+        zone["color"] = color
+        seen.append(color)
 
 
 def is_annex(zone: dict, words: list[str]) -> bool:
@@ -229,7 +252,7 @@ def is_annex(zone: dict, words: list[str]) -> bool:
 
 
 # ------------------------------------------------------------------ stylos ---
-def set_pens(color: list[float]) -> bool:
+def set_pens(color: list[float], zones: list[dict]) -> bool:
     tables = tapir("GetAttributesByType", {"attributeType": "PenTable"}).get("attributes", [])
     ids = [{"attributeId": t["attributeId"]} for t in tables]
     details = [t for t in tapir("GetPenTables", {"attributeIds": ids, "fields": ["isActiveForModel", "pens"]}
@@ -248,7 +271,8 @@ def set_pens(color: list[float]) -> bool:
             pen(STYLO_TRAIT, (0.0, 0.0, 0.0), "Tableau des surfaces - texte et traits"),
             pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Tableau des surfaces - titre"),
             pen(STYLO_BANDEAU, color, "Tableau des surfaces - bandeau"),
-        ]}]})
+        ] + [pen(z["pen"], z["color"], f"Tableau des surfaces - {z['name'] or z['number']}"[:120])
+             for z in zones if z.get("pen")]}]})
     return "error" not in answer.get("attributeIds", [{}])[0]
 
 
@@ -281,10 +305,12 @@ class Drawing:
                            "coordinates": [{"x": xa, "y": ya}, {"x": xb, "y": yb}]})
 
     def band(self, x1, y1, x2, y2):
+        self.swatch(x1, y1, x2, y2, STYLO_BANDEAU)
+
+    def swatch(self, x1, y1, x2, y2, pen):
         hatch = {"floorInd": self.story, "showArea": False,
                  "coordinates": [{"x": x1, "y": y1}, {"x": x2, "y": y1}, {"x": x2, "y": y2}, {"x": x1, "y": y2}],
-                 "fillPenIndex": STYLO_BANDEAU, "fillBackgroundPenIndex": STYLO_BANDEAU,
-                 "contourPenIndex": STYLO_BANDEAU}
+                 "fillPenIndex": pen, "fillBackgroundPenIndex": pen, "contourPenIndex": pen}
         if self.solid:
             hatch["fillId"] = self.solid
         self.hatches.append(hatch)
@@ -313,7 +339,11 @@ class Drawing:
             for zone in zones:
                 y -= row
                 label = zone["name"] or zone["number"] or "Zone"
-                self.text(label, x0 + pad, y + row / 2, "L")
+                text_x = x0 + pad
+                if zone.get("pen"):                                         # code couleur de la zone
+                    self.swatch(x0 + pad, y + row * 0.2, x0 + pad + CASE_MM * mm, y + row * 0.8, zone["pen"])
+                    text_x = x0 + pad * 2 + CASE_MM * mm
+                self.text(label, text_x, y + row / 2, "L")
                 self.text(format_area(zone["area"]), value_x, y + row / 2, "M")
                 total += zone["area"]
                 row_lines.append(y)
@@ -364,12 +394,17 @@ def run(action: str, settings: dict) -> str:
     if not zones:
         return "Aucune zone dans le projet : rien a mettre dans le tableau."
     fill_areas(zones)
-    fill_category_names(zones)
+    fill_categories(zones)
     words = [w.strip().lower() for w in settings["mots_annexes"].split(",") if w.strip()]
     habitable = [z for z in zones if not is_annex(z, words)]
     annexes = [z for z in zones if is_annex(z, words)]
 
-    warning = "" if set_pens(settings["couleur"]) else " Attention : couleurs non appliquees (stylos 212-214)."
+    ordered = [z for _, g in group_by_story(habitable) for z in g] + [z for _, g in group_by_story(annexes) for z in g]
+    if settings.get("codes_couleur", True):
+        make_colors_unique(ordered)
+        for i, zone in enumerate(ordered[:STYLOS_ZONES]):
+            zone["pen"] = 255 - i
+    warning = "" if set_pens(settings["couleur"], ordered) else " Attention : couleurs non appliquees (stylos 212-214)."
     drawing = Drawing(current, solid_fill_id())
 
     plan = [z for z in zones if z["story"] == current] or zones
@@ -449,12 +484,17 @@ def settings_window(settings: dict, apply) -> None:
         ttk.Entry(frame, textvariable=var, width=48).grid(row=row, column=1, columnspan=2, sticky="we", padx=8)
         fields[key] = var
 
+    swatches = tk.BooleanVar(value=state.get("codes_couleur", True))
+    ttk.Checkbutton(frame, text="Afficher le code couleur de chaque zone", variable=swatches
+                    ).grid(row=5, column=1, columnspan=2, sticky="w", padx=8, pady=4)
+
     status = tk.StringVar(value="Regle puis clique sur Appliquer : le tableau est redessine dans Archicad.")
-    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=460).grid(row=5, column=0, columnspan=3, sticky="w", pady=(10, 0))
+    ttk.Label(frame, textvariable=status, foreground="#555", wraplength=460).grid(row=6, column=0, columnspan=3, sticky="w", pady=(10, 0))
 
     def do(action):
         for key, var in fields.items():
             state[key] = var.get()
+        state["codes_couleur"] = bool(swatches.get())
         save_json(REGLAGES, state)
         status.set("En cours...")
         root.update_idletasks()
@@ -464,7 +504,7 @@ def settings_window(settings: dict, apply) -> None:
             status.set(f"Erreur : {error}")
 
     buttons = ttk.Frame(frame)
-    buttons.grid(row=6, column=0, columnspan=3, pady=(12, 0), sticky="e")
+    buttons.grid(row=7, column=0, columnspan=3, pady=(12, 0), sticky="e")
     ttk.Button(buttons, text="Supprimer le tableau", command=lambda: do("supprimer")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Appliquer", command=lambda: do("dessiner")).grid(row=0, column=2, padx=4)
