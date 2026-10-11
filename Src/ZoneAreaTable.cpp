@@ -32,6 +32,7 @@ const double	SwatchWidthMm		= 12.0;		// case de couleur : largeur
 const double	SwatchInsetMm		= 1.2;		// marge haute et basse de la case
 const double	NameLeftMm			= 17.0;		// colonne du nom
 const double	AreaRightMm			= 92.0;		// bord droit de la colonne surface
+const double	ColumnSeparatorMm	= 63.0;		// trait vertical entre zones et surfaces
 const double	TextSizeMm			= 2.5;		// hauteur du texte courant
 const double	TitleSizeMm			= 3.5;		// hauteur du titre
 const double	TitleSpaceMm		= 9.0;		// place reservee au titre au-dessus du tableau
@@ -542,6 +543,10 @@ ZoneAreaTableResult CreateZoneAreaTable ()
 		check (CreateLine (API_Coord { x0, totalTop }, API_Coord { x0 + width, totalTop }, story));
 		check (CreateText (GS::UniString ("Total"), API_Coord { x0 + NameLeftMm * mm, tableBottom + textOffset }, TextSizeMm, false, true, story));
 		check (CreateText (FormatArea (totalArea), API_Coord { x0 + AreaRightMm * mm, tableBottom + textOffset }, TextSizeMm, true, true, story));
+
+		// Trait vertical entre la colonne des zones et celle des surfaces
+		const double separatorX = x0 + ColumnSeparatorMm * mm;
+		check (CreateLine (API_Coord { separatorX, tableTop }, API_Coord { separatorX, tableBottom }, story));
 
 		// Cadre
 		check (CreateLine (API_Coord { x0, tableTop }, API_Coord { x0 + width, tableTop }, story));
