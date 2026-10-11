@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple Computer//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- https://developer.apple.com/documentation/bundleresources/information-property-list -->
+<plist version="1.0">
+	<dict>
+		<key>CFBundleInfoDictionaryVersion</key>
+		<string>6.0</string>
+		<key>CFBundlePackageType</key>
+		<string>.APX</string>
+		<key>CFBundleIdentifier</key>
+		<string>@bundleIdentifier@</string>
+		<key>CFBundleDisplayName</key>
+		<string>@addOnName@</string>
+		<key>CFBundleVersion</key>
+		<string>@longVersion@</string>
+		<key>CFBundleShortVersionString</key>
+		<string>@shortVersion@</string>
+		<key>NSHumanReadableCopyright</key>
+		<string>@copyright@</string>
+		<key>LSMinimumSystemVersion</key>
+		<string>@lsMinimumSystemVersion@</string>
+		<key>CFBundleDevelopmentRegion</key>
+		<string>@addOnRegion@</string>
+		<key>CFBundleIconFile</key>
+		<string>ArchiCADPlugin</string>
+		<key>CFBundleExecutable</key>
+		<string>@addOnName@</string>
+		<key>GSAddOnDescription</key>
+		<string>@addOnDescription@</string>
+		<key>GSVersionAppendix</key>
+		<string>@addOnLanguage@</string>@privateBuild@@autoupdate@
+	</dict>
+</plist>

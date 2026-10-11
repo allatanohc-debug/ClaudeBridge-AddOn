@@ -1,0 +1,15 @@
+{
+    "addOnName": "ClaudeBridge",
+    "defaultLanguage": "INT",
+    "languages": [
+        "INT",
+        "GER",
+        "JPN"
+    ],
+    "version": "0.1.0",
+    "copyright": {
+        "name": "Chrys",
+        "year": "%Y"
+    },
+    "description": "Tableau des surfaces des zones et commandes pour Claude"
+}

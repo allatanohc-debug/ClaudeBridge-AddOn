@@ -1,0 +1,33 @@
+name: Compiler Claude Bridge (Archicad 28 Windows)
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compiler l'Add-On
+        shell: bash
+        run: python Tools/BuildAddOn.py --configFile config.json --acVersion 28 --buildConfig RelWithDebInfo
+
+      - name: Lister les fichiers produits
+        shell: bash
+        run: find Build -name "*.apx"
+
+      - name: Publier le fichier .apx
+        uses: actions/upload-artifact@v4
+        with:
+          name: ClaudeBridge-AC28-Windows
+          path: Build/**/*.apx
+          if-no-files-found: error

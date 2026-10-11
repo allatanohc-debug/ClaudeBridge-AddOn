@@ -1,0 +1,455 @@
+import argparse
+import json
+import os
+import pathlib
+import platform
+import shutil
+import subprocess
+import sys
+import traceback
+import urllib.parse
+import urllib.request
+import zipfile
+import tarfile
+
+from LocalizationMappingTable import FillLocalizationMappingTable
+
+
+def ParseArguments ():
+    parser = argparse.ArgumentParser ()
+    parser.add_argument ('-c', '--configFile', dest = 'configFile', required = True, help = 'JSON Configuration file')
+    parser.add_argument ('-v', '--acVersion', dest = 'acVersion', nargs = '+', type = str, required = False, help = 'Archicad version number list. Ex: 26 27')
+    parser.add_argument ('-b', '--buildConfig', dest = 'buildConfig', nargs = '+', type = str, required = False, help = 'Build configuration list. Ex: Debug Release RelWithDebInfo')
+    parser.add_argument ('-l', '--allLocalizedVersions', dest = 'allLocalizedVersions', required = False, action='store_true', help = 'Create localized release builds for all configured languages.')
+    parser.add_argument ('-d', '--devKitPath', dest = 'devKitPath', type = str, required = False, help = 'Path to local APIDevKit')
+    parser.add_argument ('-x', '--lpXMLConverterPath', dest = 'lpXMLConverterPath', type = str, required = False, help = 'Path to local LP_XMLConverter')
+    parser.add_argument ('-n', '--buildNum', dest = 'buildNum', type = str, required = False, help = 'Build number of local APIDevKit')
+    parser.add_argument ('-p', '--package', dest = 'package', required = False, action='store_true', help = 'Create zip archive.')
+    parser.add_argument ('-r', '--forDistribution', dest = 'release', required = False, action='store_true', help = 'Mark the add-on "for distribution". Will be marked "private" otherwise.')
+    parser.add_argument ('-a', '--additionalCMakeParams', dest = 'additionalCMakeParams', nargs = '+', required = False, help = 'Add-On specific CMake parameter list of key=value pairs. Ex: var1=value1 var2="value 2"')
+    parser.add_argument ('-q', '--quiet', dest = 'quiet', required = False, action='store_true', help = 'Less verbose cmake output.')
+    args = parser.parse_args ()
+
+    if args.devKitPath is not None:
+        if args.acVersion is None or args.buildNum is None:
+            raise Exception ('Must provide Archicad version and APIDevKit build number with local APIDevKit option!')
+        if len (args.acVersion) != 1:
+            raise Exception ('Only one Archicad version supported with local APIDevKit option!')
+
+    if args.buildConfig is not None:
+        for config in args.buildConfig:
+            if config != 'Debug' and config != 'RelWithDebInfo' and config != 'Release':
+                raise Exception ('Invalid build configuration! Options are: Debug, Release, RelWithDebInfo')
+
+    return args
+
+
+def GetPlatformName ():
+    if platform.system () == 'Windows':
+        return 'WIN'
+    elif platform.system () == 'Darwin':
+        return 'MAC'
+
+
+def CallCommand (params, quiet = False):
+    if quiet:
+        result = subprocess.call (params, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    else:
+        result = subprocess.call (params)
+    return result
+
+
+def PrepareParameters (args):
+    # Check platform operating system
+    platformName = GetPlatformName ()
+
+    # Load DevKit download data
+    devKitDataPath = pathlib.Path (__file__).absolute ().parent / 'APIDevKitLinks.json'
+    with open (devKitDataPath, 'r') as devKitDataFile:
+        devKitData = json.load (devKitDataFile)
+
+    # Load config data
+    configPath = pathlib.Path (args.configFile)
+    if configPath.is_dir ():
+        raise Exception (f'{configPath} is a directory!')
+    with open (configPath, 'r') as configFile:
+        configData = json.load (configFile)
+
+    addOnName = configData['addOnName']
+    acVersionList = None
+    buildConfigList = None
+
+    if args.acVersion:
+        acVersionList = args.acVersion
+    else:
+        acVersionList = [ver for ver in devKitData[platformName].keys () if not ver.startswith ("LP")]
+    
+    if args.buildConfig:
+        buildConfigList = args.buildConfig
+    else:
+        buildConfigList = ['RelWithDebInfo']
+
+    # Get needed language codes
+    languageList = [configData['defaultLanguage'].upper ()]
+    if args.allLocalizedVersions:
+        languageList = [lang.upper () for lang in configData['languages']]
+
+    # Get additional CMake parameters
+    additionalParams = {'GS_CONFIG_JSON_PATH': str (configPath.absolute ())}
+    if 'additionalCMakeParams' in configData or args.additionalCMakeParams:
+        if 'additionalCMakeParams' in configData:
+            additionalParams.update (configData['additionalCMakeParams'])
+
+        if args.additionalCMakeParams:
+            for param in args.additionalCMakeParams:
+                if '=' not in param:
+                    additionalParams[param] = 'ON'
+                else:
+                    key, value = param.split ('=', 1)
+                    if not value:
+                        raise Exception (f'Value not provided for {key}!')
+                    additionalParams[key] = value
+
+    dependencies = configData.get ('dependencies', [])
+
+    return [devKitData, addOnName, buildConfigList, acVersionList, languageList, additionalParams, dependencies]
+
+
+def PrepareDirectories (args, devKitData, addOnName, acVersionList):
+    # Create directory for Build and Package
+    workspaceRootFolder = pathlib.Path (__file__).parent.absolute ().parent.absolute ()
+    buildFolder = workspaceRootFolder / 'Build'
+    packageRootFolder = buildFolder / 'Package' / addOnName
+    devKitFolderList = {}
+    lpXMLConverterFolderList = {}
+
+    platformName = GetPlatformName ()
+
+    if not buildFolder.exists ():
+        buildFolder.mkdir (parents=True)
+
+    if args.package:
+        if (packageRootFolder).exists ():
+            shutil.rmtree (packageRootFolder)
+
+    # Set APIDevKit directory if local is used, else create new directories
+    if args.devKitPath is not None:
+        devKitPath = pathlib.Path (args.devKitPath)
+        if not devKitPath.is_dir ():
+            raise Exception (f'{devKitPath} is not a directory!')
+        devKitFolderList[acVersionList[0]] = devKitPath
+    else:
+        for version in acVersionList:
+            if version in devKitData[platformName]:
+
+                devKitFolder = buildFolder / 'DevKit' / f'APIDevKit-{version}'
+                if not devKitFolder.exists ():
+                    devKitFolder.mkdir (parents=True)
+
+                devKitFolderList[version] = devKitFolder
+                DownloadAndUnzip (devKitData[platformName][version], devKitFolder)
+
+            else:
+                raise Exception ('APIDevKit download link not provided!')
+
+    # Set LP_XMLConverter directory if local is used, else create new directories
+    if args.lpXMLConverterPath is not None:
+        lpXMLConverterPath = pathlib.Path (args.lpXMLConverterPath)
+        if not lpXMLConverterPath.is_dir ():
+            raise Exception (f'{lpXMLConverterPath} is not a directory!')
+        lpXMLConverterFolderList[acVersionList[0]] = str (lpXMLConverterPath.absolute ())
+    else:
+        for version in acVersionList:
+            if 'LP' + version in devKitData[platformName]:
+
+                lpXMLConverterPath = devKitFolderList[version] / 'Support' / 'LP_XMLConverter'
+                if not lpXMLConverterPath.exists ():
+                    lpXMLConverterPath.mkdir (parents=True)
+
+                DownloadAndUnzip (devKitData[platformName]['LP' + version], lpXMLConverterPath)
+                print (f'LP_XMLConverter path: {lpXMLConverterPath}')
+                lpXMLConverterPath = lpXMLConverterPath / devKitData[platformName]['LP' + version].split ('/')[-1].replace ('.zip', '').replace ('.tar.gz', '')
+
+            else:
+                lpXMLConverterPath = devKitFolderList[version] / 'Support' / 'LP_XMLConverter'
+
+            lpXMLConverterFolderList[version] = str (lpXMLConverterPath.absolute ())
+    
+    return [workspaceRootFolder, buildFolder, packageRootFolder, devKitFolderList, lpXMLConverterFolderList]
+
+
+def DownloadAndUnzip (url, dest):
+    fileName = url.split ('/')[-1]
+    filePath = pathlib.Path (dest, fileName)
+    if filePath.exists ():
+        return
+
+    print (f'Downloading {fileName}')
+    urllib.request.urlretrieve (url, filePath)
+
+    print (f'Extracting {fileName}')
+
+    if platform.system () == 'Windows':
+        if zipfile.is_zipfile (filePath):
+            with zipfile.ZipFile (filePath, 'r') as zip:
+                zip.extractall (path=dest)
+    elif platform.system () == 'Darwin':
+        if tarfile.is_tarfile (filePath):
+            with tarfile.open (filePath, 'r:gz') as tar:
+                tar.extractall (path=dest)
+        else:
+            CallCommand ([
+            'unzip', '-qq', filePath,
+            '-d', dest
+        ])
+
+
+def GetInstalledVisualStudioGenerator ():
+    vsWherePath = pathlib.Path (os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio' / 'Installer' / 'vswhere.exe'
+    if not vsWherePath.exists ():
+        raise Exception ('Microsoft Visual Studio Installer not found!')
+    vsWhereOutputStr = subprocess.check_output ([vsWherePath, '-sort', '-format', 'json', '-utf8'])
+    vsWhereOutput = json.loads (vsWhereOutputStr)
+    if len (vsWhereOutput) == 0:
+        raise Exception ('No installed Visual Studio detected!')
+    vsVersion = vsWhereOutput[0]['installationVersion'].split ('.')[0]
+    if vsVersion == '18':
+        return 'Visual Studio 18 2026'
+    elif vsVersion == '17':
+        return 'Visual Studio 17 2022'
+    elif vsVersion == '16':
+        return 'Visual Studio 16 2019'
+    else:
+        raise Exception ('Installed Visual Studio version not supported!')
+
+
+def GetToolset (version):
+    if version < 25:
+        return 'v141'
+    if version < 29:
+        return 'v142'
+    return 'v143'
+
+
+def GetProjectGenerationParams (args, workspaceRootFolder, buildPath, platformName, devKitFolder, lpXMLConverterFolder, version, languageCode, release, additionalParams):
+    # Add params to configure cmake
+    projGenParams = [
+        'cmake',
+        '-B', str (buildPath)
+    ]
+
+    devkitDir = devKitFolder / "Support"
+    if platformName == 'WIN':
+        projGenParams.extend ([
+            '-G', GetInstalledVisualStudioGenerator (),
+            '-T', GetToolset (int (version)),
+        ])
+        localizationMappingTable = FillLocalizationMappingTable (devkitDir)
+        winLangCharset = '040904b0'
+        if languageCode != 'INT':
+            winLangCharset = localizationMappingTable.get (languageCode, winLangCharset)
+        winLanguageId = int(winLangCharset[:4], 16)
+        winCharsetId = int(winLangCharset[4:], 16)
+        projGenParams.append (f'-DAC_WIN_LANGCHARSET={winLangCharset}')
+        projGenParams.append (f'-DAC_WIN_LANGUAGEID={winLanguageId}')
+        projGenParams.append (f'-DAC_WIN_CHARSETID={winCharsetId}')
+    elif platformName == 'MAC':
+        # Check if xcodebuild is available (requires full Xcode, not just Command Line Tools)
+        hasXcodebuild = subprocess.call ('xcodebuild -version', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+        if hasXcodebuild:
+            projGenParams.append ('-GXcode')
+        else:
+            # When only Command Line Tools are installed (not full Xcode), xcodebuild is not available.
+            # Use Unix Makefiles generator and explicitly specify the compilers and SDK.
+            projGenParams.append ('-GUnix Makefiles')
+            projGenParams.extend ([
+                '-DCMAKE_C_COMPILER=/usr/bin/clang',
+                '-DCMAKE_CXX_COMPILER=/usr/bin/clang++',
+                f'-DCMAKE_OSX_SYSROOT={subprocess.check_output(["xcode-select", "-p"]).decode().strip()}/SDKs/MacOSX.sdk'
+            ])
+        localizationMappingTable = FillLocalizationMappingTable (devkitDir)
+        addOnRegion = localizationMappingTable.get (languageCode, 'English')
+        projGenParams.append (f'-DAC_ADDON_REGION={addOnRegion}')
+
+    projGenParams.append (f'-DAC_VERSION={version}')
+    projGenParams.append (f'-DAC_API_DEVKIT_DIR={str (devkitDir)}')
+    projGenParams.append (f'-DLP_XML_CONVERTER_FOLDER={str (lpXMLConverterFolder)}')
+    projGenParams.append (f'-DAC_ADDON_LANGUAGE={languageCode}')
+
+    if release:
+        projGenParams.append ('-DAC_ADDON_FOR_DISTRIBUTION=ON')
+
+    if args.devKitPath is not None:
+        projGenParams.append ('-DAC_USE_LOCAL_DEVKIT=ON')
+        projGenParams.append (f'-DDEVKIT_BUILDNUM={args.buildNum}')
+
+    if additionalParams is not None:
+        for key in additionalParams:
+            projGenParams.append (f'-D{key}={additionalParams[key]}')
+
+    projGenParams.append (str (workspaceRootFolder))
+
+    return projGenParams
+
+
+def BuildAddOn (args, addOnName, platformName, additionalParams, workspaceRootFolder, buildFolder, devKitFolder, lpXMLConverterFolder, version, configuration, languageCode, release, quiet):
+    buildPath = buildFolder / addOnName / version / languageCode
+
+    # Add params to configure cmake
+    projGenParams = GetProjectGenerationParams (args, workspaceRootFolder, buildPath, platformName, devKitFolder, lpXMLConverterFolder, version, languageCode, release, additionalParams)
+    projGenResult = CallCommand (projGenParams, quiet)
+
+    if projGenResult != 0:
+        raise Exception ('Failed to generate project!')
+
+    # Add params to build AddOn
+    buildParams = [
+        'cmake',
+        '--build', str (buildPath),
+        '--config', configuration
+    ]
+
+    buildResult = CallCommand (buildParams, quiet)
+
+    if buildResult != 0:
+        raise Exception ('Failed to build project!')
+
+
+def BuildAddOns (args, addOnName, buildConfigList, languageList, additionalParams, workspaceRootFolder, buildFolder, devKitFolderList, lpXMLConverterFolderList , release, quiet):
+    platformName = GetPlatformName ()
+
+    try:
+        for version in devKitFolderList:
+            devKitFolder = devKitFolderList[version]
+            lpXMLConverterFolder = lpXMLConverterFolderList[version]
+
+            for languageCode in languageList:
+                for config in buildConfigList:
+                    BuildAddOn (args, addOnName, platformName, additionalParams, workspaceRootFolder, buildFolder, devKitFolder, lpXMLConverterFolder, version, config, languageCode, release, quiet)
+
+    except Exception as e:
+        raise e
+
+
+def Check7ZInstallation ():
+    try:
+        CallCommand ('7z', True)
+    except:
+        raise Exception ('7Zip not installed!')
+
+
+def CopyResultToPackage (packageRootFolder, buildFolder, version, addOnName, platformName, configuration, languageCode, dependencies=None):
+    packageFolder = packageRootFolder / version / languageCode / configuration
+    sourceFolder = buildFolder / addOnName / version / languageCode / configuration
+
+    if not packageFolder.exists ():
+        packageFolder.mkdir (parents=True)
+
+    if platformName == 'WIN':
+        shutil.copy (
+            sourceFolder / f'{addOnName}.apx',
+            packageFolder / f'{addOnName}.apx',
+        )
+        if configuration != 'Release':
+            shutil.copy (
+                sourceFolder / f'{addOnName}.pdb',
+                packageFolder / f'{addOnName}.pdb',
+            )
+
+    elif platformName == 'MAC':
+        CallCommand ([
+            'cp', '-R',
+            sourceFolder / f'{addOnName}.bundle',
+            packageFolder / f'{addOnName}.bundle'
+        ])
+
+    if dependencies:
+        skipPdb = platformName == 'WIN' and configuration == 'Release'
+        for pattern in dependencies:
+            for matchPath in sourceFolder.glob (pattern):
+                if skipPdb and matchPath.suffix.lower () == '.pdb':
+                    continue
+                relativePath = matchPath.relative_to (sourceFolder)
+                destPath = packageFolder / relativePath
+                if platformName == 'WIN':
+                    if matchPath.is_dir ():
+                        if destPath.exists ():
+                            shutil.rmtree (destPath)
+                        if skipPdb:
+                            shutil.copytree (matchPath, destPath, ignore=shutil.ignore_patterns ('*.pdb'))
+                        else:
+                            shutil.copytree (matchPath, destPath)
+                    else:
+                        destPath.parent.mkdir (parents=True, exist_ok=True)
+                        shutil.copy (matchPath, destPath)
+                elif platformName == 'MAC':
+                    destPath.parent.mkdir (parents=True, exist_ok=True)
+                    CallCommand ([
+                        'cp', '-R',
+                        str (matchPath),
+                        str (destPath)
+                    ])
+
+
+def GetDevKitVersion (args, devKitData, version, platformName):
+    if args.devKitPath:
+        buildNum = f'{version}.{args.buildNum}'
+    else:
+        url = devKitData[platformName][version]
+        buildNum = url.split ('/')[-2]
+
+    return buildNum
+
+
+# Zip packages
+def PackageAddOns (args, devKitData, addOnName, buildConfigList, acVersionList, languageList, buildFolder, packageRootFolder, dependencies=None):
+    platformName = GetPlatformName ()
+    if (platformName == 'WIN'):
+        Check7ZInstallation ()
+
+    for version in acVersionList:
+        versionAndBuildNum = GetDevKitVersion (args, devKitData, version, platformName)
+
+        for languageCode in languageList:
+            for config in buildConfigList:
+                CopyResultToPackage (packageRootFolder, buildFolder, version, addOnName, platformName, config, languageCode, dependencies)
+                if (platformName == 'WIN'):
+                    CallCommand ([
+                            '7z', 'a',
+                            str (packageRootFolder.parent / version / f'{addOnName}-{versionAndBuildNum}_{platformName}_{languageCode}_{config}.zip'),
+                            str (packageRootFolder / version / languageCode / config / '*')
+                        ], args.quiet)
+                else:
+                    # ditto preserves extended Finder attributes
+                    CallCommand ([
+                            'ditto', '-ck', '--sequesterRsrc',
+                            str (packageRootFolder / version / languageCode / config / '*'),
+                            str (packageRootFolder.parent / version / f'{addOnName}-{versionAndBuildNum}_{platformName}_{languageCode}_{config}.zip')
+                        ], args.quiet)
+
+def Main ():
+    try:
+        args = ParseArguments ()
+
+        [devKitData, addOnName, buildConfigList, acVersionList, languageList, additionalParams, dependencies] = PrepareParameters (args)
+
+        [workspaceRootFolder, buildFolder, packageRootFolder, devKitFolderList, lpXMLConverterFolderList] = PrepareDirectories (args, devKitData, addOnName, acVersionList)
+
+        os.chdir (workspaceRootFolder)
+
+        BuildAddOns (args, addOnName, buildConfigList, languageList, additionalParams, workspaceRootFolder, buildFolder, devKitFolderList, lpXMLConverterFolderList, args.release, args.quiet)
+
+        if args.package:
+            PackageAddOns (args, devKitData, addOnName, buildConfigList, acVersionList, languageList, buildFolder, packageRootFolder, dependencies)
+
+        print ('Build succeeded!')
+        sys.exit (0)
+
+    except Exception as e:
+        print (e)
+        print (traceback.format_exc())
+        sys.exit (1)
+
+if __name__ == "__main__":
+    Main ()
+
