@@ -382,6 +382,63 @@ def focus_archicad() -> None:
         pass
 
 
+TRAITS = {"Droits (0 / 90 degres)": 90.0, "Droits + 45 degres": 45.0, "Libres": 0.0}
+
+
+def constrain(prev: dict, point: dict, step_deg: float) -> dict:
+    """Redresse le trait prev -> point sur l'angle autorise le plus proche (0/90 ou 45 degres)."""
+    if step_deg <= 0:
+        return point
+    dx, dy = point["x"] - prev["x"], point["y"] - prev["y"]
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return point
+    step = math.radians(step_deg)
+    angle = round(math.atan2(dy, dx) / step) * step
+    length = dx * math.cos(angle) + dy * math.sin(angle)
+    return {"x": prev["x"] + length * math.cos(angle), "y": prev["y"] + length * math.sin(angle)}
+
+
+def is_aligned(a: dict, b: dict, step_deg: float) -> bool:
+    if step_deg <= 0:
+        return True
+    dx, dy = b["x"] - a["x"], b["y"] - a["y"]
+    if math.hypot(dx, dy) < 1e-6:
+        return True
+    step = math.radians(step_deg)
+    angle = math.atan2(dy, dx)
+    return abs(angle - round(angle / step) * step) < math.radians(0.5)
+
+
+def closing_corner(points: list[dict], step_deg: float) -> dict | None:
+    """Coin a ajouter pour fermer le contour avec des traits droits (None si deja aligne)."""
+    first, last = points[0], points[-1]
+    if is_aligned(last, first, step_deg):
+        return None
+    best, best_area = None, -1.0
+    for corner in ({"x": first["x"], "y": last["y"]}, {"x": last["x"], "y": first["y"]}):
+        poly = points + [corner]
+        area = abs(sum(p["x"] * q["y"] - q["x"] * p["y"] for p, q in zip(poly, poly[1:] + poly[:1])))
+        if area > best_area:
+            best, best_area = corner, area
+    return best
+
+
+def drop_collinear(points: list[dict]) -> list[dict]:
+    """Retire les sommets inutiles (alignes avec leurs voisins)."""
+    pts = list(points)
+    changed = True
+    while changed and len(pts) > 3:
+        changed = False
+        for i in range(len(pts)):
+            a, b, c = pts[i - 1], pts[i], pts[(i + 1) % len(pts)]
+            cross = (b["x"] - a["x"]) * (c["y"] - b["y"]) - (b["y"] - a["y"]) * (c["x"] - b["x"])
+            if abs(cross) < 1e-6:
+                pts.pop(i)
+                changed = True
+                break
+    return pts
+
+
 def pick_point(prompt: str) -> tuple[dict | None, str]:
     """Attend un clic dans Archicad. Renvoie (point, "") ou (None, raison)."""
     try:
@@ -630,6 +687,12 @@ def settings_window(settings: dict, apply) -> None:
     ttk.Checkbutton(zbox, text="Demander le nom de chaque piece", variable=ask_name
                     ).grid(row=2, column=1, sticky="w", padx=8)
 
+    ttk.Label(zbox, text="Traits du contour").grid(row=3, column=0, sticky="w", pady=3)
+    lines_mode = tk.StringVar(value=state.get("traits", "Droits (0 / 90 degres)")
+                              if state.get("traits") in TRAITS else "Droits (0 / 90 degres)")
+    ttk.Combobox(zbox, values=list(TRAITS), textvariable=lines_mode, state="readonly", width=30
+                 ).grid(row=3, column=1, sticky="w", padx=8)
+
     def chosen_category():
         if category.get() == AUTO:
             used = [z["category"] for z in read_zones() if z.get("category")]
@@ -640,6 +703,7 @@ def settings_window(settings: dict, apply) -> None:
         state["categorie"] = category.get()
         state["nom_piece"] = base_name.get()
         state["demander_nom"] = bool(ask_name.get())
+        state["traits"] = lines_mode.get()
 
     def by_clicks():
         """Piece par piece : chaque clic cree la zone et met le tableau a jour aussitot."""
@@ -726,7 +790,7 @@ def settings_window(settings: dict, apply) -> None:
                 while True:
                     focus_archicad()
                     if points:
-                        prompt = f"Piece {number} : point {len(points) + 1} (1er point ou Echap = fermer)"
+                        prompt = f"Piece {number} : point {len(points) + 1} (1er point/Echap = fermer, point precedent = annuler)"
                     else:
                         prompt = f"Piece {number} : 1er coin (Echap = terminer)"
                     point, _ = pick_point(prompt)
@@ -734,6 +798,18 @@ def settings_window(settings: dict, apply) -> None:
                         break
                     if len(points) >= 3 and math.dist((point["x"], point["y"]), (points[0]["x"], points[0]["y"])) <= close_dist:
                         break
+                    if len(points) >= 2 and math.dist((point["x"], point["y"]), (points[-2]["x"], points[-2]["y"])) <= close_dist:
+                        points.pop()                     # clic sur l'avant-dernier point : annule le dernier
+                        if temp:
+                            try:
+                                tapir("DeleteElements", {"elements": [{"elementId": {"guid": temp.pop()}}]})
+                            except Exception:  # noqa: BLE001
+                                pass
+                        continue
+                    if points:
+                        point = constrain(points[-1], point, TRAITS.get(lines_mode.get(), 90.0))
+                        if math.dist((point["x"], point["y"]), (points[-1]["x"], points[-1]["y"])) < 1e-4:
+                            continue
                     if points:   # trait provisoire pour voir le contour se dessiner
                         try:
                             answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], point]}]})
@@ -741,6 +817,15 @@ def settings_window(settings: dict, apply) -> None:
                         except Exception:  # noqa: BLE001
                             pass
                     points.append(point)
+                if len(points) >= 3:             # traits droits jusqu'au bout : coin de fermeture si besoin
+                    corner = closing_corner(points, TRAITS.get(lines_mode.get(), 90.0))
+                    if corner is not None:
+                        try:
+                            answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], corner]}]})
+                            temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                        except Exception:  # noqa: BLE001
+                            pass
+                        points.append(corner)
                 if len(points) >= 3 and temp:   # dernier trait : fermer le contour visible
                     try:
                         answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], points[0]]}]})
@@ -764,6 +849,7 @@ def settings_window(settings: dict, apply) -> None:
                     break
                 if choice == "recommencer":
                     continue
+                points = drop_collinear(points)
                 error = new_zone(story, name, number, chosen_category(), {"polygonCoordinates": points}, centroid(points))
                 if error:
                     last = f"Zone impossible avec ce contour ({error})."
@@ -821,7 +907,7 @@ def settings_window(settings: dict, apply) -> None:
         status.set("Zones recalculees. " + apply("dessiner", dict(collect())))
 
     zbtn = ttk.Frame(zbox)
-    zbtn.grid(row=3, column=0, columnspan=2, sticky="w", pady=(8, 0))
+    zbtn.grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
     ttk.Button(zbtn, text="Cliquer dans les pieces (une par une)...", command=by_clicks).grid(row=0, column=0, padx=(0, 6))
     ttk.Button(zbtn, text="Dessiner une piece (contour)...", command=by_drawing).grid(row=0, column=1, padx=6)
     ttk.Button(zbtn, text="Zones depuis la selection", command=by_selection).grid(row=1, column=0, padx=(0, 6), pady=(6, 0), sticky="we")
