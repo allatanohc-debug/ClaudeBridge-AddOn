@@ -77,6 +77,11 @@ STYLOS_ZONES = 40               # stylos 255, 254, ... = couleurs des zones (max
 PALETTE = [(0.98, 0.84, 0.55), (0.62, 0.78, 0.55), (0.55, 0.72, 0.90), (0.95, 0.62, 0.55),
            (0.78, 0.66, 0.88), (0.98, 0.72, 0.40), (0.55, 0.82, 0.80), (0.90, 0.60, 0.75),
            (0.80, 0.80, 0.45), (0.70, 0.60, 0.50)]   # couleurs de secours (jamais de blanc)
+STYLO_CONTOUR = 211             # stylo des traits provisoires du contour (couleur vive)
+COULEUR_CONTOUR = (1.0, 0.35, 0.0)    # orange vif
+SURBRILLANCE = (255, 90, 0, 255)      # surbrillance Archicad du contour en cours
+TRAIT_CONTOUR_MM = 0.7          # epaisseur des traits provisoires
+MARQUE_MM = 2.5                 # taille du repere sur le 1er point
 FERMETURE_MM = 1.5              # clic a moins de 1,5 mm (papier) du 1er point = contour ferme
 STYLO_TRAIT = 212
 STYLO_BLANC = 213
@@ -288,6 +293,7 @@ def set_pens(color: list[float], zones: list[dict]) -> bool:
             pen(STYLO_TRAIT, (0.0, 0.0, 0.0), "Tableau des surfaces - texte et traits"),
             pen(STYLO_BLANC, (1.0, 1.0, 1.0), "Tableau des surfaces - titre"),
             pen(STYLO_BANDEAU, color, "Tableau des surfaces - bandeau"),
+            pen(STYLO_CONTOUR, COULEUR_CONTOUR, "Tableau des surfaces - contour en cours"),
         ] + [pen(z["pen"], z["color"], f"Tableau des surfaces - {z['name'] or z['number']}"[:120])
              for z in zones if z.get("pen")]}]})
     return "error" not in answer.get("attributeIds", [{}])[0]
@@ -421,6 +427,15 @@ def closing_corner(points: list[dict], step_deg: float) -> dict | None:
         if area > best_area:
             best, best_area = corner, area
     return best
+
+
+def highlight(guids: list[str]) -> None:
+    """Surbrillance Archicad des elements (liste vide = enlever la surbrillance)."""
+    try:
+        tapir("HighlightElements", {"elements": [{"elementId": {"guid": g}} for g in guids],
+                                    "highlightedColors": [list(SURBRILLANCE)] * len(guids)})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def drop_collinear(points: list[dict]) -> list[dict]:
@@ -780,6 +795,22 @@ def settings_window(settings: dict, apply) -> None:
         remember()
         story = tapir("GetStories").get("actStory", 0)
         number = next_zone_number(read_zones())
+        try:
+            set_pens(state["couleur"], [])                  # stylo du contour en surbrillance
+        except Exception:  # noqa: BLE001
+            pass
+
+        def draw_temp(temp: list, coords: list) -> None:
+            """Trait provisoire epais, de couleur vive, en surbrillance."""
+            try:
+                answer = tapir("CreatePolylines", {"polylinesData": [{
+                    "floorInd": story, "coordinates": coords,
+                    "linePenIndex": STYLO_CONTOUR, "penWeightMm": TRAIT_CONTOUR_MM}]})
+                temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+            except Exception:  # noqa: BLE001
+                pass
+            highlight(temp)
+
         close_dist = FERMETURE_MM * ECHELLE / 1000.0
         created = 0
         last = "Dessine les pieces une par une ; chaque contour ferme propose \"Ajouter au tableau\"."
@@ -800,40 +831,35 @@ def settings_window(settings: dict, apply) -> None:
                         break
                     if len(points) >= 2 and math.dist((point["x"], point["y"]), (points[-2]["x"], points[-2]["y"])) <= close_dist:
                         points.pop()                     # clic sur l'avant-dernier point : annule le dernier
-                        if temp:
+                        if len(temp) > 1:            # (temp[0] = repere du 1er point)
                             try:
                                 tapir("DeleteElements", {"elements": [{"elementId": {"guid": temp.pop()}}]})
                             except Exception:  # noqa: BLE001
                                 pass
+                            highlight(temp)
                         continue
                     if points:
                         point = constrain(points[-1], point, TRAITS.get(lines_mode.get(), 90.0))
                         if math.dist((point["x"], point["y"]), (points[-1]["x"], points[-1]["y"])) < 1e-4:
                             continue
+                    if not points:               # repere en surbrillance sur le 1er point (pour fermer)
+                        r = MARQUE_MM * ECHELLE / 1000.0 / 2
+                        draw_temp(temp, [{"x": point["x"] - r, "y": point["y"] - r}, {"x": point["x"] + r, "y": point["y"] - r},
+                                         {"x": point["x"] + r, "y": point["y"] + r}, {"x": point["x"] - r, "y": point["y"] + r},
+                                         {"x": point["x"] - r, "y": point["y"] - r}])
                     if points:   # trait provisoire pour voir le contour se dessiner
-                        try:
-                            answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], point]}]})
-                            temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
-                        except Exception:  # noqa: BLE001
-                            pass
+                        draw_temp(temp, [points[-1], point])
                     points.append(point)
                 if len(points) >= 3:             # traits droits jusqu'au bout : coin de fermeture si besoin
                     corner = closing_corner(points, TRAITS.get(lines_mode.get(), 90.0))
                     if corner is not None:
-                        try:
-                            answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], corner]}]})
-                            temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
-                        except Exception:  # noqa: BLE001
-                            pass
+                        draw_temp(temp, [points[-1], corner])
                         points.append(corner)
                 if len(points) >= 3 and temp:   # dernier trait : fermer le contour visible
-                    try:
-                        answer = tapir("CreatePolylines", {"polylinesData": [{"floorInd": story, "coordinates": [points[-1], points[0]]}]})
-                        temp += [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
-                    except Exception:  # noqa: BLE001
-                        pass
+                    draw_temp(temp, [points[-1], points[0]])
 
                 def clear_temp():
+                    highlight([])
                     if temp:
                         try:
                             tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
