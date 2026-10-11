@@ -435,6 +435,40 @@ def closing_corner(points: list[dict], step_deg: float) -> dict | None:
     return best
 
 
+NOMS_PIECES = [
+    "Chambre", "Chambre 1", "Chambre 2", "Chambre 3", "Chambre parentale", "Chambre d'amis", "Chambre d'enfant",
+    "Suite parentale", "Séjour", "Salon", "Salle à manger", "Pièce à vivre", "Cuisine", "Cuisine ouverte",
+    "Kitchenette", "Office", "Cellier", "Buanderie", "Arrière-cuisine", "Salle de bain", "Salle d'eau", "SdB", "SDE",
+    "WC", "WC visiteurs", "Toilettes", "Dressing", "Placard", "Rangement", "Débarras", "Entrée", "Hall", "Dégagement",
+    "Couloir", "Circulation", "Palier", "Escalier", "Bureau", "Bibliothèque", "Salle de jeux", "Salle de sport",
+    "Salle de cinéma", "Mezzanine", "Véranda", "Terrasse", "Terrasse couverte", "Balcon", "Loggia", "Patio", "Cour",
+    "Jardin", "Garage", "Carport", "Parking", "Atelier", "Local technique", "Chaufferie", "Cave", "Grenier",
+    "Combles", "Abri", "Piscine", "Pool house", "Gardiennage", "Boyerie", "Chambre de bonne", "Magasin", "Boutique",
+    "Accueil", "Salle de réunion", "Open space", "Espace de travail", "Salle de pause", "Vestiaire", "Infirmerie",
+]
+
+
+def simplify(text: str) -> str:
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFD", text.lower()) if unicodedata.category(c) != "Mn")
+
+
+def suggest_names(typed: str, extra: list[str], limit: int = 8) -> list[str]:
+    """Noms de pieces qui correspondent a ce qui est tape (debut de mot d'abord, sans tenir compte des accents)."""
+    key = simplify(typed.strip())
+    pool, seen = [], set()
+    for name in list(extra) + NOMS_PIECES:
+        if name and simplify(name) not in seen:
+            seen.add(simplify(name))
+            pool.append(name)
+    if not key:
+        return pool[:limit]
+    starts = [n for n in pool if simplify(n).startswith(key)]
+    words = [n for n in pool if n not in starts and any(w.startswith(key) for w in simplify(n).replace("'", " ").split())]
+    inside = [n for n in pool if n not in starts and n not in words and key in simplify(n)]
+    return (starts + words + inside)[:limit]
+
+
 def highlight(guids: list[str]) -> None:
     """Surbrillance Archicad des elements (liste vide = enlever la surbrillance)."""
     try:
@@ -751,7 +785,7 @@ def settings_window(settings: dict, apply) -> None:
                 name = f"{base_name.get()} {number}"
                 if ask_name.get():
                     root.deiconify()
-                    answer = simpledialog.askstring("Nom de la piece", "Nom de cette piece :", initialvalue=name, parent=root)
+                    answer = ask_room_name(number, name)
                     root.withdraw()
                     if answer is None:
                         continue
@@ -770,35 +804,83 @@ def settings_window(settings: dict, apply) -> None:
             root.deiconify()
         status.set((f"{created} piece(s) ajoutee(s) au tableau. " if created else "") + last)
 
-    def room_done_dialog(number: int, default_name: str) -> tuple[str, str]:
-        """Contour ferme : nom de la piece + Ajouter au tableau / Recommencer / Terminer."""
-        result = {"choice": "terminer", "name": default_name}
+    def name_dialog(title: str, message: str, default_name: str, buttons: list) -> tuple[str, str]:
+        """Nom de la piece avec propositions pendant la frappe. buttons = [(texte, choix), ...], le dernier = Entree."""
+        try:
+            used = sorted({z["name"] for z in read_zones() if z.get("name")})
+        except Exception:  # noqa: BLE001
+            used = []
+        result = {"choice": buttons[0][1], "name": default_name}
         win = tk.Toplevel(root)
-        win.title(f"Piece {number} terminee")
+        win.title(title)
         win.attributes("-topmost", True)
         win.resizable(False, False)
         box = ttk.Frame(win, padding=14)
         box.grid()
-        ttk.Label(box, text="Contour ferme. Nom de la piece :").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text=message).grid(row=0, column=0, columnspan=len(buttons), sticky="w")
         name_var = tk.StringVar(value=default_name)
-        entry = ttk.Entry(box, textvariable=name_var, width=34)
-        entry.grid(row=1, column=0, columnspan=3, sticky="we", pady=(4, 10))
-        entry.select_range(0, "end")
-        entry.focus_set()
+        entry = ttk.Entry(box, textvariable=name_var, width=40)
+        entry.grid(row=1, column=0, columnspan=len(buttons), sticky="we", pady=(4, 2))
+        listbox = tk.Listbox(box, height=6, activestyle="dotbox", exportselection=False)
+        listbox.grid(row=2, column=0, columnspan=len(buttons), sticky="we", pady=(0, 10))
+        ttk.Label(box, text="Clique une proposition (ou fleches + Tab) pour la prendre. Entree pour valider.",
+                  foreground="#666").grid(row=3, column=0, columnspan=len(buttons), sticky="w", pady=(0, 8))
+
+        def refresh(*_):
+            listbox.delete(0, "end")
+            for name in suggest_names(name_var.get(), used):
+                listbox.insert("end", name)
+            if listbox.size():
+                listbox.selection_set(0)
+
+        def take(_e=None):
+            sel = listbox.curselection()
+            if sel:
+                name_var.set(listbox.get(sel[0]))
+                entry.icursor("end")
+            return "break"
+
+        def move(delta):
+            if not listbox.size():
+                return "break"
+            sel = listbox.curselection()
+            index = max(0, min(listbox.size() - 1, (sel[0] if sel else -1) + delta))
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(index)
+            listbox.see(index)
+            return "break"
 
         def close(choice):
             result["choice"], result["name"] = choice, (name_var.get().strip() or default_name)
             win.destroy()
 
-        ttk.Button(box, text="Terminer", command=lambda: close("terminer")).grid(row=2, column=0, padx=3)
-        ttk.Button(box, text="Recommencer le contour", command=lambda: close("recommencer")).grid(row=2, column=1, padx=3)
-        ttk.Button(box, text="Ajouter au tableau", command=lambda: close("ajouter")).grid(row=2, column=2, padx=3)
-        win.bind("<Return>", lambda _e: close("ajouter"))
-        win.protocol("WM_DELETE_WINDOW", lambda: close("terminer"))
+        name_var.trace_add("write", refresh)
+        entry.bind("<Down>", lambda _e: move(1))
+        entry.bind("<Up>", lambda _e: move(-1))
+        entry.bind("<Tab>", take)
+        listbox.bind("<ButtonRelease-1>", lambda _e: (take(), entry.focus_set()))   # un clic suffit
+        for column, (text, choice) in enumerate(buttons):
+            ttk.Button(box, text=text, command=lambda c=choice: close(c)).grid(row=4, column=column, padx=3)
+        win.bind("<Return>", lambda _e: close(buttons[-1][1]))
+        win.protocol("WM_DELETE_WINDOW", lambda: close(buttons[0][1]))
+        refresh()
+        entry.select_range(0, "end")
+        entry.focus_set()
         win.lift()
         win.focus_force()
         root.wait_window(win)
         return result["choice"], result["name"]
+
+    def room_done_dialog(number: int, default_name: str) -> tuple[str, str]:
+        """Contour ferme : nom de la piece + Ajouter au tableau / Recommencer / Terminer."""
+        return name_dialog(f"Piece {number} terminee", "Contour ferme. Nom de la piece :", default_name,
+                           [("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
+                            ("Ajouter au tableau", "ajouter")])
+
+    def ask_room_name(number: int, default_name: str) -> str | None:
+        choice, name = name_dialog("Nom de la piece", f"Nom de la piece {number} :", default_name,
+                                   [("Ignorer cette piece", "annuler"), ("OK", "ok")])
+        return name if choice == "ok" else None
 
     def by_drawing():
         """Dessiner soi-meme le contour de chaque piece, point par point ; le tableau suit a chaque piece."""
@@ -966,7 +1048,7 @@ def settings_window(settings: dict, apply) -> None:
         for pts, arcs, holes in outlines:
             name = f"{base_name.get()} {number}"
             if ask_name.get():
-                answer = simpledialog.askstring("Nom de la piece", f"Nom de la piece {number} :", initialvalue=name, parent=root)
+                answer = ask_room_name(number, name)
                 if answer is None:
                     continue
                 name = answer.strip() or name
