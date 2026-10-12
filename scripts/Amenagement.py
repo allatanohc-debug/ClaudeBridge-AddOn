@@ -16,6 +16,7 @@ Placement : 1er clic = position, 2e clic = direction du regard. Echap pour termi
 """
 
 import argparse
+import json
 import math
 import sys
 from pathlib import Path
@@ -25,7 +26,25 @@ import TableauSurfaces as T  # noqa: E402
 
 MEMOIRE = "personnages.json"       # guids dessines (exclus de la baguette magique)
 REGLAGES = "amenagement_reglages.json"
-POSES = ("Debout", "Qui marche", "Assis", "Au bureau (assis, bras en avant)", "Couche")
+POSES_DESSINEES = ("Debout", "Qui marche", "Assis", "Au bureau (assis, bras en avant)", "Couche")
+
+
+def load_library() -> dict:
+    """Personnages dessines a la main, lus dans les fichiers personnages_*.json places a cote du script
+    (convertis depuis une bibliotheque DWG que l'utilisateur a le droit d'utiliser)."""
+    figures = {}
+    for path in sorted(Path(__file__).resolve().parent.glob("personnages_*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for fig in data.get("figures", []):
+                figures[fig["nom"]] = fig
+        except Exception as error:  # noqa: BLE001
+            print(f"(Bibliotheque {path.name} illisible : {error})")
+    return figures
+
+
+LIBRARY = load_library()
+POSES = tuple(LIBRARY) + (() if LIBRARY else POSES_DESSINEES)
 STYLO_CONTOUR_PERSO = 207          # gris fonce du contour
 COULEUR_CONTOUR = (0.30, 0.30, 0.30)
 TRAIT_MM = 0.18
@@ -163,10 +182,33 @@ def project_key(story: int) -> str:
     return f"{project.get('projectPath') or project.get('projectName') or 'Sans titre'}|{story}"
 
 
+def library_elements(fig: dict, x: float, y: float, facing: float, story: int, solid, scale: float):
+    """Personnage de bibliotheque : fond blanc sous la silhouette + traits d'origine.
+    facing = direction du regard voulue (radians, 0 = vers +x)."""
+    rx, ry = fig.get("regard", [0, -1])
+    angle = facing - math.atan2(ry, rx)
+    pts = lambda shape: [(px * scale, py * scale) for px, py in shape]   # noqa: E731
+    hatches, lines = [], []
+    for fill in fig.get("fills", []):
+        h = {"floorInd": story, "showArea": False, "coordinates": place(pts(fill), x, y, angle),
+             "fillPenIndex": T.STYLO_BLANC, "fillBackgroundPenIndex": T.STYLO_BLANC, "contourPenIndex": T.STYLO_BLANC}
+        if solid:
+            h["fillId"] = solid
+        hatches.append(h)
+    for line in fig.get("lines", []):
+        lines.append({"floorInd": story, "linePenIndex": STYLO_CONTOUR_PERSO, "penWeightMm": 0.13,
+                      "coordinates": place(pts(line), x, y, angle)})
+    return hatches, lines
+
+
 def draw_person(pose: str, x: float, y: float, angle: float, story: int, solid, scale: float) -> list[str]:
-    hatches, lines = person_elements(pose, x, y, angle, story, solid, scale)
-    created = T.ok_items(T.tapir("CreateHatches", {"hatchesData": hatches}).get("elements", []))
-    created += T.ok_items(T.tapir("CreatePolylines", {"polylinesData": lines}).get("elements", []))
+    if pose in LIBRARY:     # angle = rotation "regard vers +y" -> on repasse en direction absolue
+        hatches, lines = library_elements(LIBRARY[pose], x, y, angle + math.pi / 2, story, solid, scale)
+    else:
+        hatches, lines = person_elements(pose, x, y, angle, story, solid, scale)
+    created = T.ok_items(T.tapir("CreateHatches", {"hatchesData": hatches}).get("elements", [])) if hatches else []
+    for start in range(0, len(lines), 400):
+        created += T.ok_items(T.tapir("CreatePolylines", {"polylinesData": lines[start:start + 400]}).get("elements", []))
     if created:
         try:
             T.tapir("CreateGroups", {"elementGroups": [{"elements": created}]})
@@ -229,13 +271,16 @@ def window() -> None:
     box.grid(row=0, column=0, sticky="we")
     ttk.Label(box, text="Pose").grid(row=0, column=0, sticky="w", pady=3)
     pose = tk.StringVar(value=saved.get("pose") if saved.get("pose") in POSES else POSES[0])
-    ttk.Combobox(box, values=POSES, textvariable=pose, state="readonly", width=34).grid(row=0, column=1, sticky="w", padx=8)
+    ttk.Combobox(box, values=POSES, textvariable=pose, state="readonly", width=40, height=20).grid(row=0, column=1, sticky="w", padx=8)
     ttk.Label(box, text="Taille").grid(row=1, column=0, sticky="w", pady=3)
     size = tk.StringVar(value=saved.get("taille", "Adulte"))
     ttk.Combobox(box, values=("Adulte", "Grand", "Enfant"), textvariable=size, state="readonly", width=34
                  ).grid(row=1, column=1, sticky="w", padx=8)
     ttk.Label(box, text="1er clic = position, 2e clic = direction du regard. Echap pour terminer.",
               foreground="#666").grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    source = (f"{len(LIBRARY)} personnage(s) de ta bibliotheque (fichiers personnages_*.json)." if LIBRARY else
+              "Aucune bibliotheque trouvee : silhouettes simplifiees. Ajoute un fichier personnages_*.json.")
+    ttk.Label(box, text=source, foreground="#666").grid(row=3, column=0, columnspan=2, sticky="w")
     status = tk.StringVar(value="")
     ttk.Label(f, textvariable=status, foreground="#555", wraplength=420).grid(row=1, column=0, sticky="w", pady=(10, 0))
 

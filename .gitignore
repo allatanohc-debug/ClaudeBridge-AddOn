@@ -5,3 +5,6 @@ out/*
 CMakeUserPresets.json
 APIDevKit-*/
 __pycache__/
+
+# bibliotheques de personnages sous licence (non redistribuables)
+scripts/personnages_*.json
