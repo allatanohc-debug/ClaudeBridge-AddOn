@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 
-VERSION = "13/10 - 1re version"
+VERSION = "13/10 - v2"
 HERE = os.path.dirname(os.path.abspath(__file__))
 REGLAGES = os.path.join(HERE, "calques_magiques_reglages.json")
 
@@ -310,9 +310,12 @@ def color_shapes(rgb, colors: int, folder: str, min_part: float = 0.004, max_lay
         labels[closer], best[closer] = i, d[closer]
     counts = np.bincount(labels.ravel(), minlength=len(palette))
     background = int(np.argmax(counts))
+    bg_color = palette[background]
     shapes = []
     for i, c in enumerate(palette):
         if i == background or counts[i] < min_part * H * W:
+            continue
+        if float(np.linalg.norm(c - bg_color)) < 45:              # nuance du fond (grain, texture du papier)
             continue
         comp, n = ndimage.label(ndimage.binary_opening(labels == i, iterations=1))
         if n == 0:
@@ -322,6 +325,10 @@ def color_shapes(rgb, colors: int, folder: str, min_part: float = 0.004, max_lay
             if size < min_part * H * W:
                 continue
             part = ndimage.binary_closing(comp == j, iterations=2)
+            ys, xs = np.where(part)
+            box = (ys.max() - ys.min() + 1) * (xs.max() - xs.min() + 1)
+            if size / box < 0.08:                                  # poussiere / texture eparpillee : pas une forme
+                continue
             shapes.append((float(size), i, part, c))
     shapes.sort(key=lambda s: -s[0])
     out = []
@@ -540,8 +547,8 @@ def jsx_texts(lines: list[dict], regular: str, bold: str, fit: bool) -> str:
 (function(){{
   var doc = app.activeDocument, old = pxUnits(), made = 0, errors = [];
   var group = findSet(doc, "Calques magiques");
-  var texts = group.layerSets.add(); texts.name = "Textes";
-  texts.move(group, ElementPlacement.PLACEATBEGINNING);
+  var texts = findSet(group, "Textes");
+  if (!texts) {{ texts = group.layerSets.add(); texts.name = "Textes"; }}
   var list = {js(data)};
   for (var i = list.length - 1; i >= 0; i--) {{
     var L = list[i];
