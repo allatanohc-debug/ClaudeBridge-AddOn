@@ -45,7 +45,8 @@ LARGEUR_REMPLISSAGE = 0.10           # epaisseur des stylos de remplissage (sans
 # role : (groupe, libelle, nature, couleur par defaut, epaisseur par defaut en mm ou None)
 ROLES = {
     "murs_interieur": ("murs", "Intérieur (remplissage de coupe)", "fond", (0.45, 0.45, 0.45), None),
-    "murs_contour":   ("murs", "Contour des murs", "trait", (0.10, 0.10, 0.10), 0.35),
+    "murs_contour":   ("murs", "Contour des murs (trait coupé)", "trait", (0.10, 0.10, 0.10), 0.35),
+    "murs_vues":      ("murs", "Lignes vues, non coupées (coupe / façade)", "trait", (0.35, 0.35, 0.35), 0.13),
     "objets_lignes":  ("objets", "Lignes et contours", "trait", (0.30, 0.30, 0.30), 0.13),
     "objets_fond":    ("objets", "Remplissages", "fond", (0.93, 0.93, 0.93), None),
     "textes":         ("textes", "Couleur du texte", "texte", (0.10, 0.10, 0.10), None),
@@ -54,7 +55,7 @@ ROLES = {
     "hach_fond":      ("dessin", "Remplissage des hachures", "fond", (0.88, 0.88, 0.88), None),
 }
 GROUPES = {
-    "murs": "Murs, poteaux, poutres",
+    "murs": "Murs, dalles, poteaux, poutres, morphes",
     "objets": "Objets (mobilier, sanitaires, cuisine...)",
     "textes": "Textes et étiquettes",
     "dessin": "Dessin 2D (lignes et hachures)",
@@ -83,13 +84,16 @@ PREREGLAGES = {
 # types d'elements -> (commande Tapir, cle de la liste) pour l'interieur / le contour des murs
 MURS = {"Wall": ("ModifyWalls", "wallsWithDetails"),
         "Column": ("ModifyColumns", "columnsWithDetails"),
-        "Beam": ("ModifyBeams", "beamsWithDetails")}
+        "Beam": ("ModifyBeams", "beamsWithDetails"),
+        "Slab": ("ModifySlabs", "slabsWithDetails")}
+MORPHES = {"Morph": ("ModifyMorphs", "morphsWithDetails")}   # stylos simples (pas "overridden")
+VUES = ("Plan", "Coupe / façade")
 OBJETS = ("Object", "Lamp")
 OBJETS_MODIF = {"Object": ("ModifyObjects", "objectsWithDetails"), "Lamp": ("ModifyLamps", "lampsWithDetails")}
 OUVERTURES = ("Door", "Window", "Skylight")
 TEXTES = {"Text": ("ModifyTexts", "textsWithDetails"), "Label": ("ModifyLabels", "labelsWithDetails")}
 LIGNES = ("Line", "PolyLine", "Arc", "Circle", "Spline")
-NOMS_TYPES = {"Wall": "mur", "Column": "poteau", "Beam": "poutre", "Object": "objet", "Lamp": "luminaire",
+NOMS_TYPES = {"Wall": "mur", "Column": "poteau", "Slab": "dalle", "Morph": "morphe", "Beam": "poutre", "Object": "objet", "Lamp": "luminaire",
               "Door": "porte", "Window": "fenêtre", "Skylight": "fenêtre de toit", "Text": "texte",
               "Label": "étiquette", "Line": "ligne", "PolyLine": "polyligne", "Arc": "arc",
               "Circle": "cercle", "Spline": "courbe", "Hatch": "hachure"}
@@ -168,6 +172,7 @@ def load_settings() -> dict:
             "epaisseur": float(w) if isinstance(w, (int, float)) and not isinstance(w, bool) and w > 0 else width,
         }
     return {"roles": roles,
+            "vue": saved.get("vue") if saved.get("vue") in VUES else VUES[0],
             "murs_plein": bool(saved.get("murs_plein", True)),
             "ouvertures": bool(saved.get("ouvertures", False))}
 
@@ -340,8 +345,8 @@ def write_fields(kind: str, by_guid: dict) -> tuple[int, str]:
     """by_guid : {guid: {champ: valeur}} pour un type d'element. Champs : ceux de Modify* ou de SetDetails."""
     if not by_guid:
         return 0, ""
-    if kind in MURS or kind in OBJETS_MODIF:
-        command, key = MURS.get(kind) or OBJETS_MODIF[kind]
+    if kind in MURS or kind in OBJETS_MODIF or kind in MORPHES:
+        command, key = MURS.get(kind) or OBJETS_MODIF.get(kind) or MORPHES[kind]
         return send(command, key, [{"elementId": {"guid": g}, **fields} for g, fields in by_guid.items()])
     if kind in TEXTES:
         command, key = TEXTES[kind]
@@ -372,11 +377,16 @@ def run_apply(settings: dict) -> str:
 
     object_types = OBJETS + (OUVERTURES if settings["ouvertures"] else ())
     present = {r["type"] for r in rows}
+    coupe = settings.get("vue") == VUES[1]
+    if not coupe:
+        on.discard("murs_vues")
     needed = []
-    if "murs_interieur" in on and present & set(MURS):
+    if "murs_interieur" in on and present & (set(MURS) | set(MORPHES)):
         needed.append("murs_interieur")
-    if "murs_contour" in on and "Wall" in present and contour_ok:
+    if "murs_contour" in on and (("Wall" in present and contour_ok) or "Morph" in present):
         needed.append("murs_contour")
+    if "murs_vues" in on and (("Wall" in present and contour_ok) or "Morph" in present):
+        needed.append("murs_vues")
     if present & set(object_types):
         needed += [k for k in ("objets_lignes", "objets_fond") if k in on]
     if "textes" in on and present & set(TEXTES):
@@ -412,10 +422,23 @@ def run_apply(settings: dict) -> str:
             if settings["murs_plein"]:
                 fields["cutFillBackgroundPen"] = {"overridden": True, "penIndex": pen}
                 remember(guid, kind, "cutFillBackgroundPen", d.get("cutFillBackgroundPen") or {"overridden": False})
-        if kind == "Wall" and "murs_contour" in pens:
-            fields["contourPen"] = pens["murs_contour"]
+        if kind == "Wall" and "murs_contour" in pens and contour_ok:
+            fields["contourPen"] = pens["murs_contour"]          # trait coupe : plan ET coupe
             if isinstance(d.get("contourPen"), int):
                 remember(guid, kind, "contourPen", d["contourPen"])
+        if kind == "Wall" and "murs_vues" in pens and contour_ok:
+            fields["contourPen3D"] = pens["murs_vues"]           # lignes vues en coupe / facade / 3D
+            if isinstance(d.get("contourPen3D"), int):
+                remember(guid, kind, "contourPen3D", d["contourPen3D"])
+        if kind in MORPHES:                                       # pas de lecture : Ctrl+Z seulement
+            if "murs_interieur" in pens:
+                fields["cutFillPen"] = pens["murs_interieur"]
+                if settings["murs_plein"]:
+                    fields["cutFillBackgroundPen"] = pens["murs_interieur"]
+            if "murs_contour" in pens:
+                fields["cutLinePen"] = pens["murs_contour"]
+            if "murs_vues" in pens:
+                fields["uncutLinePen"] = pens["murs_vues"]
         if kind in TEXTES and "textes" in pens:
             style = d.get("style") if isinstance(d.get("style"), dict) else {}
             old = style.get("penIndex", d.get("pen"))
@@ -432,6 +455,17 @@ def run_apply(settings: dict) -> str:
                 remember(guid, kind, "pen", d["pen"])
             if isinstance(d.get("useObjectPens"), bool):
                 remember(guid, kind, "useObjectPens", d["useObjectPens"])
+        if kind in OBJETS_MODIF and coupe and ({"objets_lignes", "objets_fond"} & set(pens)):
+            # partie coupee de l'objet en coupe : "Remplacer les attributs de coupe"
+            if "objets_lignes" in pens:
+                fields["sectionContourPen"] = pens["objets_lignes"]
+            if "objets_fond" in pens:
+                fields["sectionFillPen"] = pens["objets_fond"]
+                fields["sectionFillBackgroundPen"] = pens["objets_fond"]
+            fields["useObjectSectionAttributes"] = False
+            for name in ("sectionContourPen", "sectionFillPen", "sectionFillBackgroundPen", "useObjectSectionAttributes"):
+                if name in fields and isinstance(d.get(name), (int, bool)):
+                    remember(guid, kind, name, d[name])
         if kind in LIGNES and "lignes" in pens:
             fields["linePenIndex"] = pens["lignes"]
             if isinstance(d.get("linePenIndex"), int):
@@ -476,12 +510,15 @@ def run_apply(settings: dict) -> str:
             report.append("  Objets : déjà dans ces couleurs.")
 
     save_json(MEMOIRE, memory)
-    head = [describe(rows), "Stylos utilisés : " + ", ".join(
+    head = [f"Vue : {settings.get('vue', VUES[0])}", describe(rows), "Stylos utilisés : " + ", ".join(
         f"{ROLES[k][1].lower()} = {p}" for k, p in pens.items())]
     if "murs_contour" in on and "Wall" in present and not contour_ok:
         head.append(contour_note(version))
-    if "Column" in present and "murs_contour" in on:
-        head.append("Le contour des poteaux ne peut pas être changé par Tapir (seulement leur intérieur).")
+    if present & {"Column", "Beam", "Slab"} and ({"murs_contour", "murs_vues"} & on):
+        head.append("Le contour des poteaux, poutres et dalles ne peut pas être changé par Tapir "
+                    "(seulement leur intérieur).")
+    if "Morph" in present:
+        head.append("Morphes : « Remettre d'origine » ne peut pas les remettre, utilise Ctrl+Z dans Archicad.")
     return "\n".join(head + report + notes)
 
 
@@ -559,6 +596,13 @@ def settings_window(settings: dict) -> None:
     preset_box = ttk.Combobox(top, values=list(PREREGLAGES), textvariable=preset_var, state="readonly", width=28)
     preset_box.grid(row=0, column=2, sticky="e")
     top.columnconfigure(0, weight=1)
+    vue_frame = ttk.Frame(top)
+    vue_frame.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+    ttk.Label(vue_frame, text="Je travaille en :").grid(row=0, column=0, padx=(0, 6))
+    vue_var = tk.StringVar(value=state.get("vue", VUES[0]))
+    for i, v in enumerate(VUES):
+        ttk.Radiobutton(vue_frame, text=v, value=v, variable=vue_var,
+                        command=lambda: show_mode()).grid(row=0, column=i + 1, padx=4)
 
     widgets: dict = {}
     active = {k: tk.BooleanVar(value=r["actif"]) for k, r in state["roles"].items()}
@@ -629,9 +673,11 @@ def settings_window(settings: dict) -> None:
         for key, (g, label, nature, _c, width) in ROLES.items():
             if g != group:
                 continue
-            w = widgets[key] = {}
-            ttk.Checkbutton(box, text=label, variable=active[key], width=32,
-                            command=lambda k=key: refresh(k)).grid(row=r, column=0, sticky="w", pady=2)
+            w = widgets[key] = {"cells": []}
+            check = ttk.Checkbutton(box, text=label, variable=active[key], width=38,
+                                    command=lambda k=key: refresh(k))
+            check.grid(row=r, column=0, sticky="w", pady=2)
+            w["cells"].append(check)
             w["swatch"] = tk.Label(box, width=4, relief="groove")
             w["swatch"].grid(row=r, column=1, padx=(4, 4))
             w["swatch_btn"] = ttk.Button(box, text="Couleur...", width=9, command=lambda k=key: pick_color(k))
@@ -640,13 +686,17 @@ def settings_window(settings: dict) -> None:
             w["pen_btn"].grid(row=r, column=3, padx=(2, 0))
             w["tag"] = ttk.Label(box, width=12, foreground="#666")
             w["tag"].grid(row=r, column=4, sticky="w", padx=(6, 0))
+            w["cells"] += [w["swatch"], w["swatch_btn"], w["pen_btn"], w["tag"]]
             if nature == "trait":
                 w["width_var"] = tk.StringVar()
-                ttk.Label(box, text="épaisseur").grid(row=r, column=5, sticky="e", padx=(6, 2))
+                lab1 = ttk.Label(box, text="épaisseur")
+                lab1.grid(row=r, column=5, sticky="e", padx=(6, 2))
                 w["width"] = ttk.Spinbox(box, from_=0.05, to=2.0, increment=0.05, width=5,
                                          textvariable=w["width_var"], format="%.2f")
                 w["width"].grid(row=r, column=6)
-                ttk.Label(box, text="mm").grid(row=r, column=7, sticky="w", padx=(2, 0))
+                lab2 = ttk.Label(box, text="mm")
+                lab2.grid(row=r, column=7, sticky="w", padx=(2, 0))
+                w["cells"] += [lab1, w["width"], lab2]
             else:
                 w["width"] = None
             r += 1
@@ -659,6 +709,15 @@ def settings_window(settings: dict) -> None:
 
     for key in ROLES:
         refresh(key)
+
+    def show_mode():
+        coupe = vue_var.get() == VUES[1]
+        for cell in widgets["murs_vues"]["cells"]:
+            cell.grid() if coupe else cell.grid_remove()
+        status.set("Coupe / façade : sélectionne les éléments dans la fenêtre de coupe ou de façade."
+                   if coupe else "Sélectionne dans Archicad, coche ce que tu veux changer, puis « Appliquer ».")
+
+    show_mode()
 
     def on_preset(*_):
         for key, (color, width) in PREREGLAGES.get(preset_var.get(), {}).items():
@@ -695,6 +754,7 @@ def settings_window(settings: dict) -> None:
                     pass
         state["murs_plein"] = bool(plein.get())
         state["ouvertures"] = bool(ouvertures.get())
+        state["vue"] = vue_var.get()
         save_json(REGLAGES, state)
         return state
 
