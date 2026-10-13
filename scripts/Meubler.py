@@ -10,8 +10,9 @@ Puis dans Archicad : palette Tapir > "Meubler.py" > Executer.
 
 1. Choisis le type de piece (Chambre, Sejour, Cuisine, Salle de bain...) : la liste des meubles
    proposes s'adapte. Coche ceux que tu veux.
-2. "Cliquer dans la piece..." : clic dans une piece fermee (comme la baguette magique), ou
-   "Meubler les zones selectionnees" : le type est deduit du nom de chaque zone.
+2. "Baguette magique (clic dans la piece)..." : clic dans une piece fermee (contour en surbrillance), ou
+   "Dessiner une piece (contour)..." : coins cliques comme dans le tableau des surfaces, ou
+   "Meubler la selection" : zones (type deduit du nom), polylignes ou hachures fermees.
 3. Le script lit le contour, les portes (on ne bloque pas leur ouverture) et les fenetres
    (pas d'armoire devant), puis place les meubles avec les passages necessaires.
 
@@ -1281,7 +1282,7 @@ def settings_window(settings: dict) -> None:
     root.attributes("-topmost", True)
     outer = ttk.Frame(root, padding=12)
     outer.grid()
-    status = tk.StringVar(value="Choisis le type de pièce, coche les meubles, puis dessine le contour ou clique dans la pièce.")
+    status = tk.StringVar(value="Choisis le type de pièce, coche les meubles, puis baguette magique ou dessin du contour.")
 
     top = ttk.Frame(outer)
     top.grid(row=0, column=0, sticky="ew")
@@ -1375,43 +1376,78 @@ def settings_window(settings: dict) -> None:
         ttk.Button(frame, text="Enregistrer", command=save).grid(row=len(rows) + 2, column=2, sticky="e", pady=(8, 0))
 
     def click_room():
+        """Baguette magique : clic dans la piece -> contour trouve en surbrillance -> Meubler."""
         collect()
         story = tapir("GetStories").get("actStory", 0)
-        status.set("Lecture des murs...")
+        status.set("Lecture des murs et des traits du plan...")
         root.update_idletasks()
         wand = T.MagicWand(story)
         names = library_parts()
+        try:
+            set_pens()
+        except Exception:  # noqa: BLE001
+            pass
         root.withdraw()
         results = []
         try:
             while True:
                 T.focus_archicad()
                 started = time.time()
-                point, reason = T.pick_point("Clique dans la pièce à meubler (Echap pour terminer)")
+                point, reason = T.pick_point(f"Baguette magique : clic dans la pièce ({room_var.get()}) - Echap pour terminer")
                 if point is None:
                     if not results and time.time() - started < 1.0:
-                        results.append(f"Archicad n'a pas pu attendre le clic ({reason}).")
+                        results.append("Archicad n'a pas pu attendre le clic. Mets la fenêtre du plan au premier plan "
+                                       f"puis recommence. ({reason})")
                     break
                 face = wand.face(point) if not wand.empty else None
                 if face is None:
-                    results.append("Pièce non fermée à cet endroit (vérifie les murs / traits).")
+                    results.append("Pièce non fermée à cet endroit (murs ou traits ouverts). Clique ailleurs ou Echap.")
                     continue
+                # apercu du contour trouve, en surbrillance
+                rings = [list(face.exterior.coords)] + [list(r.coords) for r in face.interiors]
+                temp = []
+                try:
+                    answer = tapir("CreatePolylines", {"polylinesData": [{
+                        "floorInd": story, "linePenIndex": T.STYLO_CONTOUR, "penWeightMm": T.TRAIT_CONTOUR_MM,
+                        "coordinates": [{"x": x, "y": y} for x, y in ring]} for ring in rings]})
+                    temp = [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+                except Exception:  # noqa: BLE001
+                    pass
+                T.highlight(temp)
                 zone = zone_name_at(point, story)
-                kind = guess_room(zone) or state["piece"]
+                kind = guess_room(zone) or room_var.get()
+                root.deiconify()
+                choice, kind = room_done_dialog(kind, face.area, "Pièce trouvée",
+                                                (("Terminer", "terminer"), ("Ignorer ce clic", "ignorer"),
+                                                 ("Meubler", "meubler")))
+                root.withdraw()
+                T.highlight([])
+                if temp:
+                    try:
+                        tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
+                    except Exception:  # noqa: BLE001
+                        pass
+                if choice == "terminer":
+                    break
+                if choice == "ignorer":
+                    continue
+                room_var.set(kind)
                 results.append(furnish_polygon(face, kind, state, story, names))
         finally:
             root.deiconify()
         show("\n".join(results) or "Aucune pièce cliquée.")
 
-    def room_done_dialog(kind: str, area: float) -> tuple[str, str]:
-        """Contour ferme : type de piece + Meubler / Recommencer / Terminer."""
+    def room_done_dialog(kind: str, area: float, title: str = "Contour fermé",
+                         buttons=(("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
+                                  ("Meubler", "meubler"))) -> tuple[str, str]:
+        """Contour ferme / piece trouvee : type de piece + boutons (Meubler en dernier)."""
         result = {"choice": "terminer", "kind": kind}
         win = tk.Toplevel(root)
-        win.title("Contour fermé")
+        win.title(title)
         win.attributes("-topmost", True)
         box = ttk.Frame(win, padding=12)
         box.grid()
-        ttk.Label(box, text=f"Contour fermé ({area:.2f} m²). Type de pièce :".replace(".", ",", 1)
+        ttk.Label(box, text=f"{title} ({area:.2f} m²). Type de pièce :".replace(".", ",", 1)
                   ).grid(row=0, column=0, columnspan=3, sticky="w")
         kind_var = tk.StringVar(value=kind)
         ttk.Combobox(box, values=list(PIECES), textvariable=kind_var, state="readonly", width=28
@@ -1420,8 +1456,7 @@ def settings_window(settings: dict) -> None:
         def close(choice):
             result.update(choice=choice, kind=kind_var.get())
             win.destroy()
-        for column, (text, choice) in enumerate([("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
-                                                 ("Meubler", "meubler")]):
+        for column, (text, choice) in enumerate(buttons):
             ttk.Button(box, text=text, command=lambda c=choice: close(c)).grid(row=2, column=column, padx=3)
         win.bind("<Return>", lambda _e: close("meubler"))
         win.protocol("WM_DELETE_WINDOW", lambda: close("terminer"))
@@ -1484,7 +1519,7 @@ def settings_window(settings: dict) -> None:
         except Exception as error:  # noqa: BLE001
             status.set(f"Erreur : {error}")
 
-    draw_box = ttk.LabelFrame(outer, text="Dessiner le contour de la pièce", padding=8)
+    draw_box = ttk.LabelFrame(outer, text="Contour de la pièce", padding=8)
     draw_box.grid(row=3, column=0, sticky="ew", pady=(8, 0))
     ttk.Label(draw_box, text="Traits du contour").grid(row=0, column=0, sticky="w", pady=3)
     lines_mode = tk.StringVar(value=state.get("traits") if state.get("traits") in T.TRAITS
@@ -1494,18 +1529,21 @@ def settings_window(settings: dict) -> None:
     show_guides = tk.BooleanVar(value=state.get("reperes", True))
     ttk.Checkbutton(draw_box, text="Repères (alignements + longueurs des traits)", variable=show_guides
                     ).grid(row=0, column=2, sticky="w", padx=4)
-    ttk.Label(draw_box, text="Clique les coins dans Archicad.\nClic sur le point précédent = annuler le dernier trait.  "
+    ttk.Label(draw_box, text="Baguette magique : un clic dans la pièce trouve tout le contour (murs, poteaux, traits).\n"
+                             "Dessiner : clique les coins. Clic sur le point précédent = annuler le dernier trait.  "
                              "Clic sur le 1er point ou Echap = fermer.", foreground="#555", wraplength=680,
               justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
-    ttk.Button(draw_box, text="Dessiner une pièce (contour)...", command=lambda: do("dessin")
-               ).grid(row=2, column=2, sticky="e", pady=(6, 0))
+    draw_btns = ttk.Frame(draw_box)
+    draw_btns.grid(row=2, column=0, columnspan=3, sticky="e", pady=(6, 0))
+    ttk.Button(draw_btns, text="Baguette magique (clic dans la pièce)...", command=lambda: do("clic")
+               ).grid(row=0, column=0, padx=(0, 6))
+    ttk.Button(draw_btns, text="Dessiner une pièce (contour)...", command=lambda: do("dessin")).grid(row=0, column=1)
 
     buttons = ttk.Frame(outer)
     buttons.grid(row=6, column=0, pady=(10, 0), sticky="e")
     ttk.Button(buttons, text="Annuler le dernier", command=lambda: do("annuler")).grid(row=0, column=0, padx=4)
     ttk.Button(buttons, text="Fermer", command=root.destroy).grid(row=0, column=1, padx=4)
     ttk.Button(buttons, text="Meubler la sélection", command=lambda: do("zones")).grid(row=0, column=2, padx=4)
-    ttk.Button(buttons, text="Cliquer dans la pièce...", command=lambda: do("clic")).grid(row=0, column=3, padx=4)
     root.bind("<Escape>", lambda _e: root.destroy())
     root.mainloop()
 
