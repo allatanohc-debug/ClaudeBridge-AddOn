@@ -55,7 +55,7 @@ api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
 MEMOIRE = "meubles.json"                 # guids dessines (exclus de la baguette magique)
 REGLAGES = "meubler_reglages.json"
-VERSION = "13/10 19h30 (propositions, passages, personnes, export)"
+VERSION = "13/10 19h40 (objets corrigés)"
 STYLO_TRAIT = 204                        # traits des meubles dessines
 STYLO_FOND = 205                         # remplissage blanc des meubles dessines
 STYLO_PASSAGE = 206                      # contour des zones de passage (verification)
@@ -103,31 +103,36 @@ MEUBLES = {
 MOTS_EN = {
     "lit_double": (["double bed", "bed double", "bed"], ["bunk", "sofa", "bedside", "night", "cot", "crib", "baby",
                                                         "single", "headboard", "bedding", "linen", "table"]),
-    "lit_simple": (["single bed", "bed single", "bed"], ["bunk", "sofa", "bedside", "night", "cot", "crib", "baby",
+    "lit_simple": (["single bed", "bed single", "bed 90", "bed"], ["bunk", "sofa", "bedside", "night", "cot", "crib", "baby",
                                                          "double", "headboard", "bedding", "linen", "table"]),
-    "chevet": (["nightstand", "night stand", "bedside", "night table"], []),
+    "chevet": (["nightstand", "night stand", "night table", "bedside table"], ["cabinet", "trolley", "locker"]),
     "armoire": (["wardrobe", "closet"], ["kitchen", "bathroom", "medicine"]),
     "bureau": (["writing desk", "desk"], ["reception", "counter", "standing", "lamp"]),
     "chaise": (["dining chair", "chair"], ["office", "bar", "high", "baby", "wheel", "deck", "garden", "rocking",
                                            "conference", "stool"]),
     "canape": (["sofa", "couch"], ["bed", "corner"]),
     "table_basse": (["coffee table", "low table"], []),
-    "meuble_tv": (["tv stand", "tv cabinet", "media", "entertainment", "tv"], ["mount", "screen", "set"]),
+    "meuble_tv": (["tv stand", "tv cabinet", "tv unit", "media", "entertainment"],
+                  ["mount", "screen", "set", "flat panel", "panel", "crt"]),
     "fauteuil": (["armchair", "easy chair", "lounge chair"], ["office", "wheel", "garden", "deck"]),
     "table": (["dining table", "table"], ["coffee", "side table", "office", "conference", "meeting", "picnic",
                                           "ping", "pool", "work", "kitchen cabinet", "changing", "drawing"]),
     "etagere": (["bookcase", "bookshelf", "shelving", "shelf"], ["wall shelf", "kitchen"]),
     "frigo": (["refrigerator", "fridge"], ["mini", "wine"]),
     "baignoire": (["bathtub", "bath tub", "tub"], ["hot", "whirl"]),
-    "douche": (["shower tray", "shower"], ["curtain", "head", "mixer", "chair", "seat"]),
-    "lavabo": (["washbasin", "wash basin", "vanity", "basin"], ["kitchen", "hand"]),
+    "douche": (["shower tray", "shower base", "shower"], ["curtain", "head", "mixer", "chair", "seat", "door",
+                                                            "screen", "panel", "valve", "drain", "rail"]),
+    "lavabo": (["washbasin", "wash basin", "vanity unit", "vanity", "basin"], ["kitchen", "hand", "fixture",
+                                                                               "faucet", "mirror", "light"]),
     "lave_mains": (["hand basin", "handbasin", "small basin"], ["kitchen"]),
     "wc": (["toilet", "water closet", "wc"], ["paper", "brush", "roll", "cubicle", "partition", "sign", "seat"]),
     "bidet": (["bidet"], []),
     "lave_linge": (["washing machine", "washer"], ["dish"]),
     "seche_linge": (["tumble dryer", "dryer"], ["hair", "hand", "towel"]),
     "console": (["sideboard", "console", "dresser", "chest of drawers"], ["chair"]),
-    "placard": (["cupboard", "closet", "cabinet"], ["kitchen", "bathroom", "medicine", "file", "filing", "tv", "wall"]),
+    "placard": (["cupboard", "closet", "wardrobe", "cabinet"], ["kitchen", "bathroom", "medicine", "file", "filing",
+                                                                 "tv", "wall", "hose", "fire", "electric", "meter",
+                                                                 "server", "rack", "panel", "valve", "bedside"]),
 }
 for _k, (_mots, _sauf) in MOTS_EN.items():
     MEUBLES[_k]["mots"] = list(dict.fromkeys(MEUBLES[_k]["mots"] + _mots))
@@ -1115,7 +1120,7 @@ def library_parts() -> list[str]:
 SAUF_PARTOUT = ["hopital", "hospital", "medical", "medic", "clinic", "clinique", "patient", "soins", "nursing",
                 "care ", "sanitaire mobile", "chaise percee", "commode chair", "toilet chair", "wheelchair",
                 "fauteuil roulant", "pmr", "handicap", "accessible", "brancard", "lit medicalise", "examen",
-                "outdoor", "exterieur", "jardin", "garden", "terrasse", "school", "ecole", "classroom", "laboratoire"]
+                "fire hose", "extinguisher", "outdoor", "exterieur", "jardin", "garden", "terrasse", "school", "ecole", "classroom", "laboratoire"]
 
 
 def matches(key: str, names: list[str]) -> list[str]:
