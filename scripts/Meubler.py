@@ -24,6 +24,7 @@ Chaque meuble est un groupe que tu peux deplacer ou tourner. "Annuler le dernier
 import argparse
 import json
 import math
+import os
 import sys
 import unicodedata
 from pathlib import Path
@@ -56,6 +57,8 @@ MEMOIRE = "meubles.json"                 # guids dessines (exclus de la baguette
 REGLAGES = "meubler_reglages.json"
 STYLO_TRAIT = 204                        # traits des meubles dessines
 STYLO_FOND = 205                         # remplissage blanc des meubles dessines
+STYLO_PASSAGE = 206                      # contour des zones de passage (verification)
+COULEUR_PASSAGE = (0.10, 0.65, 0.30)
 COULEUR_TRAIT = (0.25, 0.25, 0.25)
 RENDUS = ("Objets 3D de la bibliothèque (sinon dessin 2D)", "Dessin 2D seulement")
 
@@ -93,6 +96,41 @@ MEUBLES = {
     "console":     dict(nom="Console / meuble d'entrée", w=1.20, d=0.40, h=0.85, mots=["console", "sideboard", "commode", "buffet"]),
     "placard":     dict(nom="Placard", w=1.20, d=0.60, h=2.20, haut=True, mots=["placard", "cabinet", "armoire"]),
 }
+
+# noms de la bibliotheque Archicad internationale (anglais : Bed, Nightstand, Sofa, Armchair 04...) ;
+# les premiers mots de la liste sont preferes
+MOTS_EN = {
+    "lit_double": (["double bed", "bed double", "bed"], ["bunk", "sofa", "bedside", "night", "cot", "crib", "baby",
+                                                        "single", "headboard", "bedding", "linen", "table"]),
+    "lit_simple": (["single bed", "bed single", "bed"], ["bunk", "sofa", "bedside", "night", "cot", "crib", "baby",
+                                                         "double", "headboard", "bedding", "linen", "table"]),
+    "chevet": (["nightstand", "night stand", "bedside", "night table"], []),
+    "armoire": (["wardrobe", "closet"], ["kitchen", "bathroom", "medicine"]),
+    "bureau": (["writing desk", "desk"], ["reception", "counter", "standing", "lamp"]),
+    "chaise": (["dining chair", "chair"], ["office", "bar", "high", "baby", "wheel", "deck", "garden", "rocking",
+                                           "conference", "stool"]),
+    "canape": (["sofa", "couch"], ["bed", "corner"]),
+    "table_basse": (["coffee table", "low table"], []),
+    "meuble_tv": (["tv stand", "tv cabinet", "media", "entertainment", "tv"], ["mount", "screen", "set"]),
+    "fauteuil": (["armchair", "easy chair", "lounge chair"], ["office", "wheel", "garden", "deck"]),
+    "table": (["dining table", "table"], ["coffee", "side table", "office", "conference", "meeting", "picnic",
+                                          "ping", "pool", "work", "kitchen cabinet", "changing", "drawing"]),
+    "etagere": (["bookcase", "bookshelf", "shelving", "shelf"], ["wall shelf", "kitchen"]),
+    "frigo": (["refrigerator", "fridge"], ["mini", "wine"]),
+    "baignoire": (["bathtub", "bath tub", "tub"], ["hot", "whirl"]),
+    "douche": (["shower tray", "shower"], ["curtain", "head", "mixer", "chair", "seat"]),
+    "lavabo": (["washbasin", "wash basin", "vanity", "basin"], ["kitchen", "hand"]),
+    "lave_mains": (["hand basin", "handbasin", "small basin"], ["kitchen"]),
+    "wc": (["toilet", "water closet", "wc"], ["paper", "brush", "roll", "cubicle", "partition", "sign", "seat"]),
+    "bidet": (["bidet"], []),
+    "lave_linge": (["washing machine", "washer"], ["dish"]),
+    "seche_linge": (["tumble dryer", "dryer"], ["hair", "hand", "towel"]),
+    "console": (["sideboard", "console", "dresser", "chest of drawers"], ["chair"]),
+    "placard": (["cupboard", "closet", "cabinet"], ["kitchen", "bathroom", "medicine", "file", "filing", "tv", "wall"]),
+}
+for _k, (_mots, _sauf) in MOTS_EN.items():
+    MEUBLES[_k]["mots"] = list(dict.fromkeys(MEUBLES[_k]["mots"] + _mots))
+    MEUBLES[_k]["sauf"] = list(dict.fromkeys(MEUBLES[_k].get("sauf", []) + _sauf))
 
 # type de piece -> [(meuble, coche par defaut)] dans l'ordre de placement
 PIECES = {
@@ -171,6 +209,8 @@ def load_settings() -> dict:
         "bibliotheque": biblio,                 # meuble -> nom de l'objet ("" = dessin 2D)
         "retourner": flips,                     # meuble -> objet tourne de 180 degres
         "traits": saved.get("traits", "Droits (0 / 90 degres)"),
+        "variantes": bool(saved.get("variantes", True)),
+        "passages": bool(saved.get("passages", False)),
         "personnes": {k: v for k, v in (saved.get("personnes") or {}).items() if isinstance(v, int)},
         "reperes": bool(saved.get("reperes", True)),
     }
@@ -234,6 +274,7 @@ class Room:
         self.segments = self.walls()
         self.door_clears = []
         self.side_first = False                  # douche : entree laterale essayee en premier
+        self.avoid: dict = {}                    # meuble -> centres deja pris par d'autres propositions
         self.compact = False                     # petites tailles d'appareils sanitaires
         for d in self.doors:                     # porte ouvrant vers l'exterieur : 60 cm libres devant
             inside = d.intersection(self.P)
@@ -294,6 +335,18 @@ class Room:
     def near_window(self, geom, gap=0.08) -> bool:
         return any(geom.buffer(gap).intersects(w) for w in self.windows)
 
+    def avoided(self, key: str, center, n=None) -> bool:
+        """Emplacement deja utilise par une autre proposition : meme mur (meuble contre un mur) ou a moins
+        d'un metre (table au milieu). Sert a proposer des implantations vraiment differentes."""
+        for c0, n0 in self.avoid.get(key, ()):
+            if n is not None and n0 is not None:
+                if n[0] * n0[0] + n[1] * n0[1] > 0.99 and \
+                        abs((center[0] - c0[0]) * n0[0] + (center[1] - c0[1]) * n0[1]) < 0.3:
+                    return True
+            elif math.dist(center, c0) < 1.0:
+                return True
+        return False
+
     def door_distance(self, point) -> float:
         from shapely.geometry import Point
         if not self.doors:
@@ -322,6 +375,8 @@ def place_wall_item(room: Room, key, w, d, clear, score_fn, tall=False, zones=No
     """zones(pose) -> listes de passages possibles (la premiere qui est libre est gardee, dans pose.zone)."""
     best, best_score = None, -1e9
     for center, u, n, t, length in room.along_walls(w, d):
+        if room.avoided(key, center, n):
+            continue
         pose = Pose(key, center, u, n, w, d)
         body = pose.body
         options = zones(pose) if zones else [[pose.front(clear)] if clear > 0 else []]
@@ -351,6 +406,8 @@ def place_bed(room: Room, key, w, d, nightstands: int):
             sides = ["L", "R"][:count] if count < 2 else ["L", "R"]
             offset = (ns["w"] + 0.03) if "L" in sides else 0.0
             bed_c = add(add(back_left, u, offset + w / 2), n, d / 2)
+            if room.avoided(key, bed_c, n):
+                continue
             bed = Pose(key, bed_c, u, n, w, d)
             parts = [bed]
             if "L" in sides:
@@ -387,6 +444,8 @@ def place_sofa(room: Room, items, width=None):
         sofa["w"] = width
     best, best_score = None, -1e9
     for center, u, n, t, length in room.along_walls(sofa["w"], sofa["d"]):
+        if room.avoided("canape", center, n):
+            continue
         pose = Pose("canape", center, u, n, sofa["w"], sofa["d"])
         parts = [pose]
         clears = [pose.front(1.20 if "table_basse" in items else 0.8)]
@@ -516,7 +575,7 @@ def place_table(room: Room, prefer_away_from=None, persons: int = 4):
             while y <= y2:
                 body = rect((x, y), u, n, w, d)
                 ring = rect((x, y), u, n, w + 2 * margin, d + 2 * margin)      # chaises + passage
-                if room.inner.contains(body) and room.free(body, [ring]):
+                if not room.avoided("table", (x, y)) and room.inner.contains(body) and room.free(body, [ring]):
                     dist = Point(x, y).distance(target)
                     if dist < best_d:
                         best, best_d = (x, y), dist
@@ -610,6 +669,8 @@ def place_kitchen(room: Room, items, persons: int = 4):
                 start = fridge_w if fridge_left else 0.0
                 counter = Pose("cuisine", add(add(back_left, u, start + length_wanted / 2), n, 0.30), u, n,
                                length_wanted, 0.60)
+                if room.avoided("cuisine", counter.c, n):
+                    continue
                 parts = [counter]
                 if with_fridge:
                     fx = MEUBLES["frigo"]["w"] / 2 if fridge_left else length_wanted + 0.02 + MEUBLES["frigo"]["w"] / 2
@@ -710,7 +771,7 @@ def taille(room: Room, key: str) -> tuple[float, float]:
     return MEUBLES[key]["w"], MEUBLES[key]["d"]
 
 
-def furnish_best(polygon, doors, windows, kind: str, items: list[str], settings: dict):
+def furnish_best(polygon, doors, windows, kind: str, items: list[str], settings: dict, avoid=None):
     """Essaie plusieurs ordres de placement (pieces d'eau surtout) et garde celui ou il manque le moins
     de meubles."""
     wet = [k for k in items if k in ("baignoire", "douche", "lavabo", "wc", "bidet", "lave_mains", "lave_linge")]
@@ -724,12 +785,41 @@ def furnish_best(polygon, doors, windows, kind: str, items: list[str], settings:
     for order, side_first, compact in variants:
         room = Room(polygon, doors, windows)
         room.side_first, room.compact = side_first, compact
+        room.avoid = avoid or {}
         placed, missing = furnish(room, kind, order, settings)
         if best is None or len(missing) < len(best[2]):
             best = (room, placed, missing)
         if not missing:
             return best
     return best
+
+
+# meuble qui « structure » la piece : on le deplace d'une proposition a l'autre
+ANCRES = ("lit_double", "lit_simple", "canape", "cuisine", "baignoire", "douche", "table", "bureau", "wc", "lavabo")
+
+
+def propositions(polygon, doors, windows, kind: str, items: list[str], settings: dict, count: int = 3):
+    """Jusqu'a `count` implantations differentes : le meuble principal change de place a chaque fois."""
+    first = furnish_best(polygon, doors, windows, kind, items, settings)
+    out = [first]
+    anchors = [k for k in ANCRES if k in items]
+    if not anchors or not first[1]:
+        return out
+    avoid: dict = {}
+    for _ in range(count - 1):
+        for room, _placed, _missing in out[-1:]:
+            for k in anchors[:1] if len(out) < 2 else anchors[:2]:
+                for pose in room.poses:
+                    if pose.key == k:
+                        avoid.setdefault(k, []).append((pose.c, None if k == "table" else pose.n))
+        other = furnish_best(polygon, doors, windows, kind, items, settings, {k: list(v) for k, v in avoid.items()})
+        if not other[1] or len(other[2]) > len(first[2]):
+            break
+        signature = sorted((p.key, round(p.c[0], 1), round(p.c[1], 1)) for p in other[0].poses)
+        if any(signature == sorted((p.key, round(p.c[0], 1), round(p.c[1], 1)) for p in r.poses) for r, _a, _b in out):
+            break
+        out.append(other)
+    return out
 
 
 def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[list[Pose], list[str]]:
@@ -981,6 +1071,33 @@ def pose_world(room: Room, pose: Pose):
     return center, angle
 
 
+def preview_items(room: Room):
+    """Pour l'apercu : (contour piece, portes, fenetres, [(remplissages, traits)] des meubles), repere local."""
+    furniture = []
+    for pose in room.poses:
+        angle = math.atan2(pose.n[0], -pose.n[1])
+        fills, lines = symbol(pose.key, pose.w, pose.d)
+        tr = lambda p, c=pose.c, a=angle: add(c, rot(p, a))  # noqa: E731
+        furniture.append(([list(map(tr, f)) for f in fills], [list(map(tr, ln)) for ln in lines]))
+    return (list(room.P.exterior.coords), [list(d.exterior.coords) for d in room.doors if hasattr(d, "exterior")],
+            [list(w.exterior.coords) for w in room.windows if hasattr(w, "exterior")], furniture)
+
+
+def export_library_list() -> str:
+    """Ecrit la liste des objets de la bibliotheque chargee dans un fichier texte (a m'envoyer)."""
+    names = library_parts()
+    folder = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(folder, "objets_archicad.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(names))
+    except OSError:
+        path = os.path.join(os.path.expanduser("~"), "objets_archicad.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(names))
+    return path, len(names)
+
+
 def library_parts() -> list[str]:
     try:
         parts = tapir("GetAvailableLibraryParts", {"filterByTypeId": "Object"}).get("libraryParts", [])
@@ -1047,6 +1164,8 @@ def set_pens() -> None:
                  "color": {"red": COULEUR_TRAIT[0], "green": COULEUR_TRAIT[1], "blue": COULEUR_TRAIT[2]}},
                 {"index": STYLO_FOND, "width": 0.10, "description": "Meubles - fond blanc",
                  "color": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                {"index": STYLO_PASSAGE, "width": 0.10, "description": "Meubles - zones de passage",
+                 "color": dict(zip(("red", "green", "blue"), COULEUR_PASSAGE))},
                 {"index": T.STYLO_CONTOUR, "width": 0.1, "description": "Tableau des surfaces - contour en cours",
                  "color": dict(zip(("red", "green", "blue"), T.COULEUR_CONTOUR))},
                 {"index": T.STYLO_REPERE, "width": 0.1, "description": "Tableau des surfaces - reperes",
@@ -1173,15 +1292,50 @@ def remember(guids: list[str], story: int) -> None:
     save_json(MEMOIRE, memory)
 
 
-def furnish_polygon(polygon, kind: str, settings: dict, story: int, names: list[str]) -> str:
+def draw_passages(room: Room, story: int) -> list[str]:
+    """Contour vert de chaque zone de passage gardee libre (verification des degagements)."""
+    from shapely.geometry import Polygon
+    data = []
+    for g in room.clears:
+        parts = [g] if isinstance(g, Polygon) else list(g.geoms) if hasattr(g, "geoms") else []
+        for part in parts:
+            if not isinstance(part, Polygon) or part.area < 0.02:
+                continue
+            ring = [to_world(room, p) for p in part.exterior.coords]
+            data.append({"floorInd": story, "linePenIndex": STYLO_PASSAGE, "penWeightMm": 0.18,
+                         "coordinates": [{"x": x, "y": y} for x, y in ring]})
+    if not data:
+        return []
+    made = tapir("CreatePolylines", {"polylinesData": data}).get("elements", [])
+    ok = [e for e in made if isinstance(e, dict) and "elementId" in e]
+    if len(ok) > 1:
+        try:
+            tapir("CreateGroups", {"elementGroups": [{"elements": ok}]})
+        except Exception:  # noqa: BLE001
+            pass
+    return [e["elementId"]["guid"] for e in ok]
+
+
+def furnish_polygon(polygon, kind: str, settings: dict, story: int, names: list[str], chooser=None) -> str:
+    """chooser(liste de (room, places, manquants), kind) -> indice choisi ou None (annule)."""
     doors, windows = openings(story, polygon.buffer(0.5))
     items = chosen_items(settings, kind)
     if not items:
         return f"{kind} : aucun meuble coché."
-    room, placed, missing = furnish_best(polygon, doors, windows, kind, items, settings)
+    if chooser is not None and settings.get("variantes", True):
+        options = propositions(polygon, doors, windows, kind, items, settings)
+        pick = chooser(options, kind) if len(options) > 1 else 0
+        if pick is None:
+            return f"{kind} : annulé."
+        room, placed, missing = options[pick]
+    else:
+        room, placed, missing = furnish_best(polygon, doors, windows, kind, items, settings)
     if not placed:
         return f"{kind} ({polygon.area:.1f} m²) : pas assez de place pour les meubles cochés."
     guids, used = build(room, room.poses, story, settings, names)
+    if settings.get("passages"):
+        set_pens()
+        guids += draw_passages(room, story)
     remember(guids, story)
     text = f"{kind} pour {nb_personnes(settings, kind)} pers. ({polygon.area:.1f} m²) : {len(room.poses)} meuble(s) placé(s)"
     if used:
@@ -1204,7 +1358,7 @@ def zone_polygon(zone: dict):
     return poly if poly.geom_type == "Polygon" else None
 
 
-def run_zones(settings: dict) -> str:
+def run_zones(settings: dict, chooser=None) -> str:
     try:
         selected = {e["elementId"]["guid"] for e in api("API.GetSelectedElements").get("elements", [])}
     except Exception:  # noqa: BLE001
@@ -1226,14 +1380,14 @@ def run_zones(settings: dict) -> str:
             if poly.geom_type != "Polygon" or poly.area < 0.5:
                 lines.append("Contour sélectionné illisible ou trop petit.")
                 continue
-            lines.append("Contour → " + furnish_polygon(poly, settings["piece"], settings, story, names))
+            lines.append("Contour → " + furnish_polygon(poly, settings["piece"], settings, story, names, chooser))
     for z in zones:
         kind = guess_room(z["name"]) or settings["piece"]
         poly = zone_polygon(z)
         if poly is None:
             lines.append(f"{z['name'] or 'Zone'} : contour illisible.")
             continue
-        lines.append(f"{z['name'] or kind} → " + furnish_polygon(poly, kind, settings, z["story"], names))
+        lines.append(f"{z['name'] or kind} → " + furnish_polygon(poly, kind, settings, z["story"], names, chooser))
     return "\n".join(lines)
 
 
@@ -1389,6 +1543,61 @@ def run_undo() -> str:
 
 
 # ------------------------------------------------------------------ fenetre ---
+def choose_layout_window(root, options, kind):
+    """Plusieurs implantations cote a cote : l'utilisateur choisit (None = annuler)."""
+    import tkinter as tk
+    from tkinter import ttk
+    result = {"pick": None}
+    win = tk.Toplevel(root)
+    win.title(f"{kind} : choisis une implantation")
+    win.attributes("-topmost", True)
+    box = ttk.Frame(win, padding=10)
+    box.grid()
+    size = 300
+    for i, (room, placed, missing) in enumerate(options):
+        outline, doors, windows, furniture = preview_items(room)
+        xs = [p[0] for p in outline]
+        ys = [p[1] for p in outline]
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+        k = (size - 30) / span
+        ox, oy = min(xs), max(ys)
+        to = lambda p: (15 + (p[0] - ox) * k, 15 + (oy - p[1]) * k)  # noqa: E731
+        canvas = tk.Canvas(box, width=size, height=int((max(ys) - min(ys)) * k + 30), background="white",
+                           highlightthickness=1,
+                           highlightbackground="#ccc")
+        canvas.grid(row=0, column=i, padx=6, sticky="n")
+        flat = lambda pts: [v for p in pts for v in to(p)]  # noqa: E731
+        canvas.create_polygon(flat(outline), fill="#f1f1f1", outline="#222", width=2)
+        for d in doors:
+            canvas.create_polygon(flat(d), fill="#f8c9c9", outline="")
+        for w in windows:
+            canvas.create_polygon(flat(w), fill="#c9d4f8", outline="")
+        for fills, lines in furniture:
+            for f in fills:
+                canvas.create_polygon(flat(f), fill="white", outline="")
+            for ln in lines:
+                if len(ln) >= 2:
+                    canvas.create_line(flat(ln), fill="#333", width=1)
+        text = f"Proposition {i + 1} : {len(room.poses)} meubles"
+        if missing:
+            text += "\nmanque : " + ", ".join(dict.fromkeys(missing))
+        ttk.Label(box, text=text, justify="center", wraplength=size).grid(row=1, column=i, pady=4)
+
+        def pick(index=i):
+            result["pick"] = index
+            win.destroy()
+        ttk.Button(box, text=f"Choisir la proposition {i + 1}", command=pick).grid(row=2, column=i, pady=(0, 4))
+    ttk.Button(box, text="Annuler", command=win.destroy).grid(row=3, column=0, columnspan=len(options), pady=(6, 0))
+    win.protocol("WM_DELETE_WINDOW", win.destroy)
+    was_hidden = root.state() == "withdrawn"
+    win.lift()
+    win.focus_force()
+    root.wait_window(win)
+    if was_hidden:
+        root.withdraw()
+    return result["pick"]
+
+
 def settings_window(settings: dict) -> None:
     import time
     import tkinter as tk
@@ -1447,6 +1656,12 @@ def settings_window(settings: dict) -> None:
     for i, r in enumerate(RENDUS):
         ttk.Radiobutton(out_box, text=r, value=r, variable=render_var).grid(row=i, column=0, sticky="w")
     ttk.Button(out_box, text="Bibliothèque...", command=lambda: library_window()).grid(row=0, column=1, rowspan=2, padx=10)
+    variants_var = tk.BooleanVar(value=state.get("variantes", True))
+    passages_var = tk.BooleanVar(value=state.get("passages", False))
+    ttk.Checkbutton(out_box, text="Proposer plusieurs implantations (je choisis)", variable=variants_var
+                    ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+    ttk.Checkbutton(out_box, text="Dessiner les zones de passage en vert (vérification des dégagements)",
+                    variable=passages_var).grid(row=3, column=0, columnspan=2, sticky="w")
 
     report = tk.Text(outer, width=78, height=7, wrap="word", state="disabled", background="#f6f6f6",
                      font=("Segoe UI", 9))
@@ -1470,6 +1685,8 @@ def settings_window(settings: dict) -> None:
             state["choix"][f"{room}/{key}"] = bool(var.get())
         state["lit"] = lit_var.get()
         state["rendu"] = render_var.get()
+        state["variantes"] = bool(variants_var.get())
+        state["passages"] = bool(passages_var.get())
         save_json(REGLAGES, state)
 
     def library_window():
@@ -1503,6 +1720,13 @@ def settings_window(settings: dict) -> None:
             save_json(REGLAGES, state)
             win.destroy()
         ttk.Button(frame, text="Enregistrer", command=save).grid(row=len(rows) + 2, column=2, sticky="e", pady=(8, 0))
+
+        def export():
+            path, count = export_library_list()
+            show(f"Liste de {count} objets enregistrée dans :\n{path}\nEnvoie ce fichier à Claude pour régler les "
+                 "bons objets par défaut.")
+        ttk.Button(frame, text="Exporter la liste des objets (pour Claude)", command=export
+                   ).grid(row=len(rows) + 2, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
     def click_room():
         """Baguette magique : clic dans la piece -> contour trouve en surbrillance -> Meubler."""
@@ -1562,10 +1786,12 @@ def settings_window(settings: dict) -> None:
                     continue
                 room_var.set(kind)
                 persons_var.set(nb_personnes(state, kind))
-                results.append(furnish_polygon(face, kind, state, story, names))
+                results.append(furnish_polygon(face, kind, state, story, names, choose_layout))
         finally:
             root.deiconify()
         show("\n".join(results) or "Aucune pièce cliquée.")
+
+    choose_layout = lambda options, kind: choose_layout_window(root, options, kind)  # noqa: E731
 
     def room_done_dialog(kind: str, area: float, title: str = "Contour fermé",
                          buttons=(("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
@@ -1638,7 +1864,7 @@ def settings_window(settings: dict) -> None:
                     continue
                 room_var.set(kind)
                 persons_var.set(nb_personnes(state, kind))
-                results.append(furnish_polygon(poly, kind, state, story, names))
+                results.append(furnish_polygon(poly, kind, state, story, names, choose_layout))
                 count += 1
         finally:
             root.deiconify()
@@ -1654,7 +1880,7 @@ def settings_window(settings: dict) -> None:
                 draw_room()
             elif action == "zones":
                 collect()
-                show(run_zones(state))
+                show(run_zones(state, choose_layout))
             else:
                 show(run_undo())
             status.set("Terminé. Chaque meuble est un groupe : déplace-le ou tourne-le librement.")
