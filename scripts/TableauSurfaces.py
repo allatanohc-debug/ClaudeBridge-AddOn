@@ -392,30 +392,58 @@ def new_zone(story: int, name: str, number: int, category: dict | None, geometry
 
 
 def focus_archicad() -> None:
-    """Remet la fenetre d'Archicad au premier plan (Windows), pour que le clic aille au plan."""
+    """Ramene la fenetre principale d'Archicad au premier plan (Windows), pour que le clic aille au plan.
+    Ne touche ni a la taille de la fenetre (pas de « restaurer » si elle est agrandie) ni a la vue active :
+    on cherche la fenetre principale du processus Archicad, pas une fenetre dont le titre contient
+    « archicad » (une coupe detachee, une palette...)."""
     if os.name != "nt":
         return
     try:
         import ctypes
         from ctypes import wintypes
-        user32 = ctypes.windll.user32
-        found = []
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                        ctypes.POINTER(wintypes.DWORD)]
+        user32.GetWindow.restype = wintypes.HWND
+        own_pid = os.getpid()
+        candidates = []
+
+        def process_name(pid: int) -> str:
+            handle = kernel32.OpenProcess(0x1000, False, pid)      # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return ""
+            try:
+                size = wintypes.DWORD(1024)
+                buffer = ctypes.create_unicode_buffer(1024)
+                if kernel32.QueryFullProcessImageNameW(handle, 0, buffer, ctypes.byref(size)):
+                    return os.path.basename(buffer.value).lower()
+                return ""
+            finally:
+                kernel32.CloseHandle(handle)
 
         @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
         def callback(hwnd, _):
-            if user32.IsWindowVisible(hwnd):
-                length = user32.GetWindowTextLengthW(hwnd)
-                buffer = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, buffer, length + 1)
-                if "archicad" in buffer.value.lower():
-                    found.append(hwnd)
-                    return False
+            if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):     # GW_OWNER : palettes
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value == own_pid or "archicad" not in process_name(pid.value):
+                return True
+            rect = wintypes.RECT()
+            user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            candidates.append(((rect.right - rect.left) * (rect.bottom - rect.top), hwnd))
             return True
 
         user32.EnumWindows(callback, 0)
-        if found:
-            user32.ShowWindow(found[0], 9)          # SW_RESTORE si reduite
-            user32.SetForegroundWindow(found[0])
+        if not candidates:
+            return
+        hwnd = max(candidates)[1]                                  # la plus grande = fenetre principale
+        if user32.IsIconic(hwnd):
+            user32.ShowWindow(hwnd, 9)                             # SW_RESTORE seulement si reduite en icone
+        user32.SetForegroundWindow(hwnd)
     except Exception:  # noqa: BLE001
         pass
 
