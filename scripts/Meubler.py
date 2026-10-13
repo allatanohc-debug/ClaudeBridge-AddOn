@@ -1112,55 +1112,41 @@ def run_zones(settings: dict) -> str:
     return "\n".join(lines)
 
 
-def snap_square(prev: tuple, point: tuple, tol_deg: float = 6.0) -> tuple:
-    """Rend le segment horizontal ou vertical s'il en est proche (angles droits)."""
-    dx, dy = point[0] - prev[0], point[1] - prev[1]
-    angle = abs(math.degrees(math.atan2(dy, dx))) % 90
-    if angle < tol_deg or angle > 90 - tol_deg:
-        return (point[0], prev[1]) if abs(dx) >= abs(dy) else (prev[0], point[1])
-    return point
+CONTOURS = ("PolyLine", "Hatch")
 
 
-def draw_outline(story: int, square: bool) -> tuple[list | None, str]:
-    """L'utilisateur clique les angles de la piece dans Archicad. Chaque cote s'affiche au fur et a mesure.
-    Fin : clic sur le premier point, ou Echap (le contour se referme tout seul). Renvoie (points, message)."""
-    pts: list[tuple] = []
-    temp: list[str] = []
-    set_pens()
-    try:
-        while True:
-            n = len(pts)
-            prompt = ("Clique le 1er angle de la pièce" if n == 0 else
-                      f"Angle {n + 1} - clique sur le 1er point ou Echap pour fermer le contour")
-            point, reason = T.pick_point(prompt)
-            if point is None:
-                if n == 0 and reason:
-                    return None, f"Archicad n'a pas pu attendre le clic ({reason})."
-                break
-            p = (point["x"], point["y"])
-            if n >= 3 and math.dist(p, pts[0]) < 0.15:
-                break
-            if n and square:
-                p = snap_square(pts[-1], p)
-            if n and math.dist(p, pts[-1]) < 0.02:
-                continue
-            pts.append(p)
-            if n:
-                made = tapir("CreatePolylines", {"polylinesData": [{
-                    "floorInd": story, "linePenIndex": STYLO_TRAIT, "penWeightMm": 0.35,
-                    "coordinates": [{"x": x, "y": y} for x, y in pts[-2:]]}]}).get("elements", [])
-                temp += [e["elementId"]["guid"] for e in made if "elementId" in e]
-    finally:
-        if temp:
-            try:
-                tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in temp]})
-            except Exception:  # noqa: BLE001
-                pass
-    if len(pts) < 3:
-        return None, "Contour annulé (il faut au moins 3 angles)."
-    if square and len(pts) >= 4:
-        pts[-1] = snap_square(pts[0], pts[-1])          # dernier cote aussi a l'equerre
-    return pts, ""
+def contour_guids() -> set[str]:
+    out = set()
+    for kind in CONTOURS:
+        try:
+            out |= {e["elementId"]["guid"] for e in tapir("GetElementsByType", {"elementType": kind}).get("elements", [])}
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def contour_polygons(guids: list[str]) -> list[tuple[str, object, int | None]]:
+    """(guid, polygone shapely, etage) des polylignes / hachures donnees, fermees et assez grandes."""
+    from shapely.geometry import Polygon
+    if not guids:
+        return []
+    details = tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": g}} for g in guids]}
+                    ).get("detailsOfElements", [])
+    out = []
+    for guid, detail in zip(guids, details):
+        if not isinstance(detail, dict) or "error" in detail or detail.get("type") not in CONTOURS:
+            continue
+        d = detail.get("details", {})
+        pts = [(c["x"], c["y"]) for c in d.get("coordinates", [])]
+        if len(pts) >= 2 and math.dist(pts[0], pts[-1]) < 1e-6:
+            pts = pts[:-1]
+        if len(pts) < 3:
+            continue
+        holes = [[(c["x"], c["y"]) for c in h.get("polygonOutline", [])] for h in d.get("holes", [])]
+        poly = Polygon(pts, [h for h in holes if len(h) >= 3]).buffer(0)
+        if poly.geom_type == "Polygon" and poly.area >= 0.5:
+            out.append((guid, poly, detail.get("floorIndex")))
+    return out
 
 
 def zone_name_at(point: dict, story: int) -> str:
@@ -1325,31 +1311,47 @@ def settings_window(settings: dict) -> None:
             root.deiconify()
         show("\n".join(results) or "Aucune pièce cliquée.")
 
-    def draw_room():
-        collect()
-        story = tapir("GetStories").get("actStory", 0)
-        names = library_parts()
-        root.withdraw()
-        results = []
+    watch = {"on": False, "known": set(), "names": None, "story": 0, "done": []}
+
+    def watch_tick():
+        if not watch["on"]:
+            return
         try:
-            while True:
-                T.focus_archicad()
-                pts, message = draw_outline(story, bool(square_var.get()))
-                if pts is None:
-                    if message and not results:
-                        results.append(message)
-                    break
-                from shapely.geometry import Polygon
-                poly = Polygon(pts).buffer(0)
-                if poly.geom_type != "Polygon" or poly.area < 0.5:
-                    results.append("Contour croisé ou trop petit : redessine-le.")
-                    continue
-                results.append(furnish_polygon(poly, room_var.get(), state, story, names))
-                if not again_var.get():
-                    break
-        finally:
-            root.deiconify()
-        show("\n".join(results) or "Aucun contour dessiné.")
+            now = contour_guids()
+            new = [g for g in now if g not in watch["known"]]
+            if new:
+                found = contour_polygons(new)
+                for guid, poly, floor in found:
+                    story = floor if isinstance(floor, int) else watch["story"]
+                    watch["done"].append(furnish_polygon(poly, room_var.get(), state, story, watch["names"]))
+                    if erase_var.get():
+                        try:
+                            tapir("DeleteElements", {"elements": [{"elementId": {"guid": guid}}]})
+                        except Exception:  # noqa: BLE001
+                            pass
+                if found:
+                    show("\n".join(watch["done"][-8:]))
+                watch["known"] = contour_guids()        # nos propres traits de meubles ne comptent pas
+        except Exception as error:  # noqa: BLE001
+            status.set(f"Erreur : {error}")
+        root.after(700, watch_tick)
+
+    def toggle_watch():
+        if watch["on"]:
+            watch["on"] = False
+            watch_btn.configure(text="Démarrer : je dessine le contour dans Archicad")
+            status.set("Surveillance arrêtée.")
+            return
+        collect()
+        status.set("Préparation...")
+        root.update_idletasks()
+        watch.update(on=True, known=contour_guids(), names=library_parts(), done=[],
+                     story=tapir("GetStories").get("actStory", 0))
+        watch_btn.configure(text="Arrêter")
+        status.set("En attente : dessine la pièce avec l'outil Polyligne ou Hachure d'Archicad "
+                   "(type : " + room_var.get() + ").")
+        T.focus_archicad()
+        root.after(700, watch_tick)
 
     def do(action):
         status.set("En cours...")
@@ -1357,8 +1359,6 @@ def settings_window(settings: dict) -> None:
         try:
             if action == "clic":
                 click_room()
-            elif action == "dessin":
-                draw_room()
             elif action == "zones":
                 collect()
                 show(run_zones(state))
@@ -1370,15 +1370,16 @@ def settings_window(settings: dict) -> None:
 
     draw_box = ttk.LabelFrame(outer, text="Dessiner le contour de la pièce", padding=8)
     draw_box.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-    ttk.Label(draw_box, text="Clique les angles dans Archicad, puis clique sur le 1er point (ou Echap) pour fermer. "
-                             "La pièce est meublée avec le type choisi en haut.", foreground="#555", wraplength=520
-              ).grid(row=0, column=0, columnspan=3, sticky="w")
-    square_var = tk.BooleanVar(value=True)
-    again_var = tk.BooleanVar(value=False)
-    ttk.Checkbutton(draw_box, text="Angles droits (redresse les côtés presque droits)", variable=square_var
-                    ).grid(row=1, column=0, sticky="w")
-    ttk.Checkbutton(draw_box, text="Enchaîner plusieurs pièces", variable=again_var).grid(row=1, column=1, sticky="w")
-    ttk.Button(draw_box, text="Dessiner le contour...", command=lambda: do("dessin")).grid(row=1, column=2, padx=6)
+    ttk.Label(draw_box, text="1. Clique « Démarrer ».   2. Dans Archicad, dessine la pièce avec l'outil Polyligne ou "
+                             "Hachure (repères, accrochage et aperçu d'Archicad ; barre d'espace + clic = baguette "
+                             "magique).   3. Dès que le contour est fermé, la pièce est meublée avec le type choisi en "
+                             "haut. Tu peux enchaîner les pièces, puis « Arrêter ».",
+              foreground="#555", wraplength=560, justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
+    erase_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(draw_box, text="Effacer le contour une fois la pièce meublée", variable=erase_var
+                    ).grid(row=1, column=0, sticky="w", pady=(6, 0))
+    watch_btn = ttk.Button(draw_box, text="Démarrer : je dessine le contour dans Archicad", command=toggle_watch)
+    watch_btn.grid(row=1, column=1, padx=6, pady=(6, 0), sticky="e")
 
     buttons = ttk.Frame(outer)
     buttons.grid(row=6, column=0, pady=(10, 0), sticky="e")
@@ -1387,6 +1388,7 @@ def settings_window(settings: dict) -> None:
     ttk.Button(buttons, text="Meubler la sélection", command=lambda: do("zones")).grid(row=0, column=2, padx=4)
     ttk.Button(buttons, text="Cliquer dans la pièce...", command=lambda: do("clic")).grid(row=0, column=3, padx=4)
     root.bind("<Escape>", lambda _e: root.destroy())
+    root.protocol("WM_DELETE_WINDOW", lambda: (watch.update(on=False), root.destroy()))
     root.mainloop()
 
 
