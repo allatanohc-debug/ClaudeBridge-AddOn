@@ -777,6 +777,10 @@ def main() -> int:
     if missing:
         print("Installation des modules necessaires (une seule fois) : " + ", ".join(missing))
         print(install(missing))
+        # les modules tout juste installes ne sont visibles qu'au prochain demarrage de Python : on relance
+        if os.environ.get("CALQUES_RELANCE") != "1":
+            env = dict(os.environ, CALQUES_RELANCE="1")
+            return subprocess.call([sys.executable, os.path.abspath(__file__)], env=env)
         still = missing_packages()
         if still:
             print("Impossible d'installer : " + ", ".join(still))
