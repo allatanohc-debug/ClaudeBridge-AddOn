@@ -55,6 +55,7 @@ api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
 MEMOIRE = "meubles.json"                 # guids dessines (exclus de la baguette magique)
 REGLAGES = "meubler_reglages.json"
+VERSION = "13/10 19h20 (propositions, passages, personnes)"
 STYLO_TRAIT = 204                        # traits des meubles dessines
 STYLO_FOND = 205                         # remplissage blanc des meubles dessines
 STYLO_PASSAGE = 206                      # contour des zones de passage (verification)
@@ -1605,11 +1606,11 @@ def settings_window(settings: dict) -> None:
 
     state = settings
     root = tk.Tk()
-    root.title("Meubler une pièce")
+    root.title(f"Meubler une pièce - version {VERSION}")
     root.attributes("-topmost", True)
     outer = ttk.Frame(root, padding=12)
     outer.grid()
-    status = tk.StringVar(value="Choisis le type de pièce, coche les meubles, puis baguette magique ou dessin du contour.")
+    status = tk.StringVar(value=f"Version {VERSION}. Choisis la pièce, coche les meubles, puis baguette magique ou contour.")
 
     top = ttk.Frame(outer)
     top.grid(row=0, column=0, sticky="ew")
@@ -1655,7 +1656,16 @@ def settings_window(settings: dict) -> None:
     render_var = tk.StringVar(value=state["rendu"])
     for i, r in enumerate(RENDUS):
         ttk.Radiobutton(out_box, text=r, value=r, variable=render_var).grid(row=i, column=0, sticky="w")
-    ttk.Button(out_box, text="Bibliothèque...", command=lambda: library_window()).grid(row=0, column=1, rowspan=2, padx=10)
+    ttk.Button(out_box, text="Bibliothèque...", command=lambda: library_window()).grid(row=0, column=1, padx=10, sticky="we")
+
+    def export_names():
+        try:
+            path, count = export_library_list()
+            show(f"Liste de {count} objets enregistrée dans :\n{path}\nEnvoie ce fichier à Claude.")
+        except Exception as error:  # noqa: BLE001
+            show(f"Export impossible : {error}")
+    ttk.Button(out_box, text="Exporter la liste des objets", command=export_names
+               ).grid(row=1, column=1, padx=10, sticky="we")
     variants_var = tk.BooleanVar(value=state.get("variantes", True))
     passages_var = tk.BooleanVar(value=state.get("passages", False))
     ttk.Checkbutton(out_box, text="Proposer plusieurs implantations (je choisis)", variable=variants_var
