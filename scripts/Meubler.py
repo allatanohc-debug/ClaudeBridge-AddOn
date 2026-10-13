@@ -55,7 +55,7 @@ api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
 MEMOIRE = "meubles.json"                 # guids dessines (exclus de la baguette magique)
 REGLAGES = "meubler_reglages.json"
-VERSION = "13/10 19h20 (propositions, passages, personnes)"
+VERSION = "13/10 19h30 (propositions, passages, personnes, export)"
 STYLO_TRAIT = 204                        # traits des meubles dessines
 STYLO_FOND = 205                         # remplissage blanc des meubles dessines
 STYLO_PASSAGE = 206                      # contour des zones de passage (verification)
@@ -1671,7 +1671,7 @@ def settings_window(settings: dict) -> None:
     ttk.Checkbutton(out_box, text="Proposer plusieurs implantations (je choisis)", variable=variants_var
                     ).grid(row=2, column=0, sticky="w", pady=(4, 0))
     ttk.Checkbutton(out_box, text="Dessiner les zones de passage en vert (vérification des dégagements)",
-                    variable=passages_var).grid(row=3, column=0, columnspan=2, sticky="w")
+                    variable=passages_var).grid(row=3, column=0, sticky="w")
 
     report = tk.Text(outer, width=78, height=7, wrap="word", state="disabled", background="#f6f6f6",
                      font=("Segoe UI", 9))
@@ -1699,6 +1699,12 @@ def settings_window(settings: dict) -> None:
         state["passages"] = bool(passages_var.get())
         save_json(REGLAGES, state)
 
+    def export_list():
+        path, count = export_library_list()
+        show(f"Liste de {count} objets enregistrée dans :\n{path}\nEnvoie ce fichier à Claude pour régler les "
+             "bons objets par défaut.")
+        return path, count
+
     def library_window():
         win = tk.Toplevel(root)
         win.title("Meubles de la bibliothèque Archicad")
@@ -1707,19 +1713,26 @@ def settings_window(settings: dict) -> None:
         frame = ttk.Frame(win, padding=10)
         frame.grid()
         names = library_parts()
-        ttk.Label(frame, text=f"{len(names)} objets trouvés dans la bibliothèque chargée. "
-                              "Choisis l'objet de chaque meuble (ou « dessin 2D »).",
-                  foreground="#555").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        # boutons en haut : toujours visibles, meme sur un petit ecran
+        head = ttk.Frame(frame)
+        head.grid(row=0, column=0, columnspan=6, sticky="ew", pady=(0, 8))
+        ttk.Label(head, text=f"{len(names)} objets trouvés. Choisis l'objet de chaque meuble (ou « dessin 2D »).",
+                  foreground="#555").grid(row=0, column=0, sticky="w")
+        info = tk.StringVar(value="")
+        ttk.Label(head, textvariable=info, foreground="#0a6").grid(row=1, column=0, columnspan=3, sticky="w")
         rows = {}
-        for i, key in enumerate(k for k in MEUBLES if k != "cuisine"):
-            ttk.Label(frame, text=MEUBLES[key]["nom"]).grid(row=i + 1, column=0, sticky="w", pady=1)
+        keys = [k for k in MEUBLES if k != "cuisine"]
+        half = (len(keys) + 1) // 2
+        for i, key in enumerate(keys):
+            r, c = 1 + i % half, (i // half) * 3              # deux colonnes de meubles
+            ttk.Label(frame, text=MEUBLES[key]["nom"]).grid(row=r, column=c, sticky="w", pady=1, padx=(10 if c else 0, 0))
             found = matches(key, names)
             values = ["(dessin 2D)"] + found + [n for n in names if n not in found]
             current = state["bibliotheque"].get(key, found[0] if found else "")
             var = tk.StringVar(value=current or "(dessin 2D)")
-            ttk.Combobox(frame, values=values, textvariable=var, width=40).grid(row=i + 1, column=1, padx=6)
+            ttk.Combobox(frame, values=values, textvariable=var, width=28).grid(row=r, column=c + 1, padx=4)
             flip = tk.BooleanVar(value=state["retourner"].get(key, False))
-            ttk.Checkbutton(frame, text="tourner de 180°", variable=flip).grid(row=i + 1, column=2, sticky="w")
+            ttk.Checkbutton(frame, text="180°", variable=flip).grid(row=r, column=c + 2, sticky="w")
             rows[key] = (var, flip)
 
         def save():
@@ -1729,14 +1742,13 @@ def settings_window(settings: dict) -> None:
                 state["retourner"][key] = bool(flip.get())
             save_json(REGLAGES, state)
             win.destroy()
-        ttk.Button(frame, text="Enregistrer", command=save).grid(row=len(rows) + 2, column=2, sticky="e", pady=(8, 0))
 
         def export():
-            path, count = export_library_list()
-            show(f"Liste de {count} objets enregistrée dans :\n{path}\nEnvoie ce fichier à Claude pour régler les "
-                 "bons objets par défaut.")
-        ttk.Button(frame, text="Exporter la liste des objets (pour Claude)", command=export
-                   ).grid(row=len(rows) + 2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+            path, count = export_list()
+            info.set(f"{count} objets → {path}")
+        ttk.Button(head, text="Exporter la liste des objets (pour Claude)", command=export
+                   ).grid(row=0, column=1, padx=(16, 6))
+        ttk.Button(head, text="Enregistrer", command=save).grid(row=0, column=2)
 
     def click_room():
         """Baguette magique : clic dans la piece -> contour trouve en surbrillance -> Meubler."""
