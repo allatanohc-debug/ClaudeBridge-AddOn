@@ -85,6 +85,7 @@ MURS = {"Wall": ("ModifyWalls", "wallsWithDetails"),
         "Column": ("ModifyColumns", "columnsWithDetails"),
         "Beam": ("ModifyBeams", "beamsWithDetails")}
 OBJETS = ("Object", "Lamp")
+OBJETS_MODIF = {"Object": ("ModifyObjects", "objectsWithDetails"), "Lamp": ("ModifyLamps", "lampsWithDetails")}
 OUVERTURES = ("Door", "Window", "Skylight")
 TEXTES = {"Text": ("ModifyTexts", "textsWithDetails"), "Label": ("ModifyLabels", "labelsWithDetails")}
 LIGNES = ("Line", "PolyLine", "Arc", "Circle", "Spline")
@@ -339,8 +340,8 @@ def write_fields(kind: str, by_guid: dict) -> tuple[int, str]:
     """by_guid : {guid: {champ: valeur}} pour un type d'element. Champs : ceux de Modify* ou de SetDetails."""
     if not by_guid:
         return 0, ""
-    if kind in MURS:
-        command, key = MURS[kind]
+    if kind in MURS or kind in OBJETS_MODIF:
+        command, key = MURS.get(kind) or OBJETS_MODIF[kind]
         return send(command, key, [{"elementId": {"guid": g}, **fields} for g, fields in by_guid.items()])
     if kind in TEXTES:
         command, key = TEXTES[kind]
@@ -423,6 +424,14 @@ def run_apply(settings: dict) -> str:
             fields["penIndex"] = pens["textes"]
             if isinstance(old, int):
                 remember(guid, kind, "penIndex", old)
+        if kind in OBJETS_MODIF and "objets_lignes" in pens:
+            # "Remplacer les stylos de ligne de l'objet" : toutes ses lignes prennent ce stylo
+            fields["pen"] = pens["objets_lignes"]
+            fields["useObjectPens"] = False
+            if isinstance(d.get("pen"), int):
+                remember(guid, kind, "pen", d["pen"])
+            if isinstance(d.get("useObjectPens"), bool):
+                remember(guid, kind, "useObjectPens", d["useObjectPens"])
         if kind in LIGNES and "lignes" in pens:
             fields["linePenIndex"] = pens["lignes"]
             if isinstance(d.get("linePenIndex"), int):
@@ -460,7 +469,7 @@ def run_apply(settings: dict) -> str:
                 none += 1
         if to_set:
             ok, error = write_gdl(to_set)
-            report.append(line("Object", ok, len(to_set), error))
+            report.append(line("réglages de stylos des objets", ok, len(to_set), error))
         if none:
             report.append(f"  {none} objet(s) sans réglage de stylo modifiable (couleurs fixées dans l'objet).")
         if not to_set and not none:
@@ -517,7 +526,7 @@ def run_restore() -> str:
         report.append(line(kind, ok, len(by_guid), error))
     if gdl:
         ok, error = write_gdl(gdl)
-        report.append(line("Object", ok, len(gdl), error))
+        report.append(line("réglages de stylos des objets", ok, len(gdl), error))
     for r in chosen:
         origine.pop(r["guid"], None)
     save_json(MEMOIRE, memory)
