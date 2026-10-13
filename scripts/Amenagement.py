@@ -22,7 +22,29 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import TableauSurfaces as T  # noqa: E402
+
+
+def _load_tableau():
+    """Importe TableauSurfaces.py, meme si Windows l'a renomme au telechargement
+    (ex. "TableauSurfaces (4).py") : on prend alors la copie la plus recente."""
+    try:
+        import TableauSurfaces
+        return TableauSurfaces
+    except ModuleNotFoundError:
+        import importlib.util
+        here = Path(__file__).resolve().parent
+        copies = sorted(here.glob("TableauSurfaces*.py"), key=lambda p: p.stat().st_mtime, reverse=True)
+        if not copies:
+            raise SystemExit("TableauSurfaces.py introuvable : mets-le dans le meme dossier que Amenagement.py "
+                             f"({here}).")
+        spec = importlib.util.spec_from_file_location("TableauSurfaces", copies[0])
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["TableauSurfaces"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+T = _load_tableau()
 
 MEMOIRE = "personnages.json"       # guids dessines (exclus de la baguette magique)
 REGLAGES = "amenagement_reglages.json"
