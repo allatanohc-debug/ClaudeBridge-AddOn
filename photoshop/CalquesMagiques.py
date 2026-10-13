@@ -66,15 +66,17 @@ def missing_packages() -> list[str]:
 
 def install(packages: list[str]) -> str:
     cmd = [sys.executable, "-m", "pip", "install", "--user", *packages]
-    run = subprocess.run(cmd, capture_output=True, text=True)
+    print("(telechargement en cours, la progression s'affiche ci-dessous)")
+    run = subprocess.run(cmd)                                  # progression visible dans la fenetre noire
+    run.stdout, run.stderr = "", ""
     if run.returncode != 0 and "winsdk" in packages:
         # Python trop recent pour winsdk : paquets winrt separes
         alt = [p for p in packages if p != "winsdk"] + [
             "winrt-runtime", "winrt-Windows.Media.Ocr", "winrt-Windows.Graphics.Imaging",
             "winrt-Windows.Storage", "winrt-Windows.Storage.Streams", "winrt-Windows.Globalization",
             "winrt-Windows.Foundation", "winrt-Windows.Foundation.Collections"]
-        run = subprocess.run([sys.executable, "-m", "pip", "install", "--user", *alt], capture_output=True, text=True)
-    return run.stdout[-1500:] + run.stderr[-1500:]
+        run = subprocess.run([sys.executable, "-m", "pip", "install", "--user", *alt])
+    return "Installation terminee." if run.returncode == 0 else "Installation incomplete."
 
 
 def load_json(path: str) -> dict:
