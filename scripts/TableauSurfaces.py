@@ -578,7 +578,7 @@ BAGUETTE_TOL = 0.01             # m : petits jours entre murs/traits refermes (c
 def _own_guids() -> set[str]:
     """Elements dessines par nos scripts (tableau, ombres) : ils ne delimitent pas les pieces."""
     own = set()
-    for name in (MEMOIRE, "ombres.json", "nomenclature.json", "personnages.json", "trame.json"):
+    for name in (MEMOIRE, "ombres.json", "nomenclature.json", "personnages.json", "trame.json", "meubles.json"):
         for guids in load_json(name).values():
             if isinstance(guids, list):
                 own.update(guids)
