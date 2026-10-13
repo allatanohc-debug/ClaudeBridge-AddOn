@@ -63,28 +63,30 @@ RENDUS = ("Objets 3D de la bibliothèque (sinon dessin 2D)", "Dessin 2D seulemen
 MEUBLES = {
     "lit_double":  dict(nom="Lit double", w=1.60, d=2.00, h=0.50, mots=["lit double", "double bed", "bed double"]),
     "lit_simple":  dict(nom="Lit simple", w=0.90, d=1.90, h=0.50, mots=["lit simple", "lit 1", "single bed", "bed single"]),
-    "chevet":      dict(nom="Table de chevet", w=0.45, d=0.40, h=0.50, mots=["chevet", "night table", "bedside", "nightstand"]),
+    "chevet":      dict(nom="Table de chevet", w=0.50, d=0.40, h=0.50, mots=["chevet", "night table", "bedside", "nightstand"]),
     "armoire":     dict(nom="Armoire", w=1.20, d=0.60, h=2.20, haut=True, mots=["armoire", "wardrobe", "penderie"]),
     "bureau":      dict(nom="Bureau", w=1.20, d=0.60, h=0.75, mots=["bureau", "desk", "table de travail"]),
-    "chaise":      dict(nom="Chaise", w=0.45, d=0.45, h=0.90, mots=["chaise", "chair"], sauf=["longue", "arm", "lounge", "fauteuil"]),
-    "canape":      dict(nom="Canapé", w=2.20, d=0.90, h=0.80, mots=["canape", "sofa", "divan"]),
+    "chaise":      dict(nom="Chaise", w=0.45, d=0.50, h=0.90, mots=["chaise", "chair"], sauf=["longue", "arm", "lounge", "fauteuil"]),
+    "canape":      dict(nom="Canapé", w=2.20, d=0.95, h=0.80, mots=["canape", "sofa", "divan"]),
     "table_basse": dict(nom="Table basse", w=1.10, d=0.60, h=0.40, mots=["table basse", "coffee table", "low table"]),
     "meuble_tv":   dict(nom="Meuble TV", w=1.60, d=0.45, h=0.50, mots=["meuble tv", "tv", "television", "media"]),
     "fauteuil":    dict(nom="Fauteuil", w=0.80, d=0.80, h=0.80, mots=["fauteuil", "armchair", "lounge chair"]),
-    "table":       dict(nom="Table à manger + chaises", w=1.60, d=0.90, h=0.75,
+    "table":       dict(nom="Table à manger + chaises", w=1.80, d=0.90, h=0.75,
                         mots=["table a manger", "table de salle a manger", "dining table", "table rectangulaire",
                               "table rect", "table "], sauf=["chevet", "basse", "night", "coffee", "bureau", "desk",
                                                              "lampe", "lamp", "tennis", "billard"]),
     "etagere":     dict(nom="Étagère / bibliothèque", w=1.00, d=0.35, h=2.00, haut=True,
                         mots=["etagere", "bibliotheque", "bookshelf", "shelf", "rayonnage"]),
     "cuisine":     dict(nom="Plan de travail (évier + plaques)", w=2.40, d=0.60, h=0.90, mots=[]),
+    "retour":      dict(nom="Retour de plan de travail (cuisine en L)", w=1.20, d=0.60, h=0.90, mots=[]),
     "frigo":       dict(nom="Réfrigérateur", w=0.60, d=0.65, h=1.85, haut=True,
                         mots=["refrigerateur", "frigo", "refrigerator", "fridge"]),
-    "baignoire":   dict(nom="Baignoire", w=1.70, d=0.70, h=0.55, mots=["baignoire", "bathtub", "bath tub", "bath"]),
+    "baignoire":   dict(nom="Baignoire", w=1.70, d=0.75, h=0.55, mots=["baignoire", "bathtub", "bath tub", "bath"]),
     "douche":      dict(nom="Douche", w=0.90, d=0.90, h=0.10, mots=["douche", "shower"]),
-    "lavabo":      dict(nom="Lavabo", w=0.60, d=0.45, h=0.85, mots=["lavabo", "vasque", "washbasin", "wash basin"]),
-    "lave_mains":  dict(nom="Lave-mains", w=0.45, d=0.30, h=0.85, mots=["lave-mains", "lave mains", "hand basin"]),
-    "wc":          dict(nom="WC", w=0.40, d=0.65, h=0.80, mots=["cuvette", "wc ", "toilet", "w.c."]),
+    "lavabo":      dict(nom="Lavabo", w=0.60, d=0.50, h=0.85, mots=["lavabo", "vasque", "washbasin", "wash basin"]),
+    "lave_mains":  dict(nom="Lave-mains", w=0.40, d=0.30, h=0.85, mots=["lave-mains", "lave mains", "hand basin"]),
+    "wc":          dict(nom="WC", w=0.37, d=0.60, h=0.80, mots=["cuvette", "wc ", "toilet", "w.c."]),
+    "bidet":       dict(nom="Bidet", w=0.38, d=0.60, h=0.40, mots=["bidet"]),
     "lave_linge":  dict(nom="Lave-linge", w=0.60, d=0.60, h=0.85, mots=["lave-linge", "lave linge", "washing machine", "washer"]),
     "seche_linge": dict(nom="Sèche-linge", w=0.60, d=0.60, h=0.85, mots=["seche-linge", "seche linge", "dryer"]),
     "console":     dict(nom="Console / meuble d'entrée", w=1.20, d=0.40, h=0.85, mots=["console", "sideboard", "commode", "buffet"]),
@@ -99,9 +101,9 @@ PIECES = {
                            ("table", True), ("console", False)],
     "Salon":              [("canape", True), ("table_basse", True), ("meuble_tv", True), ("fauteuil", True)],
     "Salle à manger":     [("table", True), ("console", True)],
-    "Cuisine":            [("cuisine", True), ("frigo", True), ("table", False)],
+    "Cuisine":            [("cuisine", True), ("frigo", True), ("retour", True), ("table", False)],
     "Salle de bain":      [("baignoire", True), ("douche", False), ("lavabo", True), ("wc", False),
-                           ("lave_linge", False)],
+                           ("bidet", False), ("lave_linge", False)],
     "Salle d'eau":        [("douche", True), ("lavabo", True), ("wc", False)],
     "WC":                 [("wc", True), ("lave_mains", True)],
     "Bureau":             [("bureau", True), ("etagere", True), ("fauteuil", False)],
@@ -212,6 +214,17 @@ class Room:
         self.bodies, self.clears = [], []        # geometrie occupee / passages a garder libres
         self.poses: list[Pose] = []
         self.segments = self.walls()
+        self.door_clears = []
+        self.side_first = False                  # douche : entree laterale essayee en premier
+        self.compact = False                     # petites tailles d'appareils sanitaires
+        for d in self.doors:                     # porte ouvrant vers l'exterieur : 60 cm libres devant
+            inside = d.intersection(self.P)
+            if inside.is_empty:
+                continue
+            bx1, by1, bx2, by2 = inside.bounds
+            if min(bx2 - bx1, by2 - by1) < 0.30:
+                self.door_clears.append(d.buffer(0.60, join_style=2).intersection(self.P))
+        self.clears.extend(self.door_clears)
 
     @staticmethod
     def main_angle(poly) -> float:
@@ -287,13 +300,15 @@ class Room:
 
 
 # ----------------------------------------------------------------- placement ---
-def place_wall_item(room: Room, key, w, d, clear, score_fn, tall=False):
+def place_wall_item(room: Room, key, w, d, clear, score_fn, tall=False, zones=None):
+    """zones(pose) -> listes de passages possibles (la premiere qui est libre est gardee, dans pose.zone)."""
     best, best_score = None, -1e9
     for center, u, n, t, length in room.along_walls(w, d):
         pose = Pose(key, center, u, n, w, d)
         body = pose.body
-        front = pose.front(clear) if clear > 0 else None
-        if not room.free(body, [front] if front is not None else []):
+        options = zones(pose) if zones else [[pose.front(clear)] if clear > 0 else []]
+        pose.zone = next((z for z in options if room.free(body, z)), None)
+        if pose.zone is None:
             continue
         if tall and room.near_window(body):
             continue
@@ -309,7 +324,8 @@ def corner_bonus(t, w, length):
 
 def place_bed(room: Room, key, w, d, nightstands: int):
     ns = MEUBLES["chevet"]
-    for count in ([nightstands, 1, 0] if nightstands else [0]):
+    tries = [(c, side) for c in ([nightstands, 1, 0] if nightstands else [0]) for side in (0.60, 0.45)]
+    for count, side_clear in tries:
         total = w + count * (ns["w"] + 0.03)
         best, best_score, best_parts = None, -1e9, None
         for center, u, n, t, length in room.along_walls(total, d):
@@ -325,7 +341,7 @@ def place_bed(room: Room, key, w, d, nightstands: int):
                 parts.append(Pose("chevet", add(add(back_left, u, offset + w + 0.03 + ns["w"] / 2), n, ns["d"] / 2),
                                   u, n, ns["w"], ns["d"]))
             clears = [bed.front(0.70, w + 0.6 if key == "lit_double" else w)]
-            side = 0.55 if key == "lit_double" else 0.0
+            side = side_clear if key == "lit_double" else 0.0  # circulation 60 cm (45 mini) de chaque cote
             if side:
                 for sgn in (-1, 1):
                     c = add(add(bed_c, u, sgn * (w / 2 + side / 2)), n, (ns["d"] if count else 0) / 2)
@@ -363,7 +379,12 @@ def place_sofa(room: Room, items):
         facing = [s for s in room.segments if s[2][0] * n[0] + s[2][1] * n[1] < -0.99]
         dist = min((abs((center[0] - a[0]) * nn[0] + (center[1] - a[1]) * nn[1]) for a, _u, nn, _l in facing),
                    default=0.0)
-        s = sofa["w"] * 0 + (1.5 if 2.4 <= dist <= 5.0 else 0.0) - abs(t - (length - sofa["w"]) / 2) * 0.4 \
+        if "table" in items and length > 5.0:
+            # sejour avec coin repas : le salon d'un cote, la table de l'autre
+            off = min(abs(t - 0.70), abs(t - (length - sofa["w"] - 0.70)))
+        else:
+            off = abs(t - (length - sofa["w"]) / 2)
+        s = (1.5 if 2.4 <= dist <= 5.0 else 0.0) - off * 0.4 \
             + min(room.door_distance(center), 3.0) * 0.3 + (0.5 if room.near_window(pose.body, 0.15) is False else 0.0)
         if s > best_score:
             best, best_score = (parts, clears), s
@@ -394,19 +415,29 @@ def place_tv(room: Room, sofa: Pose | None):
     return pose
 
 
+# tailles de table (largeur, profondeur) de la plus grande a la plus petite : 8, 6, 6, 4, 4, 2 personnes
+TABLES = ((2.00, 0.90), (1.80, 0.90), (1.60, 0.90), (1.20, 0.80), (0.90, 0.90), (0.80, 0.70))
+# degagement autour de la table : 1,20 m jusqu'au mur (chaise + se lever), 0,90 m en version compacte
+DEGAGEMENTS_TABLE = (1.20, 0.90)
+
+
 def place_table(room: Room, prefer_away_from=None):
     """Table + chaises tout autour, au milieu de l'espace libre."""
     from shapely.geometry import Point
-    t = MEUBLES["table"]
     x1, y1, x2, y2 = room.P.bounds
     horizontal = (x2 - x1) >= (y2 - y1)
-    for w, d in ((t["w"], t["d"]), (1.40, 0.80), (1.20, 0.80), (0.90, 0.90)):
-        u, n = ((1.0, 0.0), (0.0, 1.0)) if horizontal else ((0.0, 1.0), (-1.0, 0.0))
-        target = room.P.centroid
-        if prefer_away_from is not None:
-            rest = room.P.difference(prefer_away_from.buffer(1.8))
-            if not rest.is_empty:
-                target = rest.centroid
+    target = room.P.centroid
+    if prefer_away_from is not None:
+        rest = room.P.difference(prefer_away_from.buffer(1.8))
+        if not rest.is_empty:
+            target = rest.centroid
+    axes = [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (-1.0, 0.0))]
+    if not horizontal:
+        axes.reverse()
+    combos = [(w, d, margin, u, n) for w, d in TABLES for margin in DEGAGEMENTS_TABLE for u, n in axes]
+    for w, d, margin, u, n in combos:
+        if w + 2 * margin > max(x2 - x1, y2 - y1) + 0.01 or d + 2 * margin > min(x2 - x1, y2 - y1) + 0.01:
+            continue
         best, best_d = None, 1e9
         steps = 0.10
         x = x1
@@ -414,7 +445,7 @@ def place_table(room: Room, prefer_away_from=None):
             y = y1
             while y <= y2:
                 body = rect((x, y), u, n, w, d)
-                ring = rect((x, y), u, n, w + 1.40, d + 1.40)      # chaises + passage
+                ring = rect((x, y), u, n, w + 2 * margin, d + 2 * margin)      # chaises + passage
                 if room.inner.contains(body) and room.free(body, [ring]):
                     dist = Point(x, y).distance(target)
                     if dist < best_d:
@@ -422,32 +453,47 @@ def place_table(room: Room, prefer_away_from=None):
                 y += steps
             x += steps
         if best:
-            pose = Pose("table", best, u, n, w, d)
-            room.commit(pose, [rect(best, u, n, w + 1.40, d + 1.40)])
-            chairs = []
-            per_side = max(1, int(w / 0.60))
-            for i in range(per_side):
-                s = -w / 2 + w / per_side * (i + 0.5)
-                for sgn in (-1, 1):                               # le long des grands cotes
-                    c = add(add(best, u, s), n, sgn * (d / 2 + 0.25))
-                    chairs.append(Pose("chaise", c, u, (n[0] * -sgn, n[1] * -sgn), 0.45, 0.45))
-            if w >= 1.40:
-                for sgn in (-1, 1):                               # en bout de table
-                    c = add(best, u, sgn * (w / 2 + 0.25))
-                    chairs.append(Pose("chaise", c, (n[0] * sgn, n[1] * sgn), (-u[0] * sgn, -u[1] * sgn), 0.45, 0.45))
-            for ch in chairs:
-                room.poses.append(ch)
-            return [pose] + chairs
+            return _commit_table(room, best, u, n, w, d, margin)
     return []
 
 
+def _commit_table(room, best, u, n, w, d, margin):
+    pose = Pose("table", best, u, n, w, d)
+    room.commit(pose, [rect(best, u, n, w + 2 * margin, d + 2 * margin)])
+    ch = MEUBLES["chaise"]
+    chairs = []
+    per_side = max(1, int(w / 0.60 + 1e-6))                  # 60 cm par convive
+    for i in range(per_side):
+        s = -w / 2 + w / per_side * (i + 0.5)
+        for sgn in (-1, 1):                                   # le long des grands cotes
+            c = add(add(best, u, s), n, sgn * (d / 2 + ch["d"] / 2 - 0.10))
+            chairs.append(Pose("chaise", c, u, (n[0] * -sgn, n[1] * -sgn), ch["w"], ch["d"]))
+    if w >= 1.60:
+        for sgn in (-1, 1):                                   # en bout de table
+            c = add(best, u, sgn * (w / 2 + ch["d"] / 2 - 0.10))
+            chairs.append(Pose("chaise", c, (n[0] * sgn, n[1] * sgn), (-u[0] * sgn, -u[1] * sgn), ch["w"], ch["d"]))
+    for chair in chairs:
+        room.poses.append(chair)
+    return [pose] + chairs
+
+
+# longueurs de cuisine lineaire (frigo compris) : tout equipee 4,60 ; four+plaques+evier+frigo 4,00 ;
+# avec lave-vaisselle 3,40 ; plaques+evier 2,80 ; puis kitchenettes
+LONGUEURS_CUISINE = (4.60, 4.00, 3.40, 2.80, 2.20, 1.80, 1.20)
+DEVANT_CUISINE = 1.00          # 1,00 m entre un plan de travail et un mur / meuble
+ENTRE_DEUX_PLANS = 1.20        # 1,20 m entre deux plans de travail qui se font face
+
+
 def place_kitchen(room: Room, items):
-    """Plan de travail lineaire le long du plus long mur libre, frigo a un bout."""
+    """Plan de travail lineaire le long du plus long mur libre, frigo a un bout ; retour en L si la
+    longueur lineaire est trop courte (< 3,40 m)."""
     with_fridge = "frigo" in items
-    for length_wanted in (3.60, 3.00, 2.40, 1.80, 1.20):
+    fridge_w = MEUBLES["frigo"]["w"] + 0.02 if with_fridge else 0.0
+    for total in LONGUEURS_CUISINE:
+        length_wanted = total - fridge_w
+        if length_wanted < 1.0:
+            continue
         best, best_score = None, -1e9
-        fridge_w = MEUBLES["frigo"]["w"] + 0.02 if with_fridge else 0.0
-        total = length_wanted + fridge_w
         for center, u, n, t, length in room.along_walls(total, 0.65):
             back_left = add(add(center, u, -total / 2), n, -0.65 / 2)
             for fridge_left in ((True, False) if with_fridge else (False,)):
@@ -461,22 +507,124 @@ def place_kitchen(room: Room, items):
                     if room.near_window(fridge.body):
                         continue
                     parts.append(fridge)
-                clears = [counter.front(1.0)]
+                clears = [counter.front(DEVANT_CUISINE)]
                 if not all(room.free(p.body) for p in parts) or not room.free(counter.body, clears):
                     continue
-                s = corner_bonus(t, total, length) - abs(length - total) * 0.05
+                s = corner_bonus(t, total, length) - abs(length - total) * 0.05 \
+                    + (0.5 if room.near_window(counter.body, 0.15) else 0.0)      # evier sous la fenetre
                 if s > best_score:
                     best, best_score = (parts, clears), s
         if best:
-            for p in best[0]:
+            parts, clears = best
+            for p in parts:
                 room.commit(p)
-            room.clears.extend(best[1])
-            return best[0]
+            if "retour" in items and total < 3.40:
+                extra = place_return(room, parts[0], clears[0])
+                if extra:
+                    parts = parts + [extra]
+                    return parts
+            room.clears.extend(clears)
+            return parts
     return []
+
+
+def place_return(room: Room, counter: Pose, counter_clear):
+    """Retour en L contre un mur perpendiculaire, accole a une extremite du plan principal."""
+    best, best_score = None, -1e9
+    for w in (1.80, 1.50, 1.20, 0.90):
+        for center, u, n, t, length in room.along_walls(w, 0.60):
+            if abs(n[0] * counter.n[0] + n[1] * counter.n[1]) > 0.1:      # mur perpendiculaire seulement
+                continue
+            pose = Pose("retour", center, u, n, w, 0.60)
+            body = pose.body
+            if body.distance(counter.body) > 0.06:
+                continue
+            front = pose.front(DEVANT_CUISINE).difference(counter.body.buffer(0.005))
+            if not room.free(body, [front]):
+                continue
+            s = w - (0.5 if room.door_distance(pose.c) < 0.9 else 0.0)
+            if s > best_score:
+                best, best_score = (pose, front), s
+        if best:
+            break
+    if not best:
+        return None
+    pose, front = best
+    _extend_to_corner(room, counter, pose)
+    counter_clear = counter.front(DEVANT_CUISINE)
+    room.commit(pose, [front, counter_clear.difference(pose.body.buffer(0.005))])
+    return pose
+
+
+def _extend_to_corner(room: Room, counter: Pose, ret: Pose) -> None:
+    """Prolonge le plan principal jusqu'au mur contre lequel s'appuie le retour."""
+    cu = counter.u
+    proj = lambda p: p[0] * cu[0] + p[1] * cu[1]                 # noqa: E731
+    wall = proj(add(ret.c, ret.n, -ret.d / 2))
+    lo, hi = proj(counter.c) - counter.w / 2, proj(counter.c) + counter.w / 2
+    gap, sgn = (lo - wall, -1) if wall < lo else (wall - hi, 1)
+    if not 0.01 < gap < 1.0:
+        return
+    old = counter.body
+    strip = rect(add(counter.c, cu, sgn * (counter.w / 2 + gap / 2)), cu, counter.n, gap - 0.01, counter.d)
+    if not room.inner.contains(strip) or any(strip.intersects(g) for g in room.doors) \
+            or any(strip.intersects(g) for g in room.bodies if not g.equals(old)):
+        return
+    counter.c = add(counter.c, cu, sgn * (gap - 0.01) / 2)
+    counter.w += gap - 0.01
+    room.bodies = [counter.body if g.equals(old) else g for g in room.bodies]
+
+
+def conseils(room: Room, kind: str) -> list[str]:
+    """Surfaces et dimensions minimales conseillees."""
+    x1, y1, x2, y2 = room.P.bounds
+    small, large, area = min(x2 - x1, y2 - y1), max(x2 - x1, y2 - y1), room.P.area
+    notes = []
+    if kind in ("Chambre", "Chambre d'enfant") and area < 9.0:
+        notes.append(f"chambre de {area:.1f} m² : 9 m² conseillés au minimum (2,50 × 3,60 ou 3,00 × 3,00)")
+    if kind == "WC" and (small < 0.90 or large < 1.15):
+        notes.append("WC : 0,90 m de large et 1,50 m de long conseillés (1,15-1,20 m si la porte ouvre vers "
+                     "l'extérieur, 1,75 m si la porte est dans la longueur)")
+    if kind == "Cuisine" and small < 1.60:
+        notes.append("cuisine : prévoir 1,00 m libre devant le plan de travail (60 cm + 1,00 m = 1,60 m de large)")
+    return notes
+
+
+# tailles reduites (mini courants) essayees si les tailles normales ne rentrent pas
+COMPACT = {"douche": (0.80, 0.80), "lavabo": (0.50, 0.45), "baignoire": (1.60, 0.70)}
+
+
+def taille(room: Room, key: str) -> tuple[float, float]:
+    if room.compact and key in COMPACT:
+        return COMPACT[key]
+    return MEUBLES[key]["w"], MEUBLES[key]["d"]
+
+
+def furnish_best(polygon, doors, windows, kind: str, items: list[str], settings: dict):
+    """Essaie plusieurs ordres de placement (pieces d'eau surtout) et garde celui ou il manque le moins
+    de meubles."""
+    wet = [k for k in items if k in ("baignoire", "douche", "lavabo", "wc", "bidet", "lave_mains", "lave_linge")]
+    orders = [items]
+    if len(wet) >= 2:
+        rest = [k for k in items if k not in wet]
+        orders += [wet[::-1] + rest, [k for k in wet if k in ("wc", "bidet")] + [k for k in wet if k not in ("wc", "bidet")] + rest]
+    best = None
+    variants = [(o, sf, c) for c in ((False, True) if wet else (False,)) for o in orders
+                for sf in ((False, True) if "douche" in items else (False,))]
+    for order, side_first, compact in variants:
+        room = Room(polygon, doors, windows)
+        room.side_first, room.compact = side_first, compact
+        placed, missing = furnish(room, kind, order, settings)
+        if best is None or len(missing) < len(best[2]):
+            best = (room, placed, missing)
+        if not missing:
+            return best
+    return best
 
 
 def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[list[Pose], list[str]]:
     placed, missing = [], []
+    room.notes = conseils(room, kind)
 
     def got(poses, key):
         if poses:
@@ -487,8 +635,8 @@ def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[li
     sofa = None
     for key in items:
         spec = MEUBLES[key]
-        if key in ("chevet", "table_basse", "chaise"):
-            continue                                       # places avec le lit / le canape / le bureau
+        if key in ("chevet", "table_basse", "chaise", "retour"):
+            continue                                       # places avec le lit / le canape / la cuisine
         if key in ("lit_double", "lit_simple"):
             w, d = TAILLES_LIT[settings["lit"]] if key == "lit_double" else (spec["w"], spec["d"])
             got(place_bed(room, key, w, d, (2 if key == "lit_double" else 1) if "chevet" in items else 0), key)
@@ -505,33 +653,83 @@ def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[li
         elif key == "frigo" and "cuisine" in items:
             continue
         elif key == "bureau":
-            pose = place_wall_item(room, key, spec["w"], spec["d"], 0.9,
-                                   lambda p, t, l: (2.0 if room.near_window(p.body, 0.3) else 0.0)
-                                   + corner_bonus(t, p.w, l) * 0.5)
+            pose = None
+            # bureau 110-150 x 50-80 (enfant 90-110 x 50) ; place de la chaise devant
+            for (bw, bd), clear in [((spec["w"], spec["d"]), 0.90), ((1.00, 0.50), 0.80), ((0.90, 0.50), 0.70)]:
+                pose = place_wall_item(room, key, bw, bd, clear,
+                                       lambda p, t, l: (2.0 if room.near_window(p.body, 0.3) else 0.0)
+                                       + corner_bonus(t, p.w, l) * 0.5)
+                if pose:
+                    break
             if pose:
-                room.commit(pose, [pose.front(0.9)])
+                room.commit(pose, [pose.front(clear)])
                 chair = Pose("chaise", add(pose.c, pose.n, pose.d / 2 + 0.20), pose.u, (-pose.n[0], -pose.n[1]), 0.45, 0.45)
                 room.poses.append(chair)
                 got([pose, chair], key)
             else:
                 got(None, key)
         elif key in ("baignoire", "douche", "lave_linge", "seche_linge"):
-            pose = place_wall_item(room, key, spec["w"], spec["d"], 0.6 if key != "baignoire" else 0.7,
-                                   lambda p, t, l: corner_bonus(t, p.w, l) * 3 - abs(l - p.w) * 0.3)
+            # aire libre : 70 cm devant la baignoire et la douche
+            # douche : 70 cm devant, ou une aire de 70 cm a cote du receveur (entree laterale)
+            clear = 0.70 if key in ("baignoire", "douche") else 0.60
+            zones = None
+            if key == "douche":
+                def zones(p):
+                    side = [[rect(add(p.c, p.u, sg * (p.w / 2 + 0.35)), p.u, p.n, 0.70, p.d)] for sg in (1, -1)]
+                    return side + [[p.front(clear)]] if room.side_first else [[p.front(clear)]] + side
+            pose = place_wall_item(room, key, *taille(room, key), clear,
+                                   lambda p, t, l: corner_bonus(t, p.w, l) * 3 - abs(l - p.w) * 0.3
+                                   + min(room.door_distance(p.c), 3.0) * 0.5, zones=zones)
             if pose:
-                room.commit(pose, [pose.front(0.6)])
+                room.commit(pose, pose.zone)
             got(pose, key)
-        elif key == "wc":
-            pose = place_wall_item(room, key, 0.80, spec["d"], 0.6,
-                                   lambda p, t, l: min(room.door_distance(p.c), 3.0) - abs(t - (l - p.w) / 2) * 0.2)
-            if pose:                                        # 0,80 = cuvette + 20 cm libres de chaque cote
-                pose.w = spec["w"]
-                room.commit(pose, [pose.front(0.6, 0.8)])
+        elif key in ("wc", "bidet"):
+            # aire du WC : 80 cm de large (20 cm libres de chaque cote) x 1,30 m depuis le mur
+            # aire du bidet : 70 cm de large, ~1,10 m depuis le mur ; de preference a cote du WC
+            zone_w, clear = (0.80, 0.70) if key == "wc" else (0.70, 0.50)
+            wc = next((p for p in room.poses if p.key == "wc"), None)
+            def score(p, t, l, wc=wc):
+                if wc is not None:
+                    return -p.body.distance(wc.body)
+                return min(room.door_distance(p.c), 3.0) - abs(t - (l - p.w) / 2) * 0.2
+            def zones(p, zone_w=zone_w, clear=clear):
+                # 20 cm libres de chaque cote de la cuvette (passage partageable, pas de meuble dedans)
+                sides = [rect(add(p.c, p.u, sg * (zone_w + p.w) / 4), p.u, p.n, (zone_w - p.w) / 2, p.d)
+                         for sg in (1, -1)]
+                return [[p.front(clear, zone_w)] + sides]
+            pose = place_wall_item(room, key, spec["w"], spec["d"], clear, score, zones=zones)
+            if pose:
+                room.commit(pose, pose.zone)
+                if key == "wc":
+                    room.wc_front = pose.zone[0]
+            got(pose, key)
+        elif key in ("lavabo", "lave_mains"):
+            # aire du lavabo : environ 1,00 m depuis le mur, lave-mains 70 cm
+            clear = 0.50 if key == "lavabo" else 0.40
+            saved = room.clears
+            if key == "lave_mains" and getattr(room, "wc_front", None) is not None:
+                # un lave-mains peut se poser sur le cote, dans l'aire devant le WC (comme dans un WC de 90 x 145)
+                room.clears = [c for c in saved if c is not room.wc_front and not any(c is g for g in room.door_clears)]
+            pose = place_wall_item(room, key, *taille(room, key), clear,
+                                   lambda p, t, l: -abs(t - (l - p.w) / 2) * 0.3)
+            room.clears = saved
+            if pose:
+                room.commit(pose, [pose.front(clear)])
             got(pose, key)
         elif key == "fauteuil" and sofa is not None:
-            # a cote du canape, tourne vers la table basse
+            # face au petit cote de la table basse, a 40 cm ; sinon a cote du canape
             done = None
-            for sgn in (1, -1):
+            table = next((p for p in room.poses if p.key == "table_basse"), None)
+            if table is not None:
+                for sgn in (1, -1):
+                    c = add(table.c, table.u, sgn * (table.w / 2 + 0.40 + spec["d"] / 2))
+                    pose = Pose(key, c, (table.n[0] * sgn, table.n[1] * sgn), (-table.u[0] * sgn, -table.u[1] * sgn),
+                                spec["w"], spec["d"])
+                    if room.free(pose.body):
+                        room.commit(pose)
+                        done = pose
+                        break
+            for sgn in ((1, -1) if done is None else ()):
                 c = add(add(sofa.c, sofa.u, sgn * (sofa.w / 2 + 0.55)), sofa.n, 0.80)
                 pose = Pose(key, c, (sofa.n[0] * sgn, sofa.n[1] * sgn), (-sofa.u[0] * sgn, -sofa.u[1] * sgn),
                             spec["w"], spec["d"])
@@ -610,14 +808,19 @@ def symbol(key: str, w: float, d: float):
             poly([(x, -hd), (x, hd)], False)
     elif key == "cuisine":
         poly([(-hw, -hd + 0.03), (hw, -hd + 0.03)], False)
-        sink_x = -hw + w * 0.35
+        # evier et plaques jamais cote a cote, 40 a 60 cm de plan libre de chaque cote quand c'est possible
+        hob_w = 0.60 if w >= 1.80 else 0.30
+        m = min(0.60, max(0.05, (w - 0.80 - hob_w) / 3))
+        sink_x = -hw + m + 0.40
         poly(box_pts(sink_x - 0.40, -hd + 0.10, sink_x + 0.40, hd - 0.08))
         poly(box_pts(sink_x - 0.36, -hd + 0.13, sink_x, hd - 0.11))
         poly(circle(sink_x - 0.18, 0.0, 0.03, 12))
-        hob_x = hw - min(0.55, w * 0.25)
-        for dx in (-0.14, 0.14):
+        hob_x = hw - m - hob_w / 2
+        for dx in ((-0.14, 0.14) if hob_w > 0.4 else (0.0,)):
             for dy in (-0.12, 0.12):
                 poly(circle(hob_x + dx, dy, 0.08 if dy > 0 else 0.06, 20))
+    elif key == "retour":
+        poly([(-hw, -hd + 0.03), (hw, -hd + 0.03)], False)
     elif key == "frigo":
         poly([(-hw, hd), (hw, -hd)], False)
         poly([(-hw, -hd), (hw, hd)], False)
@@ -641,6 +844,10 @@ def symbol(key: str, w: float, d: float):
         inner = [(math.cos(a) * 0.12, hd - 0.44 + math.sin(a) * 0.16) for a in [2 * math.pi * k / 24 for k in range(24)]]
         fills[:] = [bowl, tank]
         lines[:] = [bowl + [bowl[0]], tank + [tank[0]], inner + [inner[0]]]
+    elif key == "bidet":
+        e = [(math.cos(a) * w * 0.38, -0.04 + math.sin(a) * d * 0.36) for a in [2 * math.pi * k / 28 for k in range(28)]]
+        poly(e)
+        poly(circle(0, hd - 0.08, 0.02, 10))
     elif key in ("lave_linge", "seche_linge"):
         poly(circle(0, -0.03, min(w, d) * 0.33))
         poly([(-hw, hd - 0.10), (hw, hd - 0.10)], False)
@@ -843,11 +1050,10 @@ def remember(guids: list[str], story: int) -> None:
 
 def furnish_polygon(polygon, kind: str, settings: dict, story: int, names: list[str]) -> str:
     doors, windows = openings(story, polygon.buffer(0.5))
-    room = Room(polygon, doors, windows)
     items = chosen_items(settings, kind)
     if not items:
         return f"{kind} : aucun meuble coché."
-    placed, missing = furnish(room, kind, items, settings)
+    room, placed, missing = furnish_best(polygon, doors, windows, kind, items, settings)
     if not placed:
         return f"{kind} ({polygon.area:.1f} m²) : pas assez de place pour les meubles cochés."
     guids, used = build(room, room.poses, story, settings, names)
@@ -858,6 +1064,8 @@ def furnish_polygon(polygon, kind: str, settings: dict, story: int, names: list[
     text += "."
     if missing:
         text += " Pas de place pour : " + ", ".join(dict.fromkeys(missing)) + "."
+    for note in getattr(room, "notes", []):
+        text += " Attention : " + note + "."
     return text
 
 
