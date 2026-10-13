@@ -155,6 +155,8 @@ def load_settings() -> dict:
         "rendu": saved.get("rendu") if saved.get("rendu") in RENDUS else RENDUS[0],
         "bibliotheque": biblio,                 # meuble -> nom de l'objet ("" = dessin 2D)
         "retourner": flips,                     # meuble -> objet tourne de 180 degres
+        "traits": saved.get("traits", "Droits (0 / 90 degres)"),
+        "reperes": bool(saved.get("reperes", True)),
     }
 
 
@@ -925,7 +927,11 @@ def set_pens() -> None:
                 {"index": STYLO_TRAIT, "width": 0.13, "description": "Meubles - traits",
                  "color": {"red": COULEUR_TRAIT[0], "green": COULEUR_TRAIT[1], "blue": COULEUR_TRAIT[2]}},
                 {"index": STYLO_FOND, "width": 0.10, "description": "Meubles - fond blanc",
-                 "color": {"red": 1.0, "green": 1.0, "blue": 1.0}}]}]})
+                 "color": {"red": 1.0, "green": 1.0, "blue": 1.0}},
+                {"index": T.STYLO_CONTOUR, "width": 0.1, "description": "Tableau des surfaces - contour en cours",
+                 "color": dict(zip(("red", "green", "blue"), T.COULEUR_CONTOUR))},
+                {"index": T.STYLO_REPERE, "width": 0.1, "description": "Tableau des surfaces - reperes",
+                 "color": dict(zip(("red", "green", "blue"), T.COULEUR_REPERE))}]}]})
 
 
 def build(room: Room, poses: list[Pose], story: int, settings: dict, names: list[str]) -> tuple[list[str], list[str]]:
@@ -1112,41 +1118,127 @@ def run_zones(settings: dict) -> str:
     return "\n".join(lines)
 
 
-CONTOURS = ("PolyLine", "Hatch")
+def trace_outline(story: int, step_deg: float, guides_on: bool, title: str):
+    """Dessin du contour point par point, exactement comme « Dessiner une piece » du tableau des surfaces :
+    traits provisoires orange en surbrillance, repere sur le 1er point, reperes d'alignement bleus,
+    longueur de chaque trait, traits droits (0/90 ou 45 degres), clic sur le point precedent = annuler,
+    clic sur le 1er point ou Echap = fermer (coin de fermeture ajoute si besoin).
+    Renvoie (points, nettoyer) ; points = None si Echap sans contour."""
+    temp, guides, labels = [], [], []
+    close_dist = T.FERMETURE_MM * T.ECHELLE / 1000.0
 
+    def delete(guids: list) -> None:
+        if guids:
+            try:
+                tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids if g]})
+            except Exception:  # noqa: BLE001
+                pass
+        guids.clear()
 
-def contour_guids() -> set[str]:
-    out = set()
-    for kind in CONTOURS:
+    def draw_temp(coords: list) -> None:
         try:
-            out |= {e["elementId"]["guid"] for e in tapir("GetElementsByType", {"elementType": kind}).get("elements", [])}
+            answer = tapir("CreatePolylines", {"polylinesData": [{
+                "floorInd": story, "coordinates": coords,
+                "linePenIndex": T.STYLO_CONTOUR, "penWeightMm": T.TRAIT_CONTOUR_MM}]})
+            temp.extend(e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e)
         except Exception:  # noqa: BLE001
             pass
-    return out
+        T.highlight(temp)
 
+    def draw_guides(points: list) -> None:
+        delete(guides)
+        if not points or not guides_on:
+            return
+        reach = T.REPERE_M
+        data = []
+        for q in [points[-1]] + ([points[0]] if len(points) > 1 else []):
+            data.append({"floorInd": story, "linePenIndex": T.STYLO_REPERE, "penWeightMm": T.TRAIT_REPERE_MM,
+                         "coordinates": [{"x": q["x"] - reach, "y": q["y"]}, {"x": q["x"] + reach, "y": q["y"]}]})
+            data.append({"floorInd": story, "linePenIndex": T.STYLO_REPERE, "penWeightMm": T.TRAIT_REPERE_MM,
+                         "coordinates": [{"x": q["x"], "y": q["y"] - reach}, {"x": q["x"], "y": q["y"] + reach}]})
+        try:
+            answer = tapir("CreatePolylines", {"polylinesData": data})
+            guides.extend(e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e)
+        except Exception:  # noqa: BLE001
+            pass
 
-def contour_polygons(guids: list[str]) -> list[tuple[str, object, int | None]]:
-    """(guid, polygone shapely, etage) des polylignes / hachures donnees, fermees et assez grandes."""
-    from shapely.geometry import Polygon
-    if not guids:
-        return []
-    details = tapir("GetDetailsOfElements", {"elements": [{"elementId": {"guid": g}} for g in guids]}
-                    ).get("detailsOfElements", [])
-    out = []
-    for guid, detail in zip(guids, details):
-        if not isinstance(detail, dict) or "error" in detail or detail.get("type") not in CONTOURS:
+    def draw_length(a: dict, b: dict) -> None:
+        if not guides_on:
+            labels.append(None)
+            return
+        length = math.dist((a["x"], a["y"]), (b["x"], b["y"]))
+        mid = {"x": (a["x"] + b["x"]) / 2, "y": (a["y"] + b["y"]) / 2}
+        off = 2.5 * T.ECHELLE / 1000.0
+        if length > 1e-9:
+            mid = {"x": mid["x"] - (b["y"] - a["y"]) / length * off, "y": mid["y"] + (b["x"] - a["x"]) / length * off}
+        try:
+            answer = tapir("CreateTexts", {"textsData": [{
+                "coordinate": {"x": mid["x"], "y": mid["y"], "z": 0.0}, "text": T.format_area(length),
+                "floorIndex": story, "style": {"height": 2.5, "bold": True, "penIndex": T.STYLO_CONTOUR,
+                                               "anchor": "MiddleMiddle", "justification": "Center"}}]})
+            items = [e["elementId"]["guid"] for e in answer.get("elements", []) if "elementId" in e]
+            labels.append(items[0] if items else None)
+        except Exception:  # noqa: BLE001
+            labels.append(None)
+
+    def cleanup() -> None:
+        T.highlight([])
+        delete(temp)
+        delete([g for g in labels if g])
+        labels.clear()
+        delete(guides)
+
+    points: list[dict] = []
+    while True:
+        T.focus_archicad()
+        if points:
+            prompt = f"{title} : point {len(points) + 1} (1er point/Echap = fermer, point precedent = annuler)"
+        else:
+            prompt = f"{title} : 1er coin (Echap = terminer)"
+        point, _ = T.pick_point(prompt)
+        if point is None:
+            break
+        here = (point["x"], point["y"])
+        if len(points) >= 3 and math.dist(here, (points[0]["x"], points[0]["y"])) <= close_dist:
+            break
+        if len(points) >= 2 and math.dist(here, (points[-2]["x"], points[-2]["y"])) <= close_dist:
+            points.pop()                                   # clic sur l'avant-dernier point : annule le dernier
+            if len(temp) > 1:                              # temp[0] = repere du 1er point
+                delete([temp.pop()])
+                T.highlight(temp)
+            if labels:
+                label = labels.pop()
+                if label:
+                    delete([label])
+            draw_guides(points)
             continue
-        d = detail.get("details", {})
-        pts = [(c["x"], c["y"]) for c in d.get("coordinates", [])]
-        if len(pts) >= 2 and math.dist(pts[0], pts[-1]) < 1e-6:
-            pts = pts[:-1]
-        if len(pts) < 3:
-            continue
-        holes = [[(c["x"], c["y"]) for c in h.get("polygonOutline", [])] for h in d.get("holes", [])]
-        poly = Polygon(pts, [h for h in holes if len(h) >= 3]).buffer(0)
-        if poly.geom_type == "Polygon" and poly.area >= 0.5:
-            out.append((guid, poly, detail.get("floorIndex")))
-    return out
+        if points:
+            point = T.constrain(points[-1], point, step_deg)
+            if math.dist((point["x"], point["y"]), (points[-1]["x"], points[-1]["y"])) < 1e-4:
+                continue
+        else:                                              # repere en surbrillance sur le 1er point
+            r = T.MARQUE_MM * T.ECHELLE / 1000.0 / 2
+            draw_temp([{"x": point["x"] - r, "y": point["y"] - r}, {"x": point["x"] + r, "y": point["y"] - r},
+                       {"x": point["x"] + r, "y": point["y"] + r}, {"x": point["x"] - r, "y": point["y"] + r},
+                       {"x": point["x"] - r, "y": point["y"] - r}])
+        if points:
+            draw_temp([points[-1], point])
+            draw_length(points[-1], point)
+        points.append(point)
+        draw_guides(points)
+    if len(points) >= 3:
+        corner = T.closing_corner(points, step_deg)
+        if corner is not None:
+            draw_temp([points[-1], corner])
+            draw_length(points[-1], corner)
+            points.append(corner)
+        draw_temp([points[-1], points[0]])
+        draw_length(points[-1], points[0])
+    delete(guides)
+    if len(points) < 3:
+        cleanup()
+        return None, cleanup
+    return T.drop_collinear(points), cleanup
 
 
 def zone_name_at(point: dict, story: int) -> str:
@@ -1311,47 +1403,69 @@ def settings_window(settings: dict) -> None:
             root.deiconify()
         show("\n".join(results) or "Aucune pièce cliquée.")
 
-    watch = {"on": False, "known": set(), "names": None, "story": 0, "done": []}
+    def room_done_dialog(kind: str, area: float) -> tuple[str, str]:
+        """Contour ferme : type de piece + Meubler / Recommencer / Terminer."""
+        result = {"choice": "terminer", "kind": kind}
+        win = tk.Toplevel(root)
+        win.title("Contour fermé")
+        win.attributes("-topmost", True)
+        box = ttk.Frame(win, padding=12)
+        box.grid()
+        ttk.Label(box, text=f"Contour fermé ({area:.2f} m²). Type de pièce :".replace(".", ",", 1)
+                  ).grid(row=0, column=0, columnspan=3, sticky="w")
+        kind_var = tk.StringVar(value=kind)
+        ttk.Combobox(box, values=list(PIECES), textvariable=kind_var, state="readonly", width=28
+                     ).grid(row=1, column=0, columnspan=3, sticky="w", pady=6)
 
-    def watch_tick():
-        if not watch["on"]:
-            return
-        try:
-            now = contour_guids()
-            new = [g for g in now if g not in watch["known"]]
-            if new:
-                found = contour_polygons(new)
-                for guid, poly, floor in found:
-                    story = floor if isinstance(floor, int) else watch["story"]
-                    watch["done"].append(furnish_polygon(poly, room_var.get(), state, story, watch["names"]))
-                    if erase_var.get():
-                        try:
-                            tapir("DeleteElements", {"elements": [{"elementId": {"guid": guid}}]})
-                        except Exception:  # noqa: BLE001
-                            pass
-                if found:
-                    show("\n".join(watch["done"][-8:]))
-                watch["known"] = contour_guids()        # nos propres traits de meubles ne comptent pas
-        except Exception as error:  # noqa: BLE001
-            status.set(f"Erreur : {error}")
-        root.after(700, watch_tick)
+        def close(choice):
+            result.update(choice=choice, kind=kind_var.get())
+            win.destroy()
+        for column, (text, choice) in enumerate([("Terminer", "terminer"), ("Recommencer le contour", "recommencer"),
+                                                 ("Meubler", "meubler")]):
+            ttk.Button(box, text=text, command=lambda c=choice: close(c)).grid(row=2, column=column, padx=3)
+        win.bind("<Return>", lambda _e: close("meubler"))
+        win.protocol("WM_DELETE_WINDOW", lambda: close("terminer"))
+        win.lift()
+        win.focus_force()
+        root.wait_window(win)
+        return result["choice"], result["kind"]
 
-    def toggle_watch():
-        if watch["on"]:
-            watch["on"] = False
-            watch_btn.configure(text="Démarrer : je dessine le contour dans Archicad")
-            status.set("Surveillance arrêtée.")
-            return
+    def draw_room():
         collect()
-        status.set("Préparation...")
-        root.update_idletasks()
-        watch.update(on=True, known=contour_guids(), names=library_parts(), done=[],
-                     story=tapir("GetStories").get("actStory", 0))
-        watch_btn.configure(text="Arrêter")
-        status.set("En attente : dessine la pièce avec l'outil Polyligne ou Hachure d'Archicad "
-                   "(type : " + room_var.get() + ").")
-        T.focus_archicad()
-        root.after(700, watch_tick)
+        state["traits"], state["reperes"] = lines_mode.get(), bool(show_guides.get())
+        save_json(REGLAGES, state)
+        story = tapir("GetStories").get("actStory", 0)
+        names = library_parts()
+        try:
+            set_pens()
+        except Exception:  # noqa: BLE001
+            pass
+        results, count = [], 0
+        root.withdraw()
+        try:
+            while True:
+                kind = room_var.get()
+                pts, cleanup = trace_outline(story, T.TRAITS.get(lines_mode.get(), 90.0), bool(show_guides.get()),
+                                             f"Pièce {count + 1} ({kind})")
+                if pts is None:
+                    break
+                from shapely.geometry import Polygon
+                poly = Polygon([(p["x"], p["y"]) for p in pts]).buffer(0)
+                choice, kind = room_done_dialog(kind, poly.area)
+                cleanup()
+                if choice == "terminer":
+                    break
+                if choice == "recommencer":
+                    continue
+                if poly.geom_type != "Polygon" or poly.area < 0.5:
+                    results.append("Contour croisé ou trop petit : redessine-le.")
+                    continue
+                room_var.set(kind)
+                results.append(furnish_polygon(poly, kind, state, story, names))
+                count += 1
+        finally:
+            root.deiconify()
+        show("\n".join(results) or "Aucun contour dessiné.")
 
     def do(action):
         status.set("En cours...")
@@ -1359,6 +1473,8 @@ def settings_window(settings: dict) -> None:
         try:
             if action == "clic":
                 click_room()
+            elif action == "dessin":
+                draw_room()
             elif action == "zones":
                 collect()
                 show(run_zones(state))
@@ -1370,16 +1486,19 @@ def settings_window(settings: dict) -> None:
 
     draw_box = ttk.LabelFrame(outer, text="Dessiner le contour de la pièce", padding=8)
     draw_box.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-    ttk.Label(draw_box, text="1. Clique « Démarrer ».   2. Dans Archicad, dessine la pièce avec l'outil Polyligne ou "
-                             "Hachure (repères, accrochage et aperçu d'Archicad ; barre d'espace + clic = baguette "
-                             "magique).   3. Dès que le contour est fermé, la pièce est meublée avec le type choisi en "
-                             "haut. Tu peux enchaîner les pièces, puis « Arrêter ».",
-              foreground="#555", wraplength=560, justify="left").grid(row=0, column=0, columnspan=2, sticky="w")
-    erase_var = tk.BooleanVar(value=True)
-    ttk.Checkbutton(draw_box, text="Effacer le contour une fois la pièce meublée", variable=erase_var
-                    ).grid(row=1, column=0, sticky="w", pady=(6, 0))
-    watch_btn = ttk.Button(draw_box, text="Démarrer : je dessine le contour dans Archicad", command=toggle_watch)
-    watch_btn.grid(row=1, column=1, padx=6, pady=(6, 0), sticky="e")
+    ttk.Label(draw_box, text="Traits du contour").grid(row=0, column=0, sticky="w", pady=3)
+    lines_mode = tk.StringVar(value=state.get("traits") if state.get("traits") in T.TRAITS
+                              else "Droits (0 / 90 degres)")
+    ttk.Combobox(draw_box, values=list(T.TRAITS), textvariable=lines_mode, state="readonly", width=26
+                 ).grid(row=0, column=1, sticky="w", padx=8)
+    show_guides = tk.BooleanVar(value=state.get("reperes", True))
+    ttk.Checkbutton(draw_box, text="Repères (alignements + longueurs des traits)", variable=show_guides
+                    ).grid(row=0, column=2, sticky="w", padx=4)
+    ttk.Label(draw_box, text="Clique les coins dans Archicad.\nClic sur le point précédent = annuler le dernier trait.  "
+                             "Clic sur le 1er point ou Echap = fermer.", foreground="#555", wraplength=680,
+              justify="left").grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+    ttk.Button(draw_box, text="Dessiner une pièce (contour)...", command=lambda: do("dessin")
+               ).grid(row=2, column=2, sticky="e", pady=(6, 0))
 
     buttons = ttk.Frame(outer)
     buttons.grid(row=6, column=0, pady=(10, 0), sticky="e")
@@ -1388,7 +1507,6 @@ def settings_window(settings: dict) -> None:
     ttk.Button(buttons, text="Meubler la sélection", command=lambda: do("zones")).grid(row=0, column=2, padx=4)
     ttk.Button(buttons, text="Cliquer dans la pièce...", command=lambda: do("clic")).grid(row=0, column=3, padx=4)
     root.bind("<Escape>", lambda _e: root.destroy())
-    root.protocol("WM_DELETE_WINDOW", lambda: (watch.update(on=False), root.destroy()))
     root.mainloop()
 
 
