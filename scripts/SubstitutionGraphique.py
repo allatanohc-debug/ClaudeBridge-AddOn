@@ -12,7 +12,8 @@ La fenetre reste ouverte a cote d'Archicad : tu selectionnes des elements dans l
 tu coches ce que tu veux changer, tu choisis la couleur, puis "Appliquer a la selection".
 
 Chaque partie se regle separement (coche = change, decoche = ne touche pas) :
-  Murs, poteaux, poutres : interieur (remplissage de coupe) / contour des murs (+ epaisseur)
+  Vue : Plan, Coupe ou Facade (en facade rien n'est coupe : seulement les lignes vues)
+  Murs, dalles, poteaux, poutres, morphes : interieur coupe / contour coupe / lignes vues
   Objets (mobilier, sanitaires...) : lignes et contours / remplissages
                                      (+ portes et fenetres si tu coches l'option)
   Textes et etiquettes : couleur du texte
@@ -46,7 +47,7 @@ LARGEUR_REMPLISSAGE = 0.10           # epaisseur des stylos de remplissage (sans
 ROLES = {
     "murs_interieur": ("murs", "Intérieur (remplissage de coupe)", "fond", (0.45, 0.45, 0.45), None),
     "murs_contour":   ("murs", "Contour des murs (trait coupé)", "trait", (0.10, 0.10, 0.10), 0.35),
-    "murs_vues":      ("murs", "Lignes vues, non coupées (coupe / façade)", "trait", (0.35, 0.35, 0.35), 0.13),
+    "murs_vues":      ("murs", "Lignes vues (non coupées)", "trait", (0.35, 0.35, 0.35), 0.13),
     "objets_lignes":  ("objets", "Lignes et contours", "trait", (0.30, 0.30, 0.30), 0.13),
     "objets_fond":    ("objets", "Remplissages", "fond", (0.93, 0.93, 0.93), None),
     "textes":         ("textes", "Couleur du texte", "texte", (0.10, 0.10, 0.10), None),
@@ -87,7 +88,13 @@ MURS = {"Wall": ("ModifyWalls", "wallsWithDetails"),
         "Beam": ("ModifyBeams", "beamsWithDetails"),
         "Slab": ("ModifySlabs", "slabsWithDetails")}
 MORPHES = {"Morph": ("ModifyMorphs", "morphsWithDetails")}   # stylos simples (pas "overridden")
-VUES = ("Plan", "Coupe / façade")
+VUES = ("Plan", "Coupe", "Façade")
+# roles proposes dans chaque vue (en facade rien n'est coupe : seulement les lignes vues)
+ROLES_PAR_VUE = {
+    "Plan": set(ROLES) - {"murs_vues"},
+    "Coupe": set(ROLES),
+    "Façade": set(ROLES) - {"murs_interieur", "murs_contour", "objets_fond"},
+}
 OBJETS = ("Object", "Lamp")
 OBJETS_MODIF = {"Object": ("ModifyObjects", "objectsWithDetails"), "Lamp": ("ModifyLamps", "lampsWithDetails")}
 OUVERTURES = ("Door", "Window", "Skylight")
@@ -172,7 +179,8 @@ def load_settings() -> dict:
             "epaisseur": float(w) if isinstance(w, (int, float)) and not isinstance(w, bool) and w > 0 else width,
         }
     return {"roles": roles,
-            "vue": saved.get("vue") if saved.get("vue") in VUES else VUES[0],
+            "vue": saved.get("vue") if saved.get("vue") in VUES else (
+                "Coupe" if str(saved.get("vue", "")).startswith("Coupe") else VUES[0]),
             "murs_plein": bool(saved.get("murs_plein", True)),
             "ouvertures": bool(saved.get("ouvertures", False))}
 
@@ -377,9 +385,9 @@ def run_apply(settings: dict) -> str:
 
     object_types = OBJETS + (OUVERTURES if settings["ouvertures"] else ())
     present = {r["type"] for r in rows}
-    coupe = settings.get("vue") == VUES[1]
-    if not coupe:
-        on.discard("murs_vues")
+    vue = settings.get("vue") if settings.get("vue") in VUES else VUES[0]
+    coupe = vue == "Coupe"
+    on &= ROLES_PAR_VUE[vue]
     needed = []
     if "murs_interieur" in on and present & (set(MURS) | set(MORPHES)):
         needed.append("murs_interieur")
@@ -515,8 +523,8 @@ def run_apply(settings: dict) -> str:
     if "murs_contour" in on and "Wall" in present and not contour_ok:
         head.append(contour_note(version))
     if present & {"Column", "Beam", "Slab"} and ({"murs_contour", "murs_vues"} & on):
-        head.append("Le contour des poteaux, poutres et dalles ne peut pas être changé par Tapir "
-                    "(seulement leur intérieur).")
+        head.append("Poteaux, poutres et dalles : Tapir ne peut pas changer leurs lignes "
+                    "(seulement leur intérieur coupé).")
     if "Morph" in present:
         head.append("Morphes : « Remettre d'origine » ne peut pas les remettre, utilise Ctrl+Z dans Archicad.")
     return "\n".join(head + report + notes)
@@ -701,8 +709,9 @@ def settings_window(settings: dict) -> None:
                 w["width"] = None
             r += 1
         if group == "murs":
-            ttk.Checkbutton(box, text="Intérieur en couleur pleine (motif et fond de la même couleur)",
-                            variable=plein).grid(row=r, column=0, columnspan=8, sticky="w", pady=(2, 0))
+            plein_check = ttk.Checkbutton(box, text="Intérieur en couleur pleine (motif et fond de la même couleur)",
+                                          variable=plein)
+            plein_check.grid(row=r, column=0, columnspan=8, sticky="w", pady=(2, 0))
         if group == "objets":
             ttk.Checkbutton(box, text="Inclure les portes et fenêtres", variable=ouvertures
                             ).grid(row=r, column=0, columnspan=8, sticky="w", pady=(2, 0))
@@ -711,11 +720,15 @@ def settings_window(settings: dict) -> None:
         refresh(key)
 
     def show_mode():
-        coupe = vue_var.get() == VUES[1]
-        for cell in widgets["murs_vues"]["cells"]:
-            cell.grid() if coupe else cell.grid_remove()
-        status.set("Coupe / façade : sélectionne les éléments dans la fenêtre de coupe ou de façade."
-                   if coupe else "Sélectionne dans Archicad, coche ce que tu veux changer, puis « Appliquer ».")
+        allowed = ROLES_PAR_VUE.get(vue_var.get(), set(ROLES))
+        for key in ROLES:
+            for cell in widgets[key]["cells"]:
+                cell.grid() if key in allowed else cell.grid_remove()
+        plein_check.grid() if "murs_interieur" in allowed else plein_check.grid_remove()
+        status.set({"Plan": "Sélectionne dans le plan, coche ce que tu veux changer, puis « Appliquer ».",
+                    "Coupe": "Coupe : sélectionne les éléments dans la fenêtre de coupe.",
+                    "Façade": "Façade : rien n'est coupé, seules les lignes vues, textes et dessins 2D changent."
+                    }[vue_var.get()])
 
     show_mode()
 
