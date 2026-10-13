@@ -112,6 +112,20 @@ PIECES = {
     "Buanderie":          [("lave_linge", True), ("seche_linge", True), ("placard", True)],
     "Dressing":           [("placard", True), ("armoire", True)],
 }
+# nombre de personnes par defaut selon la piece (modifiable dans la fenetre et a chaque piece)
+PERSONNES_DEFAUT = {"Chambre": 2, "Chambre d'enfant": 1, "Séjour": 4, "Salon": 4, "Salle à manger": 6, "Cuisine": 4,
+                    "Salle de bain": 2, "Salle d'eau": 2, "WC": 1, "Bureau": 1, "Entrée": 4, "Buanderie": 4,
+                    "Dressing": 2}
+
+
+def nb_personnes(settings: dict, kind: str) -> int:
+    value = (settings.get("personnes") or {}).get(kind, PERSONNES_DEFAUT.get(kind, 2))
+    try:
+        return max(1, min(12, int(value)))
+    except (TypeError, ValueError):
+        return PERSONNES_DEFAUT.get(kind, 2)
+
+
 TAILLES_LIT = {"Lit 140 × 190": (1.40, 1.90), "Lit 160 × 200": (1.60, 2.00), "Lit 180 × 200": (1.80, 2.00)}
 
 MOTS_PIECES = [  # (mots dans le nom de la zone, type) - le premier qui correspond gagne
@@ -157,6 +171,7 @@ def load_settings() -> dict:
         "bibliotheque": biblio,                 # meuble -> nom de l'objet ("" = dessin 2D)
         "retourner": flips,                     # meuble -> objet tourne de 180 degres
         "traits": saved.get("traits", "Droits (0 / 90 degres)"),
+        "personnes": {k: v for k, v in (saved.get("personnes") or {}).items() if isinstance(v, int)},
         "reperes": bool(saved.get("reperes", True)),
     }
 
@@ -366,8 +381,10 @@ def place_bed(room: Room, key, w, d, nightstands: int):
     return []
 
 
-def place_sofa(room: Room, items):
-    sofa, table = MEUBLES["canape"], MEUBLES["table_basse"]
+def place_sofa(room: Room, items, width=None):
+    sofa, table = dict(MEUBLES["canape"]), MEUBLES["table_basse"]
+    if width:
+        sofa["w"] = width
     best, best_score = None, -1e9
     for center, u, n, t, length in room.along_walls(sofa["w"], sofa["d"]):
         pose = Pose("canape", center, u, n, sofa["w"], sofa["d"])
@@ -402,6 +419,41 @@ def place_sofa(room: Room, items):
     return parts
 
 
+def place_armchair(room: Room, sofa: Pose, spec: dict):
+    """Fauteuil face a un petit cote de la table basse (40 cm), sinon a cote du canape."""
+    table = next((p for p in room.poses if p.key == "table_basse"), None)
+    tries = []
+    if table is not None:
+        for sgn in (1, -1):
+            c = add(table.c, table.u, sgn * (table.w / 2 + 0.40 + spec["d"] / 2))
+            tries.append(Pose("fauteuil", c, (table.n[0] * sgn, table.n[1] * sgn),
+                              (-table.u[0] * sgn, -table.u[1] * sgn), spec["w"], spec["d"]))
+    for sgn in (1, -1):
+        c = add(add(sofa.c, sofa.u, sgn * (sofa.w / 2 + 0.55)), sofa.n, 0.80)
+        tries.append(Pose("fauteuil", c, (sofa.n[0] * sgn, sofa.n[1] * sgn), (-sofa.u[0] * sgn, -sofa.u[1] * sgn),
+                          spec["w"], spec["d"]))
+    for pose in tries:
+        if room.free(pose.body):
+            room.commit(pose)
+            return pose
+    return None
+
+
+def place_desk(room: Room, spec: dict):
+    """Bureau 110-150 x 50-80 (enfant 90-110 x 50), de preference pres d'une fenetre, chaise devant."""
+    for (bw, bd), clear in [((spec["w"], spec["d"]), 0.90), ((1.00, 0.50), 0.80), ((0.90, 0.50), 0.70)]:
+        pose = place_wall_item(room, "bureau", bw, bd, clear,
+                               lambda p, t, l: (2.0 if room.near_window(p.body, 0.3) else 0.0)
+                               + corner_bonus(t, p.w, l) * 0.5)
+        if pose:
+            room.commit(pose, [pose.front(clear)])
+            chair = Pose("chaise", add(pose.c, pose.n, pose.d / 2 + 0.20), pose.u, (-pose.n[0], -pose.n[1]),
+                         0.45, 0.45)
+            room.poses.append(chair)
+            return [pose, chair]
+    return None
+
+
 def place_tv(room: Room, sofa: Pose | None):
     tv = MEUBLES["meuble_tv"]
     def score(pose, t, length):
@@ -418,14 +470,27 @@ def place_tv(room: Room, sofa: Pose | None):
     return pose
 
 
-# tailles de table (largeur, profondeur) de la plus grande a la plus petite : 8, 6, 6, 4, 4, 2 personnes
-TABLES = ((2.00, 0.90), (1.80, 0.90), (1.60, 0.90), (1.20, 0.80), (0.90, 0.90), (0.80, 0.70))
+# tables (largeur, profondeur) ; 60 cm par convive le long des grands cotes, un convive en bout
+# a partir de 1,60 m (ou table carree de 90) - d'apres les tailles courantes 2/4/6/8 personnes
+TABLES = ((0.80, 0.70), (0.90, 0.90), (1.20, 0.80), (1.60, 0.90), (1.80, 0.90), (2.00, 0.90), (2.40, 1.00),
+          (2.80, 1.00))
 # degagement autour de la table : 1,20 m jusqu'au mur (chaise + se lever), 0,90 m en version compacte
 DEGAGEMENTS_TABLE = (1.20, 0.90)
 
 
-def place_table(room: Room, prefer_away_from=None):
-    """Table + chaises tout autour, au milieu de l'espace libre."""
+def table_slots(w: float, d: float) -> list[tuple[float, float, int]]:
+    """Places autour de la table : (decalage le long, cote +-1, 0 = grand cote / 1 = bout), du centre vers
+    les bouts, en alternant les deux grands cotes, puis les bouts."""
+    per_side = max(1, int(w / 0.60 + 1e-6))
+    order = sorted(range(per_side), key=lambda i: abs(i - (per_side - 1) / 2))
+    slots = [(-w / 2 + w / per_side * (i + 0.5), sgn, 0) for i in order for sgn in (-1, 1)]
+    if w >= 1.60 or (w >= 0.90 and abs(w - d) < 0.15):
+        slots += [(0.0, sgn, 1) for sgn in (-1, 1)]
+    return slots
+
+
+def place_table(room: Room, prefer_away_from=None, persons: int = 4):
+    """Table pour `persons` convives + chaises, au milieu de l'espace libre."""
     from shapely.geometry import Point
     x1, y1, x2, y2 = room.P.bounds
     horizontal = (x2 - x1) >= (y2 - y1)
@@ -437,7 +502,9 @@ def place_table(room: Room, prefer_away_from=None):
     axes = [((1.0, 0.0), (0.0, 1.0)), ((0.0, 1.0), (-1.0, 0.0))]
     if not horizontal:
         axes.reverse()
-    combos = [(w, d, margin, u, n) for w, d in TABLES for margin in DEGAGEMENTS_TABLE for u, n in axes]
+    big = sorted((t for t in TABLES if len(table_slots(*t)) >= persons), key=lambda t: (len(table_slots(*t)), t[0]))
+    small = sorted((t for t in TABLES if len(table_slots(*t)) < persons), key=lambda t: -len(table_slots(*t)))
+    combos = [(w, d, margin, u, n) for w, d in big + small for margin in DEGAGEMENTS_TABLE for u, n in axes]
     for w, d, margin, u, n in combos:
         if w + 2 * margin > max(x2 - x1, y2 - y1) + 0.01 or d + 2 * margin > min(x2 - x1, y2 - y1) + 0.01:
             continue
@@ -456,25 +523,64 @@ def place_table(room: Room, prefer_away_from=None):
                 y += steps
             x += steps
         if best:
-            return _commit_table(room, best, u, n, w, d, margin)
+            seats = len(table_slots(w, d))
+            if seats < persons:
+                room.notes.append(f"table pour {seats} seulement ({persons} personnes demandées) : "
+                                  "pas assez de place")
+            return _commit_table(room, best, u, n, w, d, margin, min(persons, seats))
+    if persons <= 4:
+        return place_wall_table(room, prefer_away_from, persons)
     return []
 
 
-def _commit_table(room, best, u, n, w, d, margin):
+def place_wall_table(room: Room, away=None, persons: int = 2):
+    """Petite table poussee contre un mur (2 a 4 personnes) quand la piece est trop juste pour une table
+    au milieu : chaises sur le cote libre et aux bouts."""
+    ch = MEUBLES["chaise"]
+    for w, d in ((1.20, 0.80), (0.80, 0.70)):
+        if len(table_slots(w, d)) // 2 + 2 < persons and (w, d) != (0.80, 0.70):
+            continue
+        score = (lambda p, t, l: min(p.body.distance(away), 3.0)) if away is not None else \
+            (lambda p, t, l: -abs(t - (l - p.w) / 2) * 0.3)
+        pose = place_wall_item(room, "table", w, d, 0.90, score,
+                               zones=lambda p: [[p.front(0.90, p.w + 1.0)]] + [[p.front(0.90)]])
+        if not pose:
+            continue
+        room.commit(pose, pose.zone)
+        chairs = []
+        per_side = max(1, int(w / 0.60 + 1e-6))
+        for i in range(per_side):                                  # cote libre
+            c = add(add(pose.c, pose.u, -w / 2 + w / per_side * (i + 0.5)), pose.n, d / 2 + ch["d"] / 2 - 0.10)
+            chairs.append(Pose("chaise", c, pose.u, (-pose.n[0], -pose.n[1]), ch["w"], ch["d"]))
+        for sgn in (-1, 1):                                        # bouts, s'il y a la place
+            c = add(add(pose.c, pose.u, sgn * (w / 2 + ch["d"] / 2 - 0.10)), pose.n, 0.05)
+            chair = Pose("chaise", c, (pose.n[0] * sgn, pose.n[1] * sgn), (-pose.u[0] * sgn, -pose.u[1] * sgn),
+                         ch["w"], ch["d"])
+            body = chair.body
+            if room.inner.contains(body) and not any(body.intersects(g) for g in room.doors) \
+                    and not any(body.intersects(g) for g in room.bodies if not g.equals(pose.body)):
+                chairs.append(chair)
+        chairs = chairs[:persons]
+        for chair in chairs:
+            room.poses.append(chair)
+        if len(chairs) < persons:
+            room.notes.append(f"table contre le mur pour {len(chairs)} ({persons} personnes demandées)")
+        return [pose] + chairs
+    return []
+
+
+def _commit_table(room, best, u, n, w, d, margin, persons):
     pose = Pose("table", best, u, n, w, d)
     room.commit(pose, [rect(best, u, n, w + 2 * margin, d + 2 * margin)])
     ch = MEUBLES["chaise"]
     chairs = []
-    per_side = max(1, int(w / 0.60 + 1e-6))                  # 60 cm par convive
-    for i in range(per_side):
-        s = -w / 2 + w / per_side * (i + 0.5)
-        for sgn in (-1, 1):                                   # le long des grands cotes
-            c = add(add(best, u, s), n, sgn * (d / 2 + ch["d"] / 2 - 0.10))
-            chairs.append(Pose("chaise", c, u, (n[0] * -sgn, n[1] * -sgn), ch["w"], ch["d"]))
-    if w >= 1.60:
-        for sgn in (-1, 1):                                   # en bout de table
+    for along, sgn, end in table_slots(w, d)[:max(1, persons)]:
+        if end:
             c = add(best, u, sgn * (w / 2 + ch["d"] / 2 - 0.10))
             chairs.append(Pose("chaise", c, (n[0] * sgn, n[1] * sgn), (-u[0] * sgn, -u[1] * sgn), ch["w"], ch["d"]))
+        else:
+            c = add(add(best, u, along), n, sgn * (d / 2 + ch["d"] / 2 - 0.10))
+            chairs.append(Pose("chaise", c, u, (n[0] * -sgn, n[1] * -sgn), ch["w"], ch["d"]))
     for chair in chairs:
         room.poses.append(chair)
     return [pose] + chairs
@@ -487,12 +593,13 @@ DEVANT_CUISINE = 1.00          # 1,00 m entre un plan de travail et un mur / meu
 ENTRE_DEUX_PLANS = 1.20        # 1,20 m entre deux plans de travail qui se font face
 
 
-def place_kitchen(room: Room, items):
+def place_kitchen(room: Room, items, persons: int = 4):
     """Plan de travail lineaire le long du plus long mur libre, frigo a un bout ; retour en L si la
     longueur lineaire est trop courte (< 3,40 m)."""
     with_fridge = "frigo" in items
     fridge_w = MEUBLES["frigo"]["w"] + 0.02 if with_fridge else 0.0
-    for total in LONGUEURS_CUISINE:
+    longest = 3.40 if persons <= 2 else 4.00 if persons <= 4 else 4.60     # inutile de plus pour un petit foyer
+    for total in [t for t in LONGUEURS_CUISINE if t <= longest + 1e-6]:
         length_wanted = total - fridge_w
         if length_wanted < 1.0:
             continue
@@ -636,41 +743,34 @@ def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[li
             missing.append(MEUBLES[key]["nom"])
 
     sofa = None
+    n = nb_personnes(settings, kind)
+    sofa_w = 1.60 if n <= 2 else 2.20                       # canape 2 places ou 3 places
     for key in items:
         spec = MEUBLES[key]
         if key in ("chevet", "table_basse", "chaise", "retour"):
             continue                                       # places avec le lit / le canape / la cuisine
-        if key in ("lit_double", "lit_simple"):
-            w, d = TAILLES_LIT[settings["lit"]] if key == "lit_double" else (spec["w"], spec["d"])
-            got(place_bed(room, key, w, d, (2 if key == "lit_double" else 1) if "chevet" in items else 0), key)
+        if key == "lit_double":
+            # 1 personne : lit 140 x 190 ; 2 personnes : la taille choisie
+            w, d = (1.40, 1.90) if n == 1 else TAILLES_LIT[settings["lit"]]
+            got(place_bed(room, key, w, d, 2 if "chevet" in items else 0), key)
+        elif key == "lit_simple":
+            count = min(n, 3) if kind == "Chambre d'enfant" else 1          # un lit par enfant
+            for _ in range(count):
+                got(place_bed(room, key, spec["w"], spec["d"], 1 if "chevet" in items else 0), key)
         elif key == "canape":
-            parts = place_sofa(room, items)
+            parts = place_sofa(room, items, sofa_w)
+            if not parts and sofa_w > 1.60:
+                parts = place_sofa(room, items, 1.60)
             sofa = parts[0] if parts else None
             got(parts, key)
         elif key == "meuble_tv":
             got(place_tv(room, sofa), key)
         elif key == "table":
-            got(place_table(room, sofa.body if sofa else None), key)
+            got(place_table(room, sofa.body if sofa else None, max(2, n)), key)
         elif key == "cuisine":
-            got(place_kitchen(room, items), key)
+            got(place_kitchen(room, items, n), key)
         elif key == "frigo" and "cuisine" in items:
             continue
-        elif key == "bureau":
-            pose = None
-            # bureau 110-150 x 50-80 (enfant 90-110 x 50) ; place de la chaise devant
-            for (bw, bd), clear in [((spec["w"], spec["d"]), 0.90), ((1.00, 0.50), 0.80), ((0.90, 0.50), 0.70)]:
-                pose = place_wall_item(room, key, bw, bd, clear,
-                                       lambda p, t, l: (2.0 if room.near_window(p.body, 0.3) else 0.0)
-                                       + corner_bonus(t, p.w, l) * 0.5)
-                if pose:
-                    break
-            if pose:
-                room.commit(pose, [pose.front(clear)])
-                chair = Pose("chaise", add(pose.c, pose.n, pose.d / 2 + 0.20), pose.u, (-pose.n[0], -pose.n[1]), 0.45, 0.45)
-                room.poses.append(chair)
-                got([pose, chair], key)
-            else:
-                got(None, key)
         elif key in ("baignoire", "douche", "lave_linge", "seche_linge"):
             # aire libre : 70 cm devant la baignoire et la douche
             # douche : 70 cm devant, ou une aire de 70 cm a cote du receveur (entree laterale)
@@ -713,34 +813,28 @@ def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[li
             if key == "lave_mains" and getattr(room, "wc_front", None) is not None:
                 # un lave-mains peut se poser sur le cote, dans l'aire devant le WC (comme dans un WC de 90 x 145)
                 room.clears = [c for c in saved if c is not room.wc_front and not any(c is g for g in room.door_clears)]
-            pose = place_wall_item(room, key, *taille(room, key), clear,
-                                   lambda p, t, l: -abs(t - (l - p.w) / 2) * 0.3)
+            sizes = [taille(room, key)]
+            if key == "lavabo" and n >= 3 and not room.compact:
+                sizes.insert(0, (1.30, 0.50))              # double vasque a partir de 3 personnes
+            pose = None
+            for lw, ld in sizes:
+                pose = place_wall_item(room, key, lw, ld, clear, lambda p, t, l: -abs(t - (l - p.w) / 2) * 0.3)
+                if pose:
+                    break
             room.clears = saved
             if pose:
                 room.commit(pose, [pose.front(clear)])
             got(pose, key)
         elif key == "fauteuil" and sofa is not None:
             # face au petit cote de la table basse, a 40 cm ; sinon a cote du canape
-            done = None
-            table = next((p for p in room.poses if p.key == "table_basse"), None)
-            if table is not None:
-                for sgn in (1, -1):
-                    c = add(table.c, table.u, sgn * (table.w / 2 + 0.40 + spec["d"] / 2))
-                    pose = Pose(key, c, (table.n[0] * sgn, table.n[1] * sgn), (-table.u[0] * sgn, -table.u[1] * sgn),
-                                spec["w"], spec["d"])
-                    if room.free(pose.body):
-                        room.commit(pose)
-                        done = pose
-                        break
-            for sgn in ((1, -1) if done is None else ()):
-                c = add(add(sofa.c, sofa.u, sgn * (sofa.w / 2 + 0.55)), sofa.n, 0.80)
-                pose = Pose(key, c, (sofa.n[0] * sgn, sofa.n[1] * sgn), (-sofa.u[0] * sgn, -sofa.u[1] * sgn),
-                            spec["w"], spec["d"])
-                if room.free(pose.body):
-                    room.commit(pose)
-                    done = pose
-                    break
-            got(done, key)
+            seats = 2 if sofa.w < 2.0 else 3
+            wanted = max(1, min(2, n - seats))
+            for _ in range(wanted):
+                got(place_armchair(room, sofa, spec), key)
+        elif key == "bureau":
+            count = min(n, 3) if kind in ("Bureau", "Chambre d'enfant") else 1     # un poste par personne
+            for _ in range(count):
+                got(place_desk(room, spec), key)
         else:
             tall = bool(spec.get("haut"))
             clear = 0.7 if tall else 0.6
@@ -748,7 +842,17 @@ def furnish(room: Room, kind: str, items: list[str], settings: dict) -> tuple[li
                 else (lambda p, t, l: -abs(t - (l - p.w) / 2) * 0.3)
             if key == "console":
                 score = lambda p, t, l: -room.door_distance(p.c)          # noqa: E731  pres de l'entree
-            pose = place_wall_item(room, key, spec["w"], spec["d"], clear, score, tall)
+            widths = [spec["w"]]
+            if key in ("armoire", "placard"):
+                # rangement : environ 1 m par adulte (0,80 par enfant), sinon plus petit
+                per = 0.80 if kind == "Chambre d'enfant" else 1.00
+                widths = sorted({round(min(2.40, max(1.00, per * n)), 2), 1.20, 1.00, 0.80}, reverse=True)
+                widths = [w for w in widths if w <= min(2.40, max(1.00, per * n)) + 1e-6]
+            pose = None
+            for w in widths:
+                pose = place_wall_item(room, key, w, spec["d"], clear, score, tall)
+                if pose:
+                    break
             if pose:
                 room.commit(pose, [pose.front(clear)])
             got(pose, key)
@@ -836,6 +940,11 @@ def symbol(key: str, w: float, d: float):
         poly([(-hw, hd), (hw, -hd)], False)
         poly([(-hw, -hd), (hw, hd)], False)
         poly(circle(0, 0, 0.04, 12))
+    elif key == "lavabo" and w >= 1.10:
+        for cx in (-w / 4, w / 4):
+            poly([(cx + math.cos(a) * 0.20, -0.02 + math.sin(a) * d * 0.30) for a in
+                  [2 * math.pi * k / 28 for k in range(28)]])
+            poly(circle(cx, hd - 0.06, 0.02, 10))
     elif key in ("lavabo", "lave_mains"):
         e = [(0.0 + math.cos(a) * w * 0.32, -0.02 + math.sin(a) * d * 0.30) for a in
              [2 * math.pi * k / 28 for k in range(28)]]
@@ -884,9 +993,16 @@ def library_parts() -> list[str]:
     return sorted(names)
 
 
+# mobilier d'hopital, de soin, d'exterieur ou de bureau collectif : jamais propose pour un logement
+SAUF_PARTOUT = ["hopital", "hospital", "medical", "medic", "clinic", "clinique", "patient", "soins", "nursing",
+                "care ", "sanitaire mobile", "chaise percee", "commode chair", "toilet chair", "wheelchair",
+                "fauteuil roulant", "pmr", "handicap", "accessible", "brancard", "lit medicalise", "examen",
+                "outdoor", "exterieur", "jardin", "garden", "terrasse", "school", "ecole", "classroom", "laboratoire"]
+
+
 def matches(key: str, names: list[str]) -> list[str]:
     words = [plain(w) for w in MEUBLES[key]["mots"]]
-    banned = [plain(w) for w in MEUBLES[key].get("sauf", [])]
+    banned = [plain(w) for w in MEUBLES[key].get("sauf", []) + SAUF_PARTOUT]
     if not words:
         return []
     scored = []
@@ -904,7 +1020,9 @@ def library_choice(key: str, settings: dict, names: list[str]) -> str:
         return ""
     if key in settings["bibliotheque"]:
         name = settings["bibliotheque"][key]
-        return name if (not name or name in names) else ""
+        low = " " + plain(name) + " "
+        if not any(plain(b) in low for b in SAUF_PARTOUT):      # anciens choix d'objets d'hopital : ignores
+            return name if (not name or name in names) else ""
     found = matches(key, names)
     return found[0] if found else ""
 
@@ -1065,7 +1183,7 @@ def furnish_polygon(polygon, kind: str, settings: dict, story: int, names: list[
         return f"{kind} ({polygon.area:.1f} m²) : pas assez de place pour les meubles cochés."
     guids, used = build(room, room.poses, story, settings, names)
     remember(guids, story)
-    text = f"{kind} ({polygon.area:.1f} m²) : {len(room.poses)} meuble(s) placé(s)"
+    text = f"{kind} pour {nb_personnes(settings, kind)} pers. ({polygon.area:.1f} m²) : {len(room.poses)} meuble(s) placé(s)"
     if used:
         text += f", dont {len(used)} objet(s) 3D de la bibliothèque"
     text += "."
@@ -1290,8 +1408,11 @@ def settings_window(settings: dict) -> None:
     room_var = tk.StringVar(value=state["piece"])
     room_box = ttk.Combobox(top, values=list(PIECES), textvariable=room_var, state="readonly", width=24)
     room_box.grid(row=0, column=1, padx=8, sticky="w")
+    ttk.Label(top, text="Personnes", font=("Segoe UI", 10, "bold")).grid(row=0, column=2, sticky="w", padx=(10, 0))
+    persons_var = tk.IntVar(value=nb_personnes(state, state["piece"]))
+    ttk.Spinbox(top, from_=1, to=12, textvariable=persons_var, width=4).grid(row=0, column=3, padx=6, sticky="w")
     ttk.Label(top, text="(les zones sélectionnées gardent le type de leur nom)", foreground="#777"
-              ).grid(row=0, column=2, sticky="w")
+              ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(2, 0))
 
     items_box = ttk.LabelFrame(outer, text="Meubles proposés", padding=8)
     items_box.grid(row=1, column=0, sticky="ew", pady=(8, 0))
@@ -1313,7 +1434,11 @@ def settings_window(settings: dict) -> None:
                 ttk.Combobox(items_box, values=list(TAILLES_LIT), textvariable=lit_var, state="readonly", width=14
                              ).grid(row=i, column=1, padx=8)
 
-    room_box.bind("<<ComboboxSelected>>", refresh_items)
+    def room_changed(*_):
+        persons_var.set(nb_personnes(state, room_var.get()))
+        refresh_items()
+
+    room_box.bind("<<ComboboxSelected>>", room_changed)
     refresh_items()
 
     out_box = ttk.LabelFrame(outer, text="Rendu", padding=8)
@@ -1337,6 +1462,10 @@ def settings_window(settings: dict) -> None:
     def collect():
         room = room_var.get()
         state["piece"] = room
+        try:
+            state.setdefault("personnes", {})[room] = max(1, min(12, int(persons_var.get())))
+        except (tk.TclError, ValueError):
+            pass
         for key, var in item_vars.items():
             state["choix"][f"{room}/{key}"] = bool(var.get())
         state["lit"] = lit_var.get()
@@ -1432,6 +1561,7 @@ def settings_window(settings: dict) -> None:
                 if choice == "ignorer":
                     continue
                 room_var.set(kind)
+                persons_var.set(nb_personnes(state, kind))
                 results.append(furnish_polygon(face, kind, state, story, names))
         finally:
             root.deiconify()
@@ -1451,10 +1581,21 @@ def settings_window(settings: dict) -> None:
                   ).grid(row=0, column=0, columnspan=3, sticky="w")
         kind_var = tk.StringVar(value=kind)
         ttk.Combobox(box, values=list(PIECES), textvariable=kind_var, state="readonly", width=28
-                     ).grid(row=1, column=0, columnspan=3, sticky="w", pady=6)
+                     ).grid(row=1, column=0, columnspan=2, sticky="w", pady=6)
+        people = ttk.Frame(box)
+        people.grid(row=1, column=2, sticky="e")
+        ttk.Label(people, text="Personnes").grid(row=0, column=0)
+        dlg_persons = tk.IntVar(value=nb_personnes(state, kind))
+        ttk.Spinbox(people, from_=1, to=12, textvariable=dlg_persons, width=4).grid(row=0, column=1, padx=4)
+        kind_var.trace_add("write", lambda *_: dlg_persons.set(nb_personnes(state, kind_var.get())))
 
         def close(choice):
             result.update(choice=choice, kind=kind_var.get())
+            try:
+                state.setdefault("personnes", {})[kind_var.get()] = max(1, min(12, int(dlg_persons.get())))
+                save_json(REGLAGES, state)
+            except (tk.TclError, ValueError):
+                pass
             win.destroy()
         for column, (text, choice) in enumerate(buttons):
             ttk.Button(box, text=text, command=lambda c=choice: close(c)).grid(row=2, column=column, padx=3)
@@ -1496,6 +1637,7 @@ def settings_window(settings: dict) -> None:
                     results.append("Contour croisé ou trop petit : redessine-le.")
                     continue
                 room_var.set(kind)
+                persons_var.set(nb_personnes(state, kind))
                 results.append(furnish_polygon(poly, kind, state, story, names))
                 count += 1
         finally:
