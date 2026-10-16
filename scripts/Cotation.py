@@ -10,7 +10,7 @@ Puis dans Archicad : palette Tapir > "Cotation.py" > Executer.
 
 Plan :
 - Exterieur, facade par facade (trouvees toutes seules, meme en biais ou en L) :
-  chaine 1 = ouvertures en tableau + angles, chaine 2 = decrochements + murs de refend + poteaux,
+  chaine 1 = ouvertures en tableau + angles, chaine 2 = decrochements + poteaux de facade (jamais les murs interieurs),
   chaine 3 = cote totale. Seulement les chaines necessaires (pas de doublon).
 - Interieur : longueur x largeur de chaque piece (nu a nu), epaisseurs des murs, largeur des portes.
 - Ouvertures : etiquette « L x H » (1,80 x 1,20) a cote de chaque porte / fenetre.
@@ -53,7 +53,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "16/10 - v1"
+VERSION = "16/10 - v2 (sans murs intérieurs dehors)"
 MEMOIRE = "cotation.json"
 REGLAGES = "cotation_reglages.json"
 CALQUE = "COTATION"
@@ -64,7 +64,7 @@ DEFAUT = {
     "portee": "Étage actuel",
     "echelle": 100,
     "chaine_ouvertures": True, "chaine_decrochements": True, "chaine_totale": True,
-    "si_necessaire": True, "refends": True, "poteaux": True,
+    "si_necessaire": True, "poteaux": True,
     "distance_mm": 10.0, "ecart_mm": 7.0, "ignorer_cm": 5.0,
     "pieces": True, "epaisseurs": "Murs intérieurs", "portes_int": False,
     "etiquettes": "Toutes les ouvertures", "allege": False, "parallele": False, "texte_mm": 2.0,
@@ -441,34 +441,17 @@ class Plan:
                     if Point(op.wall.at(op.along, op.wall.s_max if op.exterior_side > 0 else op.wall.s_min)
                              ).distance(side["line"]) < 0.03:
                         ouvertures += [pt(a, "ouverture"), pt(b, "ouverture")]
-            refends = []
-            if o["refends"]:
-                facade_walls = [w for w in self.walls if w.facade and abs(dot(w.u, t)) > 0.996]
-                for w in self.walls:
-                    if w.facade or not w.straight or abs(dot(w.u, n)) < 0.996:
-                        continue
-                    if not any(pw.distance(fp) < 0.01 for fwall in facade_walls for pw in w.polys for fp in fwall.polys):
-                        continue
-                    verts = [p for poly in w.polys for p in poly.exterior.coords]
-                    top = max(dot(p, n) for p in verts)
-                    near = [p for p in verts if dot(p, n) > top - 0.01]
-                    # le refend doit arriver sur une facade visible de ce cote
-                    if min(Point(p).distance(side["line"]) for p in near) > max(0.6, max(fw.thickness for fw in facade_walls) + 0.05
-                                                                              if facade_walls else 0.6):
-                        continue
-                    refends += [pt(min(near, key=lambda p: dot(p, t)), "refend"),
-                                pt(max(near, key=lambda p: dot(p, t)), "refend")]
             poteaux = []
             if o["poteaux"]:
                 for col in self.columns:
-                    if col["poly"].distance(side["line"]) < 0.6:
+                    if col["poly"].distance(side["line"]) < 0.03:
                         verts = list(col["poly"].exterior.coords) if col["poly"].geom_type == "Polygon" else []
                         if verts:
                             poteaux += [pt(min(verts, key=lambda p: dot(p, t)), "poteau"),
                                         pt(max(verts, key=lambda p: dot(p, t)), "poteau")]
 
             c1 = dedupe(corners + ouvertures) if ouvertures else []
-            c2 = dedupe(corners + refends + poteaux + total)
+            c2 = dedupe(corners + poteaux + total)
             c3 = dedupe(total)
             chains = []
             if o["chaine_ouvertures"] and len(c1) >= 2:
@@ -1082,8 +1065,7 @@ def window(state: dict) -> None:
                     ).grid(row=0, column=0, columnspan=4, sticky="w")
     ttk.Checkbutton(ext, text="Chaîne 2 : décrochements", variable=var("chaine_decrochements", tk.BooleanVar)
                     ).grid(row=1, column=0, sticky="w")
-    ttk.Checkbutton(ext, text="+ murs de refend", variable=var("refends", tk.BooleanVar)).grid(row=1, column=1, sticky="w")
-    ttk.Checkbutton(ext, text="+ poteaux", variable=var("poteaux", tk.BooleanVar)).grid(row=1, column=2, sticky="w")
+    ttk.Checkbutton(ext, text="+ poteaux de façade", variable=var("poteaux", tk.BooleanVar)).grid(row=1, column=1, sticky="w")
     ttk.Checkbutton(ext, text="Chaîne 3 : cote totale", variable=var("chaine_totale", tk.BooleanVar)
                     ).grid(row=2, column=0, sticky="w")
     ttk.Checkbutton(ext, text="Seulement les chaînes nécessaires (pas de doublon)",
