@@ -52,7 +52,7 @@ def _load_tableau():
 T = _load_tableau()
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "16/10 - blocs dessinés"
+VERSION = "16/10 - v3 (orientation corrigée)"
 MEMOIRE = "claustra.json"                 # claustras dessines : trace + reglages + guids
 REGLAGES = "claustra_reglages.json"
 MAX_SANS_CONFIRMER = 1500                 # au-dela : demander confirmation (beaucoup d'elements)
@@ -586,9 +586,13 @@ def world_boxes(points: list[tuple], s: dict, z0: float) -> list[dict]:
         for bx in pattern_boxes(s, L):
             o = bx["o"]
             wo = w(o)
+            # Tapir range xAxis/yAxis/zAxis comme LIGNES de la matrice de placement (tmx[0..2], tmx[4..6]...) :
+            # on lui donne donc les lignes de la rotation voulue (colonnes = axes du pave dans le plan)
+            cx, cy, cz = w(bx["ax"]), w(bx["ay"]), w(bx["az"])
+            rows = [(cx[i], cy[i], cz[i]) for i in range(3)]
             item = {"basePoint": {"x": a[0] + wo[0], "y": a[1] + wo[1], "z": z0 + wo[2]},
-                    "xAxis": dict(zip("xyz", w(bx["ax"]))), "yAxis": dict(zip("xyz", w(bx["ay"]))),
-                    "zAxis": dict(zip("xyz", w(bx["az"])))}
+                    "xAxis": dict(zip("xyz", rows[0])), "yAxis": dict(zip("xyz", rows[1])),
+                    "zAxis": dict(zip("xyz", rows[2]))}
             if "body" in bx:
                 item["body"] = bx["body"]
             else:
