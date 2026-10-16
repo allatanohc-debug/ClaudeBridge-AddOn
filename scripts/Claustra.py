@@ -52,7 +52,7 @@ def _load_tableau():
 T = _load_tableau()
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "15/10 - 1re version"
+VERSION = "16/10 - blocs dessinés"
 MEMOIRE = "claustra.json"                 # claustras dessines : trace + reglages + guids
 REGLAGES = "claustra_reglages.json"
 MAX_SANS_CONFIRMER = 1500                 # au-dela : demander confirmation (beaucoup d'elements)
@@ -93,7 +93,7 @@ TYPES = {
         ("angle", "Angle (°)", 45.0, 15, 75),
     ],
     "Blocs décoratifs": [
-        ("bloc", "Taille d'un bloc (carré)", 19.0, 5, 100),
+        ("bloc", "Taille d'un bloc (sauf bloc dessiné ★)", 19.0, 5, 100),
         ("joint", "Joint de mortier", 1.0, 0, 5),
     ],
     "Motif personnalisé": [
@@ -309,17 +309,113 @@ def plate_body(w: float, h: float, t: float, holes: list[list[tuple]]) -> dict:
     return {"bodyType": "Solid", "vertices": verts, "polygons": polys}
 
 
+# ------------------------------------------------------ blocs personnalises ---
+PERSO = "★ "                                           # prefixe des blocs dessines par l'utilisateur
+SYMETRIES = ("Aucune", "Miroir gauche / droite", "Miroir haut / bas", "Les deux miroirs", "Rotation (4 quarts)")
+
+
+def symmetrize(shapes: list[list[tuple]], mode: str, w: float, h: float) -> list[list[tuple]]:
+    """Ajoute les copies symetriques des formes (coordonnees en cm, 0..w x 0..h)."""
+    out = [list(p) for p in shapes]
+    if mode in (SYMETRIES[1], SYMETRIES[3]):
+        out += [[(w - x, z) for x, z in p] for p in list(out)]
+    if mode in (SYMETRIES[2], SYMETRIES[3]):
+        out += [[(x, h - z) for x, z in p] for p in list(out)]
+    if mode == SYMETRIES[4]:
+        cx, cz = w / 2, h / 2
+        base = list(out)
+        for k in (1, 2, 3):
+            c, sn = round(math.cos(k * math.pi / 2)), round(math.sin(k * math.pi / 2))
+            out += [[(cx + (x - cx) * c - (z - cz) * sn, cz + (x - cx) * sn + (z - cz) * c) for x, z in p] for p in base]
+    return out
+
+
+def clean_holes(shapes: list[list[tuple]], w: float, h: float, border: float = 0.5) -> list[list[tuple]]:
+    """Fusionne les jours qui se touchent et les garde a l'interieur du bloc (bord plein mini, en cm).
+    Renvoie des contours simples (sans trous) en cm."""
+    try:
+        from shapely.geometry import Polygon, box
+        from shapely.ops import unary_union
+    except ImportError:
+        return [p for p in shapes if len(p) >= 3]
+    polys = [Polygon(p).buffer(0) for p in shapes if len(p) >= 3]
+    polys = [q for q in polys if not q.is_empty and q.area > 1e-4]
+    if not polys:
+        return []
+    merged = unary_union(polys).intersection(box(border, border, w - border, h - border))
+    out = []
+    for g in getattr(merged, "geoms", [merged]):
+        if g.geom_type != "Polygon" or g.area < 0.05:
+            continue
+        g = g.simplify(0.02)
+        out.append([(x, z) for x, z in list(g.exterior.coords)[:-1]])
+    return out
+
+
+def sample_arcs(points: list[dict], arcs: list[dict]) -> list[tuple]:
+    """Contour Archicad (points + arcs) -> polygone (les arcs sont decoupes en petits segments)."""
+    pts = [(p["x"], p["y"]) for p in points]
+    if pts and math.dist(pts[0], pts[-1]) < 1e-9:
+        pts = pts[:-1]
+    by_start = {}
+    for a in arcs or []:
+        b = a.get("begIndex", a.get("begin", 0))
+        by_start[b] = a
+    out = []
+    n = len(pts)
+    for i in range(n):
+        p, q = pts[i], pts[(i + 1) % n]
+        out.append(p)
+        arc = by_start.get(i)                               # Tapir : index a partir de 0
+        ang = float(arc.get("arcAngle", 0.0)) if arc else 0.0
+        if abs(ang) > 1e-6:
+            chord = math.dist(p, q)
+            r = chord / (2 * math.sin(abs(ang) / 2))
+            mx, my = (p[0] + q[0]) / 2, (p[1] + q[1]) / 2
+            ux, uy = (q[0] - p[0]) / chord, (q[1] - p[1]) / chord
+            d = math.sqrt(max(0.0, r * r - chord * chord / 4)) * (1 if ang > 0 else -1)
+            c = (mx - uy * d, my + ux * d)
+            a0 = math.atan2(p[1] - c[1], p[0] - c[0])
+            steps = max(4, int(abs(ang) / (math.pi / 12)))
+            for k in range(1, steps):
+                a = a0 + ang * k / steps
+                out.append((c[0] + r * math.cos(a), c[1] + r * math.sin(a)))
+    return out
+
+
+def block_from_outlines(outlines: list[list[tuple]]) -> dict | None:
+    """Bloc dessine dans Archicad : le plus grand contour = le bloc, les contours dedans = les jours."""
+    polys = [p for p in outlines if len(p) >= 3]
+    if not polys:
+        return None
+    polys.sort(key=lambda p: -abs(_area(p)))
+    outer = polys[0]
+    xs, zs = [p[0] for p in outer], [p[1] for p in outer]
+    x0, z0, w, h = min(xs), min(zs), max(xs) - min(xs), max(zs) - min(zs)
+    if w < 0.02 or h < 0.02:
+        return None
+    holes = [[((x - x0) * 100, (z - z0) * 100) for x, z in p] for p in polys[1:]]
+    holes = clean_holes(holes, w * 100, h * 100)
+    return {"l": round(w * 100, 2), "h": round(h * 100, 2),
+            "jours": [[(x / (w * 100), z / (h * 100)) for x, z in p] for p in holes]}
+
+
 def block_items(s: dict, x_lo: float, z_lo: float, W: float, Hz: float, t: float) -> list[dict]:
     cm = 0.01
-    size, joint = s.get("bloc", 19.0) * cm, s.get("joint", 0.0) * cm
+    custom = s.get("bloc_perso") if str(s.get("bloc_forme", "")).startswith(PERSO) else None
+    size_w = (custom["l"] if custom else s.get("bloc", 19.0)) * cm
+    size_h = (custom["h"] if custom else s.get("bloc", 19.0)) * cm
+    joint = s.get("joint", 0.0) * cm
     fit = bool(s.get("ajuster", True))
-    pitch = size + joint
-    nx = max(1, round((W + joint) / pitch)) if fit else max(1, int((W + joint + 1e-9) // pitch))
-    nz = max(1, round((Hz + joint) / pitch)) if fit else max(1, int((Hz + joint + 1e-9) // pitch))
-    bw = (W - joint * (nx - 1)) / nx if fit else size
-    bh = (Hz - joint * (nz - 1)) / nz if fit else size
+    nx = max(1, round((W + joint) / (size_w + joint))) if fit else max(1, int((W + joint + 1e-9) // (size_w + joint)))
+    nz = max(1, round((Hz + joint) / (size_h + joint))) if fit else max(1, int((Hz + joint + 1e-9) // (size_h + joint)))
+    bw = (W - joint * (nx - 1)) / nx if fit else size_w
+    bh = (Hz - joint * (nz - 1)) / nz if fit else size_h
     pose = s.get("pose", POSES[0])
-    base_holes = block_holes(s.get("bloc_forme", BLOCS[0]))
+    if custom and abs(custom["l"] - custom["h"]) > 0.01 and pose in (POSES[1], POSES[2]):
+        pose = POSES[0]                                  # bloc rectangulaire : pas de quart de tour
+    base_holes = [list(map(tuple, hh)) for hh in custom["jours"]] if custom else \
+        block_holes(s.get("bloc_forme", BLOCS[0]))
     cache: dict = {}
     out = []
     for j in range(nz):
@@ -853,7 +949,9 @@ def load_settings() -> dict:
     models = dict(MODELES_DEFAUT)
     models.update(saved.get("modeles") or {})
     return {"courant": current, "modeles": models, "traits": saved.get("traits", "Droits (0 / 90 degres)"),
-            "reperes": saved.get("reperes", True), "remplacer_murs": saved.get("remplacer_murs", False)}
+            "reperes": saved.get("reperes", True), "remplacer_murs": saved.get("remplacer_murs", False),
+            "blocs_perso": {k: v for k, v in (saved.get("blocs_perso") or {}).items()
+                            if isinstance(v, dict) and "jours" in v}}
 
 
 def window(state: dict) -> None:
@@ -889,7 +987,9 @@ def window(state: dict) -> None:
     params.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
     vars_: dict = {}
     fit_var = tk.BooleanVar(value=cur.get("ajuster", True))
-    shape_var = tk.StringVar(value=cur.get("bloc_forme", BLOCS[0]) if cur.get("bloc_forme") in BLOCS else BLOCS[0])
+    def shape_names():
+        return list(BLOCS) + [PERSO + n for n in state["blocs_perso"]]
+    shape_var = tk.StringVar(value=cur.get("bloc_forme") if cur.get("bloc_forme") in shape_names() else BLOCS[0])
     pose_var = tk.StringVar(value=cur.get("pose", POSES[0]) if cur.get("pose") in POSES else POSES[0])
     motif_frame = ttk.LabelFrame(left, text="Motif (clique les cases : plein / vide)", padding=8)
 
@@ -972,9 +1072,11 @@ def window(state: dict) -> None:
         if kind == "Blocs décoratifs":
             r0 = len(rows) + 1
             ttk.Label(params, text="Dessin du bloc").grid(row=r0, column=0, sticky="w", pady=(6, 0))
-            fb = ttk.Combobox(params, values=BLOCS, textvariable=shape_var, state="readonly", width=24)
+            fb = ttk.Combobox(params, values=shape_names(), textvariable=shape_var, state="readonly", width=24)
             fb.grid(row=r0, column=1, sticky="w", padx=6, pady=(6, 0))
             fb.bind("<<ComboboxSelected>>", redraw)
+            ttk.Button(params, text="Dessiner mon bloc...", command=lambda: block_editor()
+                       ).grid(row=r0 + 2, column=0, columnspan=2, sticky="w", pady=(6, 0))
             ttk.Label(params, text="Pose").grid(row=r0 + 1, column=0, sticky="w", pady=(4, 0))
             fp = ttk.Combobox(params, values=POSES, textvariable=pose_var, state="readonly", width=24)
             fp.grid(row=r0 + 1, column=1, sticky="w", padx=6, pady=(4, 0))
@@ -1006,6 +1108,10 @@ def window(state: dict) -> None:
             motif_cells.append(line)
         ctrl = ttk.Frame(motif_frame)
         ctrl.grid(row=0, column=1, padx=10, sticky="n")
+        ttk.Button(motif_frame, text="Dessiner un bloc percé (comme un profil complexe)...",
+                   command=lambda: (type_var.set("Blocs décoratifs"), cur.update(defaults("Blocs décoratifs")),
+                                    build_params(), block_editor())).grid(row=3, column=0, columnspan=2, sticky="w",
+                                                                          pady=(6, 0))
         ttk.Label(ctrl, text="Colonnes").grid(row=0, column=0, sticky="w")
         cols_v = tk.IntVar(value=motif_size["cols"])
         rows_v = tk.IntVar(value=motif_size["rows"])
@@ -1037,6 +1143,10 @@ def window(state: dict) -> None:
                 pass
         s["ajuster"] = bool(fit_var.get())
         s["bloc_forme"], s["pose"] = shape_var.get(), pose_var.get()
+        if s["bloc_forme"].startswith(PERSO):
+            s["bloc_perso"] = state["blocs_perso"].get(s["bloc_forme"][len(PERSO):])
+            if not s["bloc_perso"]:
+                s["bloc_forme"] = BLOCS[0]
         s["motif"] = motif_rows() if motif_cells else cur.get("motif", MOTIF_DEFAUT)
         s["materiau"], s["surface"] = mat_var.get(), surf_var.get()
         return s
@@ -1071,6 +1181,220 @@ def window(state: dict) -> None:
         per_m = len(polys) / L
         info_var.set(f"{len(polys)} élément(s) sur 2 m (≈ {per_m:.0f} par mètre de claustra)")
 
+    # ------------------------------------------------------- editeur de bloc
+    def block_editor():
+        """Dessiner son bloc comme dans le gestionnaire de profils : contour du bloc + jours."""
+        ed = tk.Toplevel(root)
+        ed.title("Dessiner mon bloc")
+        ed.attributes("-topmost", True)
+        fr = ttk.Frame(ed, padding=10)
+        fr.grid()
+        name0 = shape_var.get()[len(PERSO):] if shape_var.get().startswith(PERSO) else ""
+        start = state["blocs_perso"].get(name0)
+        w_var = tk.DoubleVar(value=start["l"] if start else 30.0)
+        h_var = tk.DoubleVar(value=start["h"] if start else 30.0)
+        g_var = tk.DoubleVar(value=1.0)
+        sym_var = tk.StringVar(value=SYMETRIES[0])
+        tool_var = tk.StringVar(value="Polygone")
+        leaf_var = tk.DoubleVar(value=40.0)
+        shapes: list = []                     # formes dessinees (cm), avant symetrie
+        if start:
+            shapes += [[(x * start["l"], z * start["h"]) for x, z in hole] for hole in start["jours"]]
+        temp: list = []
+        drag = {"p": None, "m": None}
+        size, pad = 440, 20
+
+        side = ttk.Frame(fr)
+        side.grid(row=0, column=1, sticky="n", padx=(10, 0))
+        rows = [("Largeur du bloc (cm)", w_var, 1, 200), ("Hauteur du bloc (cm)", h_var, 1, 200),
+                ("Grille d'accrochage (cm)", g_var, 0, 10)]
+        for i, (lab, var, lo, hi) in enumerate(rows):
+            ttk.Label(side, text=lab).grid(row=i, column=0, sticky="w")
+            sp = ttk.Spinbox(side, from_=lo, to=hi, increment=0.5, textvariable=var, width=7, command=lambda: paint())
+            sp.grid(row=i, column=1, padx=4, pady=1)
+            sp.bind("<KeyRelease>", lambda _e: ed.after(200, paint))
+        ttk.Label(side, text="Outil (dessine les jours)", font=("Segoe UI", 9, "bold")).grid(row=3, column=0,
+                                                                                          sticky="w", pady=(8, 2))
+        for i, tool in enumerate(("Polygone", "Rectangle", "Cercle", "Feuille")):
+            ttk.Radiobutton(side, text=tool, value=tool, variable=tool_var,
+                            command=lambda: (temp.clear(), paint())).grid(row=4 + i, column=0, sticky="w")
+        ttk.Label(side, text="Largeur feuille (%)").grid(row=7, column=1, sticky="e")
+        ttk.Spinbox(side, from_=10, to=90, textvariable=leaf_var, width=5).grid(row=7, column=2)
+        ttk.Label(side, text="Symétrie", font=("Segoe UI", 9, "bold")).grid(row=8, column=0, sticky="w", pady=(8, 2))
+        sym_box = ttk.Combobox(side, values=SYMETRIES, textvariable=sym_var, state="readonly", width=24)
+        sym_box.grid(row=9, column=0, columnspan=3, sticky="w")
+        sym_box.bind("<<ComboboxSelected>>", lambda _e: paint())
+        hint = tk.StringVar()
+        ttk.Label(side, textvariable=hint, foreground="#555", wraplength=250, justify="left"
+                  ).grid(row=10, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        btns = ttk.Frame(side)
+        btns.grid(row=11, column=0, columnspan=3, sticky="w", pady=(10, 0))
+        ttk.Button(btns, text="Annuler la dernière forme", command=lambda: (shapes.pop() if shapes else None,
+                                                                            temp.clear(), paint())
+                   ).grid(row=0, column=0, sticky="we", pady=1)
+        ttk.Button(btns, text="Tout effacer", command=lambda: (shapes.clear(), temp.clear(), paint())
+                   ).grid(row=1, column=0, sticky="we", pady=1)
+        ttk.Button(btns, text="Importer le dessin sélectionné dans Archicad", command=lambda: import_archicad()
+                   ).grid(row=2, column=0, sticky="we", pady=1)
+        ttk.Button(btns, text="Enregistrer le bloc...", command=lambda: save()).grid(row=3, column=0, sticky="we",
+                                                                                   pady=(8, 1))
+        cv = tk.Canvas(fr, width=size, height=size, background="#f4f4f4", highlightthickness=1,
+                       highlightbackground="#bbb", cursor="crosshair")
+        cv.grid(row=0, column=0)
+
+        def dims():
+            try:
+                return max(1.0, float(w_var.get())), max(1.0, float(h_var.get())), max(0.0, float(g_var.get()))
+            except (tk.TclError, ValueError):
+                return 30.0, 30.0, 1.0
+
+        def scale():
+            w, h, _g = dims()
+            return (size - 2 * pad) / max(w, h)
+
+        def to_px(p):
+            w, h, _g = dims()
+            k = scale()
+            return pad + p[0] * k, pad + (h - p[1]) * k
+
+        def to_cm(ev):
+            w, h, g = dims()
+            k = scale()
+            x, z = (ev.x - pad) / k, h - (ev.y - pad) / k
+            if g > 0:
+                x, z = round(x / g) * g, round(z / g) * g
+            return (min(max(x, 0.0), w), min(max(z, 0.0), h))
+
+        def leaf(p, q):
+            if math.dist(p, q) < 0.5:
+                return []
+            return _lens(p, q, math.dist(p, q) * float(leaf_var.get()) / 100, 12)
+
+        def preview_shape():
+            p, m = drag["p"], drag["m"]
+            if p is None or m is None:
+                return None
+            tool = tool_var.get()
+            if tool == "Rectangle":
+                return [(p[0], p[1]), (m[0], p[1]), (m[0], m[1]), (p[0], m[1])]
+            if tool == "Cercle":
+                r = math.dist(p, m)
+                return _circle(p[0], p[1], r, 32) if r > 0.2 else None
+            if tool == "Feuille":
+                return leaf(p, m) or None
+            return None
+
+        def paint(*_):
+            cv.delete("all")
+            w, h, g = dims()
+            k = scale()
+            x1, y1 = to_px((0, h))
+            x2, y2 = to_px((w, 0))
+            cv.create_rectangle(x1, y1, x2, y2, fill="#b9a88f", outline="#5b4a33", width=2)
+            if g > 0 and g * k >= 6:
+                nx_, nz_ = int(w / g), int(h / g)
+                if nx_ * nz_ < 6000:
+                    for i in range(nx_ + 1):
+                        for j in range(nz_ + 1):
+                            px, py = to_px((i * g, j * g))
+                            cv.create_rectangle(px, py, px + 1, py + 1, outline="#8c7b62")
+            holes = clean_holes(symmetrize(shapes, sym_var.get(), w, h), w, h)
+            for hole in holes:
+                cv.create_polygon([v for pt in hole for v in to_px(pt)], fill="white", outline="#5b4a33")
+            for shp in shapes:                                       # formes d'origine (avant symetrie)
+                cv.create_polygon([v for pt in shp for v in to_px(pt)], fill="", outline="#d0451b", dash=(3, 2))
+            pv = preview_shape()
+            if pv:
+                cv.create_polygon([v for pt in pv for v in to_px(pt)], fill="", outline="#d0451b", width=2)
+            if temp:
+                pts = temp + ([drag["m"]] if drag["m"] else [])
+                if len(pts) >= 2:
+                    cv.create_line([v for pt in pts for v in to_px(pt)], fill="#d0451b", width=2)
+                fx, fy = to_px(temp[0])
+                cv.create_oval(fx - 5, fy - 5, fx + 5, fy + 5, outline="#d0451b", width=2)
+            tips = {"Polygone": "Clique les sommets du jour ; clique le 1er point (ou double-clic) pour fermer.",
+                    "Rectangle": "Clique-glisse d'un coin à l'autre.",
+                    "Cercle": "Clique le centre et glisse jusqu'au rayon voulu.",
+                    "Feuille": "Clique-glisse d'une pointe à l'autre de la feuille."}
+            hint.set(tips[tool_var.get()] + f"\nBloc {w:g} × {h:g} cm, {len(holes)} jour(s). "
+                     "Les jours qui se touchent sont fusionnés, un bord plein de 5 mm est gardé.")
+
+        def press(ev):
+            p = to_cm(ev)
+            if tool_var.get() == "Polygone":
+                if len(temp) >= 3 and math.dist(to_px(p), to_px(temp[0])) < 9:
+                    shapes.append(list(temp))
+                    temp.clear()
+                elif not temp or math.dist(p, temp[-1]) > 1e-6:
+                    temp.append(p)
+            else:
+                drag["p"], drag["m"] = p, p
+            paint()
+
+        def motion(ev):
+            drag["m"] = to_cm(ev)
+            if temp or drag["p"] is not None:
+                paint()
+
+        def release(_ev):
+            if tool_var.get() != "Polygone":
+                shp = preview_shape()
+                if shp and abs(_area(shp)) > 0.3:
+                    shapes.append(shp)
+                drag["p"] = drag["m"] = None
+                paint()
+
+        def double(_ev):
+            if tool_var.get() == "Polygone" and len(temp) >= 3:
+                shapes.append(list(temp))
+                temp.clear()
+                paint()
+
+        cv.bind("<ButtonPress-1>", press)
+        cv.bind("<B1-Motion>", motion)
+        cv.bind("<Motion>", motion)
+        cv.bind("<ButtonRelease-1>", release)
+        cv.bind("<Double-Button-1>", double)
+        ed.bind("<Escape>", lambda _e: (temp.clear(), paint()))
+
+        def import_archicad():
+            outlines = [sample_arcs(pts, arcs) for pts, arcs, _holes in T.selected_outlines()]
+            block = block_from_outlines(outlines)
+            if not block:
+                hint.set("Dans Archicad, dessine le contour du bloc et ses jours avec l'outil Remplissage ou Polyligne "
+                         "(à l'échelle réelle), sélectionne-les, puis recommence.")
+                return
+            w_var.set(block["l"])
+            h_var.set(block["h"])
+            sym_var.set(SYMETRIES[0])
+            shapes.clear()
+            shapes.extend([[(x * block["l"], z * block["h"]) for x, z in hole] for hole in block["jours"]])
+            paint()
+
+        def save():
+            from tkinter import simpledialog
+            w, h, _g = dims()
+            holes = clean_holes(symmetrize(shapes, sym_var.get(), w, h), w, h)
+            if not holes:
+                hint.set("Dessine au moins un jour (un vide) dans le bloc avant d'enregistrer.")
+                return
+            name = simpledialog.askstring("Enregistrer le bloc", "Nom du bloc :", parent=ed,
+                                          initialvalue=name0 or "Mon bloc")
+            if not name:
+                return
+            name = name.strip()
+            state["blocs_perso"][name] = {"l": round(w, 2), "h": round(h, 2),
+                                          "jours": [[(round(x / w, 5), round(z / h, 5)) for x, z in hole]
+                                                    for hole in holes]}
+            type_var.set("Blocs décoratifs")
+            shape_var.set(PERSO + name)
+            persist()
+            build_params()
+            ed.destroy()
+            status.set(f"Bloc « {name} » enregistré : il est dans la liste « Dessin du bloc ».")
+
+        paint()
+
     type_box.bind("<<ComboboxSelected>>", lambda _e: (cur.update(defaults(type_var.get())), build_params()))
     build_params()
 
@@ -1087,7 +1411,9 @@ def window(state: dict) -> None:
         fit_var.set(cur.get("ajuster", True))
         mat_var.set(cur.get("materiau", ""))
         surf_var.set(cur.get("surface", ""))
-        shape_var.set(cur.get("bloc_forme", BLOCS[0]) if cur.get("bloc_forme") in BLOCS else BLOCS[0])
+        shape_var.set(cur.get("bloc_forme") if cur.get("bloc_forme") in shape_names() else BLOCS[0])
+        if cur.get("bloc_perso") and str(cur.get("bloc_forme", "")).startswith(PERSO):
+            state["blocs_perso"].setdefault(cur["bloc_forme"][len(PERSO):], cur["bloc_perso"])
         pose_var.set(cur.get("pose", POSES[0]) if cur.get("pose") in POSES else POSES[0])
         build_params()
     model_box.bind("<<ComboboxSelected>>", apply_model)
@@ -1116,7 +1442,7 @@ def window(state: dict) -> None:
         own = {k: v for k, v in state["modeles"].items() if MODELES_DEFAUT.get(k) != v}
         save_json(REGLAGES, {"type": type_var.get(), "courant": current(), "modeles": own,
                              "traits": lines_var.get(), "reperes": bool(guides_var.get()),
-                             "remplacer_murs": bool(replace_var.get())})
+                             "remplacer_murs": bool(replace_var.get()), "blocs_perso": state["blocs_perso"]})
 
     # ----------------------------------------------------------------- actions
     def confirm_count(s, points) -> bool:
@@ -1211,7 +1537,9 @@ def window(state: dict) -> None:
         fit_var.set(cur.get("ajuster", True))
         mat_var.set(cur.get("materiau", ""))
         surf_var.set(cur.get("surface", ""))
-        shape_var.set(cur.get("bloc_forme", BLOCS[0]) if cur.get("bloc_forme") in BLOCS else BLOCS[0])
+        shape_var.set(cur.get("bloc_forme") if cur.get("bloc_forme") in shape_names() else BLOCS[0])
+        if cur.get("bloc_perso") and str(cur.get("bloc_forme", "")).startswith(PERSO):
+            state["blocs_perso"].setdefault(cur["bloc_forme"][len(PERSO):], cur["bloc_perso"])
         pose_var.set(cur.get("pose", POSES[0]) if cur.get("pose") in POSES else POSES[0])
         build_params()
         show(f"Réglages repris : {kind}. Change-les puis « Modifier le claustra sélectionné ».")
