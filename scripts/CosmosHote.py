@@ -18,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 2b"
+VERSION = "19/10 - test hote 3 (HTTP/2 integre)"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -166,39 +166,6 @@ def call(base, method, msg: bytes, timeout=15, stream=False):
 
 
 # ---------------------------------------------------------------- gRPC natif (ImportAPI n'est pas sur le gRPC-Web)
-def ensure_grpc():
-    try:
-        import grpc  # noqa: F401
-        return
-    except ModuleNotFoundError:
-        pass
-    log("installation du module grpcio (une seule fois, ~1 min)... Python", sys.version.split()[0], sys.executable)
-    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    for cmd in ([sys.executable, "-m", "pip", "install", "--user", "grpcio"],
-                [sys.executable, "-m", "pip", "install", "grpcio"],
-                [sys.executable, "-m", "ensurepip", "--user"],
-                [sys.executable, "-m", "pip", "install", "--user", "grpcio"],
-                ["uv", "pip", "install", "--python", sys.executable, "grpcio"]):
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=900)
-            log("  ", " ".join(cmd[1:]), "-> code", r.returncode, (r.stdout + r.stderr).strip().replace("\n", " | ")[-700:])
-            if r.returncode == 0 and "ensurepip" not in cmd:
-                break
-        except Exception as e:  # noqa: BLE001
-            log("  ", cmd[0], "->", e)
-            continue
-    import importlib
-    import site
-    importlib.invalidate_caches()
-    try:
-        us = site.getusersitepackages()
-        if us not in sys.path:
-            sys.path.append(us)
-    except Exception:  # noqa: BLE001
-        pass
-    import grpc  # noqa: F401
-
-
 def cbservice_ports():
     """Ports TCP sur lesquels ecoute cbservice.exe (+ ceux de runtime.json)."""
     ports = []
@@ -225,43 +192,131 @@ def cbservice_ports():
     return list(dict.fromkeys(ports))
 
 
+class H2Call:
+    """Client gRPC minimal sur HTTP/2 (bibliotheque standard uniquement, pas de grpcio)."""
+
+    def __init__(self, port, tls, timeout):
+        import socket
+        sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        if tls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE        # certificat local auto-signe (127.0.0.1)
+            ctx.set_alpn_protocols(["h2"])
+            sock = ctx.wrap_socket(sock, server_hostname="localhost")
+        self.s, self.port, self.tls = sock, port, tls
+        self.buf = b""
+        self.s.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+                       + self._frame(4, 0, 0, struct.pack(">HI", 4, 16 * 1024 * 1024))
+                       + self._frame(8, 0, 0, struct.pack(">I", 1 << 30)))
+
+    @staticmethod
+    def _frame(typ, flags, sid, payload):
+        return struct.pack(">I", len(payload))[1:] + bytes([typ, flags]) + struct.pack(">I", sid) + payload
+
+    @staticmethod
+    def _hstr(b):
+        n = len(b)
+        if n < 127:
+            return bytes([n]) + b
+        out, n = bytearray([127]), n - 127
+        while n >= 128:
+            out.append((n & 0x7F) | 0x80)
+            n >>= 7
+        out.append(n)
+        return bytes(out) + b
+
+    def request(self, method, msg):
+        hdrs = [(":method", "POST"), (":scheme", "https" if self.tls else "http"), (":path", SVC + method),
+                (":authority", f"127.0.0.1:{self.port}"), ("content-type", "application/grpc"), ("te", "trailers"),
+                ("user-agent", "vraylink-grpc/1.0")]
+        block = b"".join(b"\x00" + self._hstr(k.encode()) + self._hstr(v.encode()) for k, v in hdrs)
+        body = b"\x00" + struct.pack(">I", len(msg)) + msg
+        self.s.sendall(self._frame(1, 0x4, 1, block) + self._frame(0, 0x1, 1, body))
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            d = self.s.recv(65536)
+            if not d:
+                raise ConnectionError("connexion fermee par Cosmos")
+            self.buf += d
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def messages(self):
+        data = b""
+        while True:
+            head = self._read(9)
+            ln = int.from_bytes(head[:3], "big")
+            typ, flags, sid = head[3], head[4], int.from_bytes(head[5:9], "big") & 0x7FFFFFFF
+            payload = self._read(ln) if ln else b""
+            if typ == 0 and sid == 1:                       # DATA
+                if flags & 0x8:                             # padding
+                    payload = payload[1:len(payload) - payload[0]]
+                data += payload
+                if ln:
+                    self.s.sendall(self._frame(8, 0, 0, struct.pack(">I", ln)) + self._frame(8, 0, 1, struct.pack(">I", ln)))
+                while len(data) >= 5 and len(data) >= 5 + int.from_bytes(data[1:5], "big"):
+                    m = int.from_bytes(data[1:5], "big")
+                    yield data[5:5 + m]
+                    data = data[5 + m:]
+                if flags & 0x1:
+                    return
+            elif typ == 1 and sid == 1 and flags & 0x1:     # trailers -> fin
+                return
+            elif typ == 4 and not flags & 0x1:              # SETTINGS -> ACK
+                self.s.sendall(self._frame(4, 0x1, 0, b""))
+            elif typ == 6 and not flags & 0x1:              # PING -> reponse
+                self.s.sendall(self._frame(6, 0x1, 0, payload))
+            elif typ == 3 and sid == 1:                     # RST_STREAM
+                raise ConnectionError("flux refuse (RST code %d)" % int.from_bytes(payload[:4], "big"))
+            elif typ == 7:                                  # GOAWAY
+                raise ConnectionError("GOAWAY code %d %s" % (int.from_bytes(payload[4:8], "big"), payload[8:200]))
+
+    def close(self):
+        try:
+            self.s.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 class Native:
-    def __init__(self, ch, nom):
-        self.ch, self.nom = ch, nom
+    def __init__(self, port, tls):
+        self.port, self.tls = port, tls
+        self.nom = f"127.0.0.1:{port} {'TLS' if tls else 'h2c'}"
 
     def unary(self, method, msg, timeout=10):
-        f = self.ch.unary_unary(SVC + method, request_serializer=None, response_deserializer=None)
-        return f(msg, timeout=timeout)
+        c = H2Call(self.port, self.tls, timeout)
+        try:
+            c.request(method, msg)
+            for m in c.messages():
+                return m
+            raise RuntimeError("aucune reponse (methode inconnue ou refusee)")
+        finally:
+            c.close()
 
     def stream(self, method, msg):
-        f = self.ch.unary_stream(SVC + method, request_serializer=None, response_deserializer=None)
-        return f(msg)
+        c = H2Call(self.port, self.tls, 15)
+        c.request(method, msg)
+        c.s.settimeout(None)
+        try:
+            yield from c.messages()
+        finally:
+            c.close()
 
 
 def find_native():
-    import grpc
     for port in cbservice_ports():
-        target = f"127.0.0.1:{port}"
-        essais = [("non chiffre", lambda: grpc.insecure_channel(target))]
-        try:
-            pem = ssl.get_server_certificate(("127.0.0.1", port), timeout=3).encode()
-            for nom in ("localhost", "127.0.0.1"):
-                essais.append((f"TLS ({nom})", lambda n=nom: grpc.secure_channel(
-                    target, grpc.ssl_channel_credentials(root_certificates=pem),
-                    options=[("grpc.ssl_target_name_override", n)])))
-        except Exception:  # noqa: BLE001
-            pass
-        for nom, mk in essais:
-            ch = mk()
-            api = Native(ch, f"{target} {nom}")
+        for tls in (False, True):
+            api = Native(port, tls)
             try:
                 res = decode(api.unary("ImportAPI/ListImporters", b"", timeout=4))
-                log("ImportAPI OK en gRPC natif sur", api.nom, "- hotes :", show(res))
+                log("ImportAPI OK sur", api.nom, "- hotes :", show(res))
                 return api
             except Exception as e:  # noqa: BLE001
-                log("   ", target, nom, ":", str(e).replace("\n", " ")[:160])
-                ch.close()
+                log("   ", api.nom, ":", str(e)[:160])
     return None
+
 
 # ---------------------------------------------------------------- messages
 def importer_info():
@@ -382,11 +437,6 @@ def main():
             except Exception as e:  # noqa: BLE001
                 log("API web sur", b, ":", e)
         base = base or BASES[0]
-        try:
-            ensure_grpc()
-        except Exception as e:  # noqa: BLE001
-            log("ECHEC installation grpcio :", e)
-            return
         native = find_native()
         if not native:
             log("ECHEC : ImportAPI introuvable. Envoie ce journal.")
