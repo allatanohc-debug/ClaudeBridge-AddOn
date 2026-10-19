@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.6 (scatter + arbres)"
+VERSION = "19/10 - v2.7 (réglages avancés)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -74,7 +74,19 @@ QUALITES = {                               # minutes max, seuil de bruit
 }
 TAILLES = {"1280 × 720 (16:9)": (1280, 720), "1920 × 1080 (16:9)": (1920, 1080), "2560 × 1440 (16:9)": (2560, 1440),
            "3840 × 2160 (4K)": (3840, 2160), "1600 × 1200 (4:3)": (1600, 1200), "1080 × 1350 (Instagram)": (1080, 1350),
-           "1080 × 1920 (story)": (1080, 1920)}
+           "1080 × 1920 (story)": (1080, 1920), "2000 × 2000 (carré)": (2000, 2000),
+           "3508 × 2480 (A3/A4 paysage, 300 dpi A4)": (3508, 2480), "4961 × 3508 (A3 paysage 300 dpi)": (4961, 3508),
+           "3840 × 1646 (cinéma 21:9)": (3840, 1646), "2480 × 3508 (A4 portrait)": (2480, 3508)}
+MOTEURS = {"CPU (processeur)": "", "GPU CUDA (carte NVIDIA)": "-rtEngine=5", "GPU RTX (NVIDIA RTX)": "-rtEngine=7"}
+FORMATS = {"PNG": ".png", "JPEG": ".jpg", "EXR 32 bits (multicouche, retouche)": ".exr"}
+CANAUX = {
+    "Occlusion ambiante (AO)": 'RenderChannelExtraTex ch_ao { name="AO"; consider_for_aa=1; texmap=ch_ao_tex; }\n'
+                               "TexDirt ch_ao_tex { radius=0.6; subdivs=8; white_color=AColor(1,1,1,1); black_color=AColor(0,0,0,1); }",
+    "Profondeur (Z-depth)": 'RenderChannelZDepth ch_z { name="ZDepth"; depth_from_camera=1; depth_black=0; depth_white=80; }',
+    "Masque par matériau (Material ID)": 'RenderChannelMtlID ch_mid { name="MaterialID"; }',
+    "Cryptomatte (masques Photoshop/Nuke)": 'RenderChannelCryptomatte ch_crypto { name="Cryptomatte"; id_type=1; }',
+    "Normales": 'RenderChannelNormals ch_n { name="Normals"; }',
+}
 AMBIANCES = {                              # f/, 1/vitesse, ISO
     "Extérieur jour": (8.0, 250.0, 100.0),
     "Intérieur lumineux": (8.0, 30.0, 400.0),
@@ -1076,6 +1088,13 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     az, alt = sun_position(proj["lat"], proj["lon"], day, float(opts["heure"]), float(proj.get("fuseau", 0.0)))
     sd = sun_vector(az, alt, proj["north"])
     sx, sy, sz = frame([-c for c in sd])
+    dist = math.dist(eye, target) or 5.0
+    if opts.get("dof"):                       # flou : on ouvre le diaphragme et on compense par la vitesse
+        f_new = float(opts.get("dof_f", 2.8))
+        shutter = shutter * (fnum / f_new) ** 2
+        fnum = f_new
+    k_wb = float(opts.get("balance", 0.0))    # -1 froid ... +1 chaud
+    wb = (1.0 - 0.12 * k_wb, 0.97, 0.88 + 0.12 * k_wb) if k_wb else (1.0, 0.95, 0.88)
     s = [f"// V-Ray Link - {cam['nom']} - {proj['name']}",
          "SettingsUnitsInfo { meters_scale=1; photometric_scale=1; }",
          f"SettingsOutput {{ img_width={W}; img_height={H}; }}",
@@ -1083,17 +1102,39 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          "SettingsLightCache { subdivs=1500; }",
          f"SettingsImageSampler {{ type=3; progressive_maxTime={minutes:.2f}; progressive_threshold={thr}; "
          "progressive_minSubdivs=1; progressive_maxSubdivs=100; }",
-         "SettingsColorMapping { type=6; dark_mult=1; bright_mult=1; gamma=2.2; subpixel_mapping=0; clamp_output=0; }",
+         "SettingsColorMapping { type=6; dark_mult=1; bright_mult=1; gamma=2.2; subpixel_mapping=0; clamp_output=0; "
+         f"burn_value={max(0.2, min(1.0, 2.0 - float(opts.get('contraste', 1.0)))):.2f}; }}",
          "RenderChannelDenoiser denoiser { enabled=1; name=\"VRayDenoiser\"; }",
          f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n}}",
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
-         f"ISO={iso}; exposure=1; white_balance=Color(1,0.95,0.88); vignetting=0.3; }}",
+         f"ISO={iso}; exposure=1; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
+         f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
+         f"specify_focus=1; focus_distance={dist:.3f}; }}",
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
          f"  intensity_multiplier=1;\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
-         "TexSky sky { sun=sun; }",
-         "SettingsEnvironment { bg_tex=sky; gi_tex=sky; reflect_tex=sky; refract_tex=sky; "
-         "bg_tex_on=1; gi_tex_on=1; reflect_tex_on=1; refract_tex_on=1; }"]
+         "TexSky sky { sun=sun; }"]
+    hdri = str(opts.get("hdri") or "")
+    env = "sky"
+    if hdri and Path(hdri).exists():
+        a = math.radians(float(opts.get("hdri_rot", 0.0)))
+        m = float(opts.get("hdri_mult", 1.0))
+        s += [f'BitmapBuffer hdri_bmp {{ file="{hdri.replace(chr(92), "/")}"; gamma=1; filter_type=0; }}',
+              f'UVWGenEnvironment hdri_uvw {{ mapping_type="spherical"; uvw_matrix=Matrix(Vector({math.cos(a):.5f},{math.sin(a):.5f},0),'
+              f'Vector({-math.sin(a):.5f},{math.cos(a):.5f},0),Vector(0,0,1)); }}',
+              f"TexBitmap hdri_tex {{ bitmap=hdri_bmp; uvwgen=hdri_uvw; color_mult=AColor({m:.3f},{m:.3f},{m:.3f},1); }}"]
+        env = "hdri_tex"
+        if not opts.get("hdri_soleil", True):
+            s[s.index(next(l for l in s if l.startswith("SunLight sun")))] = \
+                next(l for l in s if l.startswith("SunLight sun")).replace("intensity_multiplier=1;", "intensity_multiplier=0;")
+    s.append(f"SettingsEnvironment {{ bg_tex={env}; gi_tex={env}; reflect_tex={env}; refract_tex={env}; "
+             "bg_tex_on=1; gi_tex_on=1; reflect_tex_on=1; refract_tex_on=1; }")
+    for name in opts.get("canaux") or []:
+        if name in CANAUX:
+            s.append(CANAUX[name])
+    if opts.get("moteur", "").startswith("GPU"):
+        minutes, thr = QUALITES.get(opts["qualite"], QUALITES["Haute"])
+        s.append(f"SettingsRTEngine {{ max_render_time={minutes:.2f}; noise_threshold={thr}; max_sample_level=0; }}")
     sol = SOLS.get(opts.get("sol", "Gazon"))
     if sol:
         r, g, b = (srgb_to_linear(c) for c in sol)
@@ -1536,7 +1577,9 @@ def load_settings() -> dict:
     saved = load_json(REGLAGES)
     today = dt.date.today()
     opts = {"qualite": "Haute", "taille": "1920 × 1080 (16:9)", "ambiance": "Extérieur jour", "sol": "Gazon",
-            "jour": today.day, "mois": today.month, "heure": 16.5, "fuseau": 0.0, "verticales": True,
+            "jour": today.day, "mois": today.month, "heure": 16.5, "fuseau": 0.0, "verticales": True, "moteur": "CPU (processeur)", "format": "PNG", "canaux": [],
+            "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True,
+            "balance": 0.0, "vignettage": 0.3, "contraste": 1.0,
             "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
@@ -1660,7 +1703,7 @@ def _run_bat(bat: Path, lines: list, env_vars: dict, cwd: Path | None = None) ->
                      creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
 
 
-def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
+def launch(vray: str, scene: Path, image: Path, show: bool = True, engine: str = "") -> None:
     """Lance V-Ray. S'il se ferme sans image : relance ; s'il plante encore, rendu de secours sans
     materiaux scannes (.vrscan) ; en dernier recours la fenetre reste ouverte avec le code d'erreur."""
     secours = scene.with_name(scene.stem + "_sans_scan.vrscene")
@@ -1668,9 +1711,10 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
     _run_bat(scene.parent / "rendre_cette_vue.bat", [
         "@echo off", "title V-Ray Link - rendu",
         'if exist "%VRL_IMAGE%" del "%VRL_IMAGE%"',
-        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts}',
+        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts} {engine}',
         'if exist "%VRL_IMAGE%" goto fin',
-        "echo.", "echo V-Ray s'est ferme sans image : nouvel essai...", "timeout /t 3 >nul",
+        "echo.", "echo V-Ray s'est ferme sans image : nouvel essai" + (" sur le processeur (CPU)..." if engine else "..."),
+        "timeout /t 3 >nul",
         f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts}',
         'if exist "%VRL_IMAGE%" goto fin',
         'if not exist "%VRL_SECOURS%" goto echec',
@@ -1686,14 +1730,14 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
                            "VRL_SECOURS": secours if secours.exists() else ""}, scene.parent)
 
 
-def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path) -> Path:
+def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine: str = "") -> Path:
     bat = jobs[0][0].parent / "rendre_les_vues.bat"
     lines = ["@echo off", "title V-Ray Link - rendu des vues"]
     env = {"VRL_VRAY": vray, "VRL_DOSSIER": folder}
     for k, (scene, image) in enumerate(jobs, 1):
         env[f"VRL_S{k}"], env[f"VRL_I{k}"] = scene, image
         lines.append(f"echo Vue {k}/{len(jobs)}")
-        lines.append(f'"%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
+        lines.append(f'"%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1 {engine}')
         lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
         env[f"VRL_B{k}"] = scene.with_name(scene.stem + "_sans_scan.vrscene")
         lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_B{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
@@ -2079,12 +2123,12 @@ def window(state: dict) -> None:
                 cam = next(c for c in all_cams() if c["nom"] == name)
                 scene = geo.parent / f"scene_{safe(name)}.vrscene"
                 write_scene(scene, geo, cam, opts, proj, ground)
-                jobs.append((scene, folder / f"{safe(name)}_{stamp}.png"))
+                jobs.append((scene, folder / f"{safe(name)}_{stamp}{FORMATS.get(opts.get('format'), '.png')}"))
             if len(jobs) == 1:
-                launch(state["vray"], *jobs[0])
+                launch(state["vray"], *jobs[0], engine=MOTEURS.get(opts.get("moteur"), ""))
                 say("Rendu lancé : la fenêtre V-Ray s'ouvre.")
             else:
-                launch_batch(state["vray"], jobs, folder)
+                launch_batch(state["vray"], jobs, folder, MOTEURS.get(opts.get("moteur"), ""))
                 say(f"{len(jobs)} rendus lancés l'un après l'autre.")
             show([f"Géométrie : {info}.", f"Images enregistrées dans : {folder}",
                   f"Qualité {opts['qualite']}, {opts['taille']}, {opts['ambiance']}, soleil {opts['jour']}/{opts['mois']} "
@@ -2099,6 +2143,103 @@ def window(state: dict) -> None:
             show([f"Erreur : {error}"])
             say("Erreur.")
 
+    def advanced():
+        from tkinter import filedialog
+        win = tk.Toplevel(root)
+        win.title("Réglages V-Ray avancés")
+        win.attributes("-topmost", True)
+        win.transient(root)
+        f = ttk.Frame(win, padding=12)
+        f.grid(sticky="nsew")
+        v = {}
+
+        def section(title, row):
+            box_ = ttk.LabelFrame(f, text=title, padding=8)
+            box_.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+            return box_
+
+        m = section("Moteur de rendu", 0)
+        v["moteur"] = tk.StringVar(value=opts.get("moteur", "CPU (processeur)"))
+        ttk.Combobox(m, values=list(MOTEURS), textvariable=v["moteur"], state="readonly", width=28).grid(row=0, column=0, sticky="w")
+        ttk.Label(m, foreground="#777", wraplength=420, justify="left",
+                  text="GPU = beaucoup plus rapide avec une carte NVIDIA. Si le GPU échoue, V-Ray Link relance tout seul "
+                       "sur le processeur.").grid(row=1, column=0, sticky="w", pady=(4, 0))
+
+        im = section("Image", 1)
+        ttk.Label(im, text="Format").grid(row=0, column=0, sticky="w")
+        v["format"] = tk.StringVar(value=opts.get("format", "PNG"))
+        ttk.Combobox(im, values=list(FORMATS), textvariable=v["format"], state="readonly", width=34).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(im, text="Contraste").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        v["contraste"] = tk.DoubleVar(value=opts.get("contraste", 1.0))
+        ttk.Scale(im, from_=1.0, to=1.8, variable=v["contraste"], length=220).grid(row=1, column=1, sticky="w", padx=6, pady=(6, 0))
+
+        ca = section("Caméra", 2)
+        v["dof"] = tk.BooleanVar(value=opts.get("dof", False))
+        ttk.Checkbutton(ca, text="Profondeur de champ (arrière-plan flou, net sur le point visé)", variable=v["dof"]).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(ca, text="Ouverture f/").grid(row=1, column=0, sticky="w")
+        v["dof_f"] = tk.DoubleVar(value=opts.get("dof_f", 2.8))
+        ttk.Combobox(ca, values=(1.4, 2.0, 2.8, 4.0, 5.6), textvariable=v["dof_f"], width=5, state="readonly").grid(
+            row=1, column=1, sticky="w", padx=6)
+        ttk.Label(ca, text="(petit = plus de flou)", foreground="#777").grid(row=1, column=2, sticky="w")
+        ttk.Label(ca, text="Balance des blancs").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        v["balance"] = tk.DoubleVar(value=opts.get("balance", 0.0))
+        ttk.Scale(ca, from_=-1.0, to=1.0, variable=v["balance"], length=200).grid(row=2, column=1, columnspan=2, sticky="w", padx=6, pady=(6, 0))
+        ttk.Label(ca, text="froid ◀ ▶ chaud", foreground="#777").grid(row=3, column=1, columnspan=2, sticky="w", padx=6)
+        ttk.Label(ca, text="Vignettage").grid(row=4, column=0, sticky="w")
+        v["vignettage"] = tk.DoubleVar(value=opts.get("vignettage", 0.3))
+        ttk.Scale(ca, from_=0.0, to=1.0, variable=v["vignettage"], length=200).grid(row=4, column=1, columnspan=2, sticky="w", padx=6)
+
+        en = section("Environnement (ciel HDRI)", 3)
+        v["hdri"] = tk.StringVar(value=opts.get("hdri", ""))
+        ttk.Entry(en, textvariable=v["hdri"], width=44).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        def browse():
+            path = filedialog.askopenfilename(parent=win, title="Image HDRI",
+                                              filetypes=[("HDRI", "*.hdr *.exr *.jpg *.png *.tif"), ("Tous", "*.*")])
+            if path:
+                v["hdri"].set(path)
+        ttk.Button(en, text="Parcourir…", command=browse).grid(row=0, column=2, padx=4)
+        ttk.Button(en, text="Aucun", command=lambda: v["hdri"].set("")).grid(row=0, column=3)
+        ttk.Label(en, text="Intensité").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        v["hdri_mult"] = tk.DoubleVar(value=opts.get("hdri_mult", 1.0))
+        ttk.Spinbox(en, from_=0.1, to=50, increment=0.5, textvariable=v["hdri_mult"], width=6).grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(en, text="Rotation (°)").grid(row=2, column=0, sticky="w")
+        v["hdri_rot"] = tk.DoubleVar(value=opts.get("hdri_rot", 0.0))
+        ttk.Scale(en, from_=0, to=360, variable=v["hdri_rot"], length=200).grid(row=2, column=1, columnspan=3, sticky="w")
+        v["hdri_soleil"] = tk.BooleanVar(value=opts.get("hdri_soleil", True))
+        ttk.Checkbutton(en, text="Garder le soleil V-Ray (ombres nettes réglées par l'heure)", variable=v["hdri_soleil"]).grid(
+            row=3, column=0, columnspan=4, sticky="w")
+        ttk.Label(en, foreground="#777", text="Sans HDRI : ciel physique V-Ray (lieu, date, heure).").grid(
+            row=4, column=0, columnspan=4, sticky="w")
+
+        ch = section("Canaux de rendu (pour Photoshop)", 4)
+        chosen_ch = set(opts.get("canaux") or [])
+        for k, name in enumerate(CANAUX):
+            v["ch_" + name] = tk.BooleanVar(value=name in chosen_ch)
+            ttk.Checkbutton(ch, text=name, variable=v["ch_" + name]).grid(row=k // 2, column=k % 2, sticky="w", padx=(0, 12))
+        ttk.Label(ch, foreground="#777", wraplength=420, justify="left",
+                  text="Enregistrés à côté de l'image (en EXR : tous dans le même fichier).").grid(
+            row=9, column=0, columnspan=2, sticky="w", pady=(4, 0))
+
+        def ok():
+            try:
+                for name in ("moteur", "format", "dof", "dof_f", "balance", "vignettage", "hdri", "hdri_mult", "hdri_rot",
+                             "hdri_soleil", "contraste"):
+                    opts[name] = v[name].get()
+                opts["canaux"] = [n for n in CANAUX if v["ch_" + n].get()]
+            except (ValueError, tk.TclError):
+                pass
+            save_settings(state)
+            say(f"Réglages avancés : {opts['moteur']}, {opts['format']}"
+                f"{', flou f/' + str(opts['dof_f']) if opts['dof'] else ''}{', HDRI' if opts['hdri'] else ''}"
+                f"{', ' + str(len(opts['canaux'])) + ' canaux' if opts['canaux'] else ''}.")
+            win.destroy()
+        bar = ttk.Frame(f)
+        bar.grid(row=5, column=0, sticky="e")
+        ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=0, padx=4)
+        ttk.Button(bar, text="OK", command=ok).grid(row=0, column=1)
+
     def open_folder():
         folder = renders_dir(proj["name"])
         try:
@@ -2108,7 +2249,8 @@ def window(state: dict) -> None:
 
     buttons = ttk.Frame(outer)
     buttons.grid(row=5, column=0, sticky="e", pady=(8, 0))
-    ttk.Button(buttons, text="Ouvrir le dossier des rendus", command=open_folder).grid(row=0, column=0, padx=3)
+    ttk.Button(buttons, text="⚙ Réglages V-Ray avancés…", command=lambda: advanced()).grid(row=0, column=0, padx=(0, 12))
+    ttk.Button(buttons, text="Ouvrir le dossier des rendus", command=open_folder).grid(row=0, column=4, padx=3)
     ttk.Button(buttons, text="Rendre les vues cochées", command=lambda: render(
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
     ttk.Button(buttons, text="Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
