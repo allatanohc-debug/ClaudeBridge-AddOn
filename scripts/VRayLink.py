@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.5 (scatter)"
+VERSION = "19/10 - v2.6 (scatter + arbres)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -980,6 +980,10 @@ let g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttr
 g.setAttribute("color",new THREE.BufferAttribute(col,4,true)); g.setIndex(new THREE.BufferAttribute(idx,1));
 g=g.toNonIndexed(); g.computeVertexNormals();
 const model=new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
+for(const t of (info.arbres||[])){const k=t[3]||1;const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15*k,.2*k,2.5*k,8),new THREE.MeshLambertMaterial({color:0x6b4f35}));
+ trunk.rotation.x=Math.PI/2;trunk.position.set(t[0],t[1],t[2]+1.25*k);trunk.castShadow=true;scene.add(trunk);
+ const crown=new THREE.Mesh(new THREE.IcosahedronGeometry(2.2*k,1),new THREE.MeshLambertMaterial({color:0x4f7a3a,flatShading:true}));
+ crown.position.set(t[0],t[1],t[2]+4.2*k);crown.castShadow=true;crown.receiveShadow=true;scene.add(crown)}
 model.castShadow=true; model.receiveShadow=true; scene.add(model);
 g.computeBoundingBox(); const bb=g.boundingBox, mid=bb.getCenter(new THREE.Vector3()), rad=bb.getSize(new THREE.Vector3()).length()/2+5;
 // soleil (formules NOAA, comme pour le rendu V-Ray)
@@ -2133,9 +2137,22 @@ def window(state: dict) -> None:
                 "heure": float(opts["heure"]), "jour": int(opts["jour"]), "mois": int(opts["mois"]),
                 "objets": [{"nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "echelle": o.get("echelle", 1.0)}
                            for o in (state.get("objets") or {}).get(key, [])],
+                "arbres": tree_points(),
                 "courante": current.get(),
                 "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
                              "auto": bool(c.get("auto"))} for c in all_cams()]}
+
+    def tree_points() -> list:
+        """Arbres du scatter, pour les montrer (avec leur ombre) dans la visionneuse."""
+        trees = [sc for sc in (state.get("scatter") or {}).get(key, []) if sc.get("type") == "Arbres"]
+        if not trees:
+            return []
+        try:
+            meshes, _m, offset, ground = pickle.loads((data_dir() / key / "geometrie.pkl").read_bytes())
+        except Exception:  # noqa: BLE001
+            return []
+        return [list(p) + [float(sc.get("echelle", 1.0))] for sc in trees
+                for p in scatter_points(sc, meshes, offset, ground, key)][:3000]
 
     def poll_viewer():
         try:
@@ -2226,6 +2243,12 @@ def write_objects(path: Path, objs: list, report=print) -> int:
 
 
 SOL_AUTOUR = "Sol autour (gazon)"
+ZONE_PLAN = "Zone dessinée dans le plan…"
+SCATTER_TYPES = {  # densite affichee, unite (m2 par unite), variation %, espacement min (m), version legere
+    "Herbe / gazon": (6.0, 1.0, 30, 0.0, True),
+    "Fleurs / buissons": (1.0, 1.0, 25, 0.6, True),
+    "Arbres": (2.0, 100.0, 20, 5.0, False),
+}
 SCATTER_MAX = 30000
 
 
@@ -2236,6 +2259,24 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
     dens = max(0.01, float(sc.get("densite", 4.0)))
     ox, oy, oz = offset
     pts = []
+    if sc.get("surface") == ZONE_PLAN and sc.get("zone"):
+        poly = sc["zone"]
+        xs, ys = [q[0] for q in poly], [q[1] for q in poly]
+        n = min(SCATTER_MAX * 4, int((max(xs) - min(xs)) * (max(ys) - min(ys)) * dens))
+
+        def inside(x, y):
+            ok, j = False, len(poly) - 1
+            for i in range(len(poly)):
+                (xi, yi), (xj, yj) = poly[i], poly[j]
+                if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi:
+                    ok = not ok
+                j = i
+            return ok
+        for _ in range(n):
+            x, y = rnd.uniform(min(xs), max(xs)), rnd.uniform(min(ys), max(ys))
+            if inside(x, y):
+                pts.append((x, y, float(sc.get("z", ground))))
+        return _spaced(pts, float(sc.get("espacement", 0.0)))
     if sc.get("surface") == SOL_AUTOUR:
         f = plan_footprint(key) or {}
         bati = {tuple(c) for c in f.get("sols", []) + f.get("murs", [])}
@@ -2252,7 +2293,7 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
             cell = (int((x - f["x0"]) // f["pas"]), int((y - f["y0"]) // f["pas"]))
             if cell not in bati:
                 pts.append((x, y, ground))
-        return pts
+        return _spaced(pts, float(sc.get("espacement", 0.0)))
     verts, faces = meshes.get(sc.get("surface"), ([], []))
     up, flat = [], []
     for t in range(0, len(faces), 3):
@@ -2288,7 +2329,24 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
             continue
         tops[cell] = z
         pts.append((x + ox, y + oy, z + oz))
-    return pts
+    return _spaced(pts, float(sc.get("espacement", 0.0)))
+
+
+def _spaced(pts: list, gap: float) -> list:
+    """Retire les points trop proches (arbres : espacement minimal entre troncs)."""
+    if gap <= 0:
+        return pts[:SCATTER_MAX]
+    grid, out = {}, []
+    for p in pts:
+        cx, cy = int(p[0] // gap), int(p[1] // gap)
+        if any(math.hypot(p[0] - q[0], p[1] - q[1]) < gap
+               for i in (-1, 0, 1) for j in (-1, 0, 1) for q in grid.get((cx + i, cy + j), ())):
+            continue
+        grid.setdefault((cx, cy), []).append(p)
+        out.append(p)
+        if len(out) >= SCATTER_MAX:
+            break
+    return out
 
 
 def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, ground: float, key: str, report=print) -> int:
@@ -2407,7 +2465,9 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         for k, o in enumerate(objs):
             tree.insert("", "end", iid=str(k), text=o["nom"], values=(f"{o.get('rotation', 0):.0f}°", f"{o.get('echelle', 1):g}"))
         for k, sc in enumerate(scats):
-            tree.insert("", "end", iid=f"s{k}", text=f"🌿 {sc['nom']} → {sc['surface']} ({sc['densite']:g}/m²)",
+            unit = SCATTER_TYPES.get(sc.get("type", ""), (0, 1.0))[1]
+            dtxt = f"{sc['densite'] * unit:g}/m²" if unit == 1 else f"{sc['densite'] * unit:g} pour {unit:g} m²"
+            tree.insert("", "end", iid=f"s{k}", text=f"{'🌳' if unit != 1 else '🌿'} {sc['nom']} → {sc['surface']} ({dtxt})",
                         values=("au hasard", f"{sc.get('echelle', 1):g}"))
 
     def selected() -> list:
@@ -2575,11 +2635,28 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     acts.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     ttk.Button(acts, text="📍 Placer dans Archicad (clic dans le plan)", command=place).grid(row=0, column=0, padx=3)
     ttk.Separator(acts, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
+    type_var = tk.StringVar(value="Herbe / gazon")
+    type_box = ttk.Combobox(acts, textvariable=type_var, values=list(SCATTER_TYPES), state="readonly", width=15)
+    type_box.grid(row=1, column=2, columnspan=2, sticky="w", padx=3, pady=(4, 0))
+    unit_lbl = tk.StringVar(value="par m²")
     ttk.Label(acts, text="🌿 Scatter sur").grid(row=0, column=2)
     surf_var = tk.StringVar(value=SOL_AUTOUR)
     surf_box = ttk.Combobox(acts, textvariable=surf_var, width=22, state="readonly")
     surf_box.grid(row=0, column=3, padx=3)
-    ttk.Label(acts, text="Densité /m²").grid(row=0, column=4)
+    ttk.Label(acts, text="Densité").grid(row=0, column=4)
+    ttk.Label(acts, textvariable=unit_lbl, foreground="#777").grid(row=1, column=4, columnspan=2, sticky="w")
+    gap_var = tk.DoubleVar(value=0.0)
+    ttk.Label(acts, text="Espacement min (m)").grid(row=1, column=6, sticky="e", pady=(4, 0))
+    ttk.Spinbox(acts, from_=0, to=30, increment=0.5, textvariable=gap_var, width=4).grid(row=1, column=7, padx=3, pady=(4, 0))
+
+    def type_changed(_e=None):
+        d, unit, var, gap, _l = SCATTER_TYPES[type_var.get()]
+        dens_var.set(d)
+        var_var.set(var)
+        gap_var.set(gap)
+        unit_lbl.set("par m²" if unit == 1 else f"pour {unit:g} m²")
+
+    type_box.bind("<<ComboboxSelected>>", type_changed)
     dens_var = tk.DoubleVar(value=6.0)
     ttk.Spinbox(acts, from_=0.1, to=60, increment=1, textvariable=dens_var, width=5).grid(row=0, column=5, padx=3)
     ttk.Label(acts, text="Variation %").grid(row=0, column=6)
@@ -2590,7 +2667,8 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     def load_surface_names():
         names, _ = project_surfaces(state, key)
         grass = sorted(n for n in names if any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
-        surf_box.configure(values=[SOL_AUTOUR] + grass + sorted(n for n in names if n not in grass))
+        surf_box.configure(values=[SOL_AUTOUR, ZONE_PLAN] + grass +
+                           sorted(n for n in names if n not in grass and n != SOL_AUTOUR))
         if grass and surf_var.get() == SOL_AUTOUR:
             surf_var.set(grass[0])
 
@@ -2600,15 +2678,37 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             msg.set("Choisis d'abord à droite l'objet à répartir (touffe d'herbe, fleurs, gravier…).")
             return
         try:
-            dens, var = float(dens_var.get()), int(var_var.get())
+            shown, var, gap = float(dens_var.get()), int(var_var.get()), float(gap_var.get())
         except (ValueError, tk.TclError):
             return
-        scats.append({"nom": e["nom"], "dossier": e["dossier"], "surface": surf_var.get(), "densite": dens,
-                      "variation": var, "echelle": 1.0, "rayon": 15.0})
+        _d, unit, _v, _g, light = SCATTER_TYPES[type_var.get()]
+        item = {"nom": e["nom"], "dossier": e["dossier"], "surface": surf_var.get(), "densite": shown / unit,
+                "variation": var, "echelle": 1.0, "rayon": 15.0, "espacement": gap, "leger": light, "type": type_var.get()}
+        if surf_var.get() == ZONE_PLAN:
+            pts = []
+            root.withdraw()
+            try:
+                T.focus_archicad()
+                while True:
+                    p, _why = T.pick_point(f"V-Ray scatter : clique le point {len(pts) + 1} de la zone "
+                                           f"(Échap pour terminer, 3 points minimum)")
+                    if p is None:
+                        break
+                    pts.append([p["x"], p["y"]])
+                item["z"] = story_level()
+            finally:
+                root.deiconify()
+            if len(pts) < 3:
+                msg.set("Zone annulée : il faut au moins 3 points.")
+                return
+            item["zone"] = pts
+        scats.append(item)
         save_settings(state)
         refresh_tree()
-        msg.set(f"« {e['nom']} » sera réparti sur « {surf_var.get()} » ({dens:g} par m², taille ±{var} %, rotation au hasard) "
-                "au prochain rendu. Commence avec une densité faible pour un rendu rapide.")
+        unit_txt = "par m²" if unit == 1 else f"pour {unit:g} m²"
+        msg.set(f"« {e['nom']} » ({type_var.get()}) sera réparti sur « {surf_var.get()} » : {shown:g} {unit_txt}, "
+                f"taille ±{var} %{f', au moins {gap:g} m entre deux' if gap else ''}, rotation au hasard. "
+                "Visible au prochain rendu.")
     ttk.Label(tab, textvariable=msg, foreground="#2b5d8a", wraplength=820, justify="left").grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
