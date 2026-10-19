@@ -1,0 +1,1629 @@
+// FILE grpcerror.proto package grpcerrors
+message Error {
+  int32 kind = 1;
+  string message = 2;
+  string guid = 3;
+}
+// FILE v1beta2/system_types.proto package content.v1beta2
+message SystemPaths {
+  string certificate = 1;
+}
+// FILE google/rpc/status.proto package google.rpc
+message Status {
+  int32 code = 1;
+  string message = 2;
+  repeated .google.protobuf.Any details = 3;
+}
+// FILE v1beta2/languages_types.proto package content.v1beta2
+message Language {
+  string name = 1;
+  string code = 2;
+  string abbreviation = 3;
+  bool is_active = 4;
+}
+// FILE v1beta2/accounts_types.proto package content.v1beta2
+message Account {
+  string email = 1;
+  string first_name = 2;
+  string last_name = 3;
+  bool is_active = 4;
+}
+// FILE v1beta2/path_types.proto package content.v1beta2
+message FilePath {
+  string token = 1;
+  string absolute = 2;
+  string checksum = 3;
+  string description = 4;
+  int64 size = 5;
+  bool resolved = 6;
+}
+// FILE v1beta2/collections_types.proto package content.v1beta2
+enum CollectionType { COLLECTION_TYPE_INVALID=0, COLLECTION_TYPE_STOCK=1, COLLECTION_TYPE_CUSTOM=2 }
+message Collection {
+  string id = 1;
+  string name = 2;
+  .content.v1beta2.CollectionType type = 3;
+}
+// FILE v1beta2/vendors_api.proto package content.v1beta2
+message FindVendorsRequest {
+}
+message FindVendorsResponse {
+  repeated .content.v1beta2.Vendor vendors = 1;
+}
+service VendorsAPI {
+  rpc FindVendors(.content.v1beta2.FindVendorsRequest) returns (.content.v1beta2.FindVendorsResponse);
+}
+// FILE v1beta2/system_api.proto package content.v1beta2
+message GetSystemInfoRequest {
+}
+message GetSystemInfoResponse {
+  .content.v1beta2.SystemPaths paths = 1;
+}
+service SystemAPI {
+  rpc GetSystemInfo(.content.v1beta2.GetSystemInfoRequest) returns (.content.v1beta2.GetSystemInfoResponse);
+}
+// FILE v1beta2/stats_api.proto package content.v1beta2
+message RevisionsStatsRequest {
+}
+message RevisionsStatsResponse {
+  uint64 total_size = 1;
+  uint64 obsolete_revisions_size = 2;
+}
+service StatsAPI {
+  rpc RevisionsStats(.content.v1beta2.RevisionsStatsRequest) returns (.content.v1beta2.RevisionsStatsResponse);
+}
+// FILE v1beta2/languages_api.proto package content.v1beta2
+message FindAllLanguagesRequest {
+}
+message FindAllLanguagesResponse {
+  repeated .content.v1beta2.Language languages = 1;
+}
+service LanguagesAPI {
+  rpc FindAllLanguages(.content.v1beta2.FindAllLanguagesRequest) returns (.content.v1beta2.FindAllLanguagesResponse);
+}
+// FILE v1beta2/analytics_api.proto package content.v1beta2
+message CollectAnalyticsEventsRequest {
+  repeated .content.v1beta2.AnalyticsEvent events = 1;
+}
+message CollectAnalyticsEventsResponse {
+}
+service AnalyticsAPI {
+  rpc CollectAnalyticsEvents(.content.v1beta2.CollectAnalyticsEventsRequest) returns (.content.v1beta2.CollectAnalyticsEventsResponse);
+}
+// FILE v1beta2/configuration_api.proto package content.v1beta2
+message FindConfigurationRequest {
+  string package_id = 1;
+}
+message FindConfigurationResponse {
+  .content.v1beta2.Configuration configuration = 1;
+}
+service ConfigurationAPI {
+  rpc FindConfiguration(.content.v1beta2.FindConfigurationRequest) returns (.content.v1beta2.FindConfigurationResponse);
+}
+// FILE v1beta2/vendor_types.proto package content.v1beta2
+message Vendor {
+  string id = 1;
+  .content.v1beta2.Vendor.Type type = 2;
+  string name = 3;
+  string email = 4;
+  bool visible = 5;
+  string website = 6;
+  string logo_big = 7;
+  string logo_small = 8;
+  string description = 9;
+  enum Type { TYPE_INVALID=0, TYPE_BASIC=1, TYPE_PARTNER_BRAND=2, TYPE_PARTNER_AGENCY=3 }
+}
+// FILE v1beta2/path_api.proto package content.v1beta2
+message ResolveFilePathsRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  repeated string tokens = 3;
+  string variant_id = 4;
+}
+message ResolveFilePathsResponse {
+  repeated .content.v1beta2.FilePath paths = 1;
+}
+service PathAPI {
+  rpc ResolveFilePaths(.content.v1beta2.ResolveFilePathsRequest) returns (.content.v1beta2.ResolveFilePathsResponse);
+}
+// FILE v1beta2/revision_types.proto package content.v1beta2
+message Revision {
+  uint32 number = 1;
+  uint32 release_date = 2;
+  .content.v1beta2.Revision.RevisionStatus status = 3;
+  uint32 checksum = 4;
+  string name = 5;
+  enum RevisionStatus { REVISION_STATUS_INVALID=0, REVISION_STATUS_DRAFT=1, REVISION_STATUS_PUBLISHED=2, REVISION_STATUS_REJECTED=3 }
+}
+message RevisionIdentity {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+// FILE v1beta2/notifications_api.proto package content.v1beta2
+message SendNotificationsRequest {
+  string importer_id = 1;
+  repeated .content.v1beta2.RawNotification raw_notifications = 2;
+  repeated .content.v1beta2.PredefinedNotification predefined_notifications = 3;
+}
+message SendNotificationsResponse {
+}
+service NotificationsAPI {
+  rpc SendNotifications(.content.v1beta2.SendNotificationsRequest) returns (.content.v1beta2.SendNotificationsResponse);
+}
+// FILE v1beta2/accounts_api.proto package content.v1beta2
+message FindLoggedInAccountsRequest {
+}
+message FindLoggedInAccountsResponse {
+  repeated .content.v1beta2.Account accounts = 1;
+}
+message SwitchAccountRequest {
+  string email = 1;
+}
+message SwitchAccountResponse {
+}
+service AccountsAPI {
+  rpc SwitchAccount(.content.v1beta2.SwitchAccountRequest) returns (.content.v1beta2.SwitchAccountResponse);
+  rpc FindLoggedInAccounts(.content.v1beta2.FindLoggedInAccountsRequest) returns (.content.v1beta2.FindLoggedInAccountsResponse);
+}
+// FILE v1beta2/configuration_types.proto package content.v1beta2
+message Configuration {
+  bool enabled = 1;
+  repeated .content.v1beta2.Configuration.Feature features = 2;
+  message Option {
+    string code = 1;
+    string name = 2;
+    bool is_default = 3;
+  }
+  message Feature {
+    string code = 1;
+    string name = 2;
+    bool is_optional = 3;
+    bool auto_include = 4;
+    bool controls_meshes = 5;
+    bool controls_materials = 6;
+    repeated .content.v1beta2.Configuration.Option options = 7;
+  }
+}
+// FILE v1beta2/materials_api.proto package content.v1beta2
+message CancelMaterialGenerationRequest {
+  string id = 1;
+}
+message CancelMaterialGenerationResponse {
+}
+message DownloadMaterialRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bytes preview_image = 4;
+  double normal_intensity = 5;
+  double roughness_intensity = 6;
+}
+message DownloadMaterialResponse {
+}
+service MaterialsAPI {
+  rpc CancelMaterialGeneration(.content.v1beta2.CancelMaterialGenerationRequest) returns (.content.v1beta2.CancelMaterialGenerationResponse);
+  rpc DownloadMaterial(.content.v1beta2.DownloadMaterialRequest) returns (.content.v1beta2.DownloadMaterialResponse);
+}
+// FILE v1beta2/notifications_types.proto package content.v1beta2
+enum NotificationType { NOTIFICATION_TYPE_INVALID=0, NOTIFICATION_TYPE_DEBUG=1, NOTIFICATION_TYPE_INFO=2, NOTIFICATION_TYPE_ERROR=3, NOTIFICATION_TYPE_WARNING=4, NOTIFICATION_TYPE_SUCCESS=5 }
+message RawNotification {
+  .content.v1beta2.NotificationType type = 1;
+  string message = 2;
+}
+message PredefinedNotification {
+  .content.v1beta2.NotificationType type = 1;
+  .content.v1beta2.ImportingBrokenPackageNotificationMessage importing_broken_package = 2;
+}
+message ImportingBrokenPackageNotificationMessage {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+// FILE v1beta2/ai_content_types.proto package content.v1beta2
+message GenerationOperation {
+  string id = 1;
+  string user = 2;
+  string error = 3;
+  .content.v1beta2.GenerationOperation.State state = 4;
+  uint32 progress = 5;
+  string albedo_uri = 6;
+  string preview_uri = 7;
+  string normal_map_uri = 8;
+  string vrscene_uri = 9;
+  string roughness_uri = 10;
+  string glb_uri = 11;
+  .content.v1beta2.GenerationOperation.Type type = 12;
+  string metallic_uri = 13;
+  enum State { STATE_INVALID=0, STATE_ACTIVE=1, STATE_PENDING=2, STATE_CANCELING=3, STATE_CANCELED=4, STATE_COMPLETED=5, STATE_FAILED=6, STATE_TIMEOUT=7 }
+  enum Type { TYPE_INVALID=0, TYPE_MODEL=1, TYPE_MATERIAL=2 }
+}
+// FILE v1beta2/selection_types.proto package content.v1beta2
+message PackageIdentifier {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+message PackageSelectionInfo {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  .content.v1beta2.PackageSelectionInfo.PackageAvailabilityStatus availability = 3;
+  uint32 available_revision_number = 4;
+  enum PackageAvailabilityStatus { PACKAGE_AVAILABILITY_STATUS_INVALID=0, PACKAGE_AVAILABILITY_STATUS_READY_TO_PURCHASE=1, PACKAGE_AVAILABILITY_STATUS_READY_TO_DOWNLOAD=2, PACKAGE_AVAILABILITY_STATUS_READY_TO_IMPORT=3, PACKAGE_AVAILABILITY_STATUS_DOWNLOADING=4, PACKAGE_AVAILABILITY_STATUS_UNABLE_TO_DOWNLOAD=5, PACKAGE_AVAILABILITY_STATUS_READY_TO_UPDATE=6 }
+}
+// FILE v1beta2/tag_types.proto package content.v1beta2
+enum VisibilityOption { VISIBILITY_OPTION_INVALID=0, VISIBILITY_OPTION_INVISIBLE=1, VISIBILITY_OPTION_VISIBLE=2, VISIBILITY_OPTION_BOTH=3 }
+message Tag {
+  uint32 id = 1;
+  repeated uint32 parents = 2;
+  .content.v1beta2.Tag.TagPresentation presentation = 3;
+  repeated uint32 order = 4;
+  .content.v1beta2.Tag.TaggedPackages tagged_packages = 5;
+  message TagPresentation {
+    string label = 1;
+    string color = 2;
+    bool well_known = 3;
+    string preview = 4;
+    bool visibility = 5;
+    string description = 6;
+    string logo = 7;
+    string hero = 8;
+    string translated_label = 9;
+    bool internal = 10;
+    bool custom = 11;
+    bool downloadable = 12;
+  }
+  message TaggedPackages {
+    bool downloaded = 1;
+    bool liked = 2;
+    bool purchased = 3;
+    bool for_update = 4;
+    bool custom = 5;
+  }
+}
+// FILE v1beta2/ai_content_api.proto package content.v1beta2
+message CancelContentGenerationRequest {
+  string id = 1;
+}
+message CancelContentGenerationResponse {
+}
+message DownloadGeneratedModelRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bytes preview_image = 4;
+}
+message DownloadGeneratedModelResponse {
+}
+message DownloadGeneratedMaterialRequest {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  bytes preview_image = 4;
+  double normal_intensity = 5;
+  double roughness_intensity = 6;
+}
+message DownloadGeneratedMaterialResponse {
+}
+service AIContentAPI {
+  rpc CancelContentGeneration(.content.v1beta2.CancelContentGenerationRequest) returns (.content.v1beta2.CancelContentGenerationResponse);
+  rpc DownloadGeneratedModel(.content.v1beta2.DownloadGeneratedModelRequest) returns (.content.v1beta2.DownloadGeneratedModelResponse);
+  rpc DownloadGeneratedMaterial(.content.v1beta2.DownloadGeneratedMaterialRequest) returns (.content.v1beta2.DownloadGeneratedMaterialResponse);
+}
+// FILE v1beta2/collections_api.proto package content.v1beta2
+message CreateCollectionRequest {
+  string name = 1;
+}
+message CreateCollectionResponse {
+  .content.v1beta2.Collection collection = 1;
+}
+message UpdateCollectionRequest {
+  string id = 1;
+  string name = 2;
+}
+message UpdateCollectionResponse {
+  .content.v1beta2.Collection collection = 1;
+}
+message DeleteCollectionRequest {
+  string id = 1;
+}
+message DeleteCollectionResponse {
+}
+message FindCollectionsRequest {
+}
+message FindCollectionsResponse {
+  repeated .content.v1beta2.Collection collections = 1;
+}
+service CollectionsAPI {
+  rpc CreateCollection(.content.v1beta2.CreateCollectionRequest) returns (.content.v1beta2.CreateCollectionResponse);
+  rpc UpdateCollection(.content.v1beta2.UpdateCollectionRequest) returns (.content.v1beta2.UpdateCollectionResponse);
+  rpc DeleteCollection(.content.v1beta2.DeleteCollectionRequest) returns (.content.v1beta2.DeleteCollectionResponse);
+  rpc FindCollections(.content.v1beta2.FindCollectionsRequest) returns (.content.v1beta2.FindCollectionsResponse);
+}
+// FILE v1beta2/revisions_api.proto package content.v1beta2
+message PublishRevisionsRequest {
+  repeated .content.v1beta2.RevisionIdentity revisions = 1;
+}
+message PublishRevisionsResponse {
+}
+message RejectRevisionsRequest {
+  repeated .content.v1beta2.RevisionIdentity revisions = 1;
+}
+message RejectRevisionsResponse {
+}
+message CreateFromRevisionRequest {
+  .content.v1beta2.RevisionIdentity src_revision = 1;
+}
+message CreateFromRevisionResponse {
+  uint32 new_revision_number = 1;
+}
+message DeleteRevisionRequest {
+  .content.v1beta2.RevisionIdentity revision = 1;
+}
+message DeleteRevisionResponse {
+  bool package_deleted = 1;
+}
+message DeleteObsoleteRevisionsRequest {
+}
+message DeleteObsoleteRevisionsResponse {
+}
+service RevisionsAPI {
+  rpc PublishRevisions(.content.v1beta2.PublishRevisionsRequest) returns (.content.v1beta2.PublishRevisionsResponse);
+  rpc RejectRevisions(.content.v1beta2.RejectRevisionsRequest) returns (.content.v1beta2.RejectRevisionsResponse);
+  rpc CreateFromRevision(.content.v1beta2.CreateFromRevisionRequest) returns (.content.v1beta2.CreateFromRevisionResponse);
+  rpc DeleteRevision(.content.v1beta2.DeleteRevisionRequest) returns (.content.v1beta2.DeleteRevisionResponse);
+  rpc DeleteObsoleteRevisions(.content.v1beta2.DeleteObsoleteRevisionsRequest) returns (.content.v1beta2.DeleteObsoleteRevisionsResponse);
+}
+// FILE v1beta2/selection_api.proto package content.v1beta2
+message SelectRequest {
+  string importer_id = 1;
+  string client_id = 2;
+  repeated .content.v1beta2.PackageIdentifier packages = 3;
+}
+message SelectResponse {
+}
+message EnableSelectionRequest {
+  string importer_id = 1;
+  string client_id = 2;
+}
+message EnableSelectionResponse {
+}
+message DisableSelectionRequest {
+  string importer_id = 1;
+  string client_id = 2;
+}
+message DisableSelectionResponse {
+}
+message GetStateRequest {
+  string importer_id = 1;
+}
+message GetStateResponse {
+  bool is_active = 1;
+  repeated .content.v1beta2.PackageSelectionInfo packages = 2;
+}
+message WaitForSelectionUpdatesRequest {
+  string importer_id = 1;
+  string client_id = 2;
+}
+message WaitForSelectionUpdatesResponse {
+  string importer_id = 1;
+  bool is_active = 2;
+  repeated .content.v1beta2.PackageSelectionInfo packages = 3;
+}
+service SelectionAPI {
+  rpc Select(.content.v1beta2.SelectRequest) returns (.content.v1beta2.SelectResponse);
+  rpc EnableSelection(.content.v1beta2.EnableSelectionRequest) returns (.content.v1beta2.EnableSelectionResponse);
+  rpc DisableSelection(.content.v1beta2.DisableSelectionRequest) returns (.content.v1beta2.DisableSelectionResponse);
+  rpc GetState(.content.v1beta2.GetStateRequest) returns (.content.v1beta2.GetStateResponse);
+  rpc WaitForSelectionUpdates(.content.v1beta2.WaitForSelectionUpdatesRequest) returns (stream .content.v1beta2.WaitForSelectionUpdatesResponse);
+}
+// FILE v1beta2/payments_api.proto package content.v1beta2
+message GetCreditsBalanceRequest {
+}
+message GetCreditsBalanceResponse {
+  double total_remaining = 1;
+  .content.v1beta2.GetCreditsBalanceResponse.CreditSummary named = 2;
+  .content.v1beta2.GetCreditsBalanceResponse.CreditSummary shared = 3;
+  message CreditSummary {
+    double total = 1;
+    double consumed = 2;
+    double reserved = 3;
+    double remaining = 4;
+    string next_reset = 5;
+  }
+}
+message GetOperationTypesRequest {
+}
+message GetOperationTypesResponse {
+  repeated .content.v1beta2.GetOperationTypesResponse.OperationType operation_types = 1;
+  message OperationType {
+    string name = 1;
+    string description = 2;
+    double credits_per_unit = 3;
+  }
+}
+message PurchasePackageRequest {
+  string package_id = 1;
+}
+message PurchasePackageResponse {
+  .content.v1beta2.PurchasePackageResponse.ErrorCode error_code = 1;
+  enum ErrorCode { ERROR_CODE_INVALID=0, ERROR_CODE_INTERNAL=1, ERROR_CODE_PACKAGE_NOT_FOUND=2, ERROR_CODE_INSUFFICIENT_BALANCE=3, ERROR_CODE_PURCHASE_FREE_PACKAGE=4, ERROR_CODE_PURCHASE_ALREADY_PURCHASED_PACKAGE=5 }
+}
+service PaymentsAPI {
+  rpc GetCreditsBalance(.content.v1beta2.GetCreditsBalanceRequest) returns (.content.v1beta2.GetCreditsBalanceResponse);
+  rpc GetOperationTypes(.content.v1beta2.GetOperationTypesRequest) returns (.content.v1beta2.GetOperationTypesResponse);
+  rpc PurchasePackage(.content.v1beta2.PurchasePackageRequest) returns (.content.v1beta2.PurchasePackageResponse);
+}
+// FILE v1beta2/analytics_types.proto package content.v1beta2
+message AnalyticsEvent {
+  .content.v1beta2.AnalyticsEventOrigin origin = 1;
+  .content.v1beta2.DownloadAnalyticsEvent download = 2;
+  .content.v1beta2.ImportAnalyticsEvent import = 3;
+  .content.v1beta2.RenderAnalyticsEvent render = 4;
+  .content.v1beta2.PurchaseAnalyticsEvent purchase = 5;
+  .content.v1beta2.GenericAnalyticsEvent generic = 6;
+}
+message DownloadAnalyticsEvent {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+message ImportAnalyticsEvent {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+message RenderAnalyticsEvent {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+message PurchaseAnalyticsEvent {
+  string package_id = 1;
+}
+message GenericAnalyticsEvent {
+  string type = 1;
+  repeated .content.v1beta2.GenericAnalyticsEvent.PropsEntry props = 2;
+  message PropsEntry {
+    string key = 1;
+    string value = 2;
+  }
+}
+message AnalyticsEventOrigin {
+  string os = 1;
+  string machine_id = 2;
+  string session_id = 3;
+  string platform_name = 4;
+  string platform_version = 5;
+  string plugin_name = 6;
+  string plugin_version = 7;
+  string cosmos_version = 8;
+  string cosmos_build = 9;
+  repeated .content.v1beta2.AnalyticsEventOrigin.PropsEntry props = 10;
+  repeated .content.v1beta2.AnalyticsEventOrigin.OptionalPropsEntry optional_props = 11;
+  message PropsEntry {
+    string key = 1;
+    string value = 2;
+  }
+  message OptionalPropsEntry {
+    string key = 1;
+    string value = 2;
+  }
+}
+// FILE v1beta2/import_types.proto package content.v1beta2
+enum PlacementMode { PLACEMENT_MODE_INVALID=0, PLACEMENT_MODE_SCENE_CENTER=1, PLACEMENT_MODE_MOUSE_CURSOR=2 }
+message ImporterInfo {
+  string name = 1;
+  string importer_id = 2;
+  uint32 process_id = 3;
+}
+message ImportOptions {
+  bool triplanar_mapping_deprecated = 1;
+  bool real_world_scale_deprecated = 2;
+  repeated .content.v1beta2.ImportOptions.Option options = 3;
+  enum Option { OPTION_INVALID=0, OPTION_TRIPLANAR_MAPPING=1, OPTION_REAL_WORLD_SCALE=2, OPTION_LINK_TO_FAMILY=3, OPTION_PLACE_ON_SURFACE=4, OPTION_PLACE_ON_BASE_PLANE=5, OPTION_PLACE_ON_ACTIVE_WORK_PLANE=6 }
+}
+message SupportedFeatures {
+  bool presets = 1;
+  bool materials = 2;
+  bool decals = 3;
+  bool procedural_materials = 4;
+  bool enmesh = 5;
+  bool vrscene = 6;
+  bool ies_lights = 7;
+  bool displacement_materials = 8;
+  bool asset_set = 9;
+  bool custom_assets = 10;
+  bool non_standard_assets = 11;
+  .content.v1beta2.MultipleImport multiple_import = 12;
+  .content.v1beta2.Animation animation = 13;
+  bool require_related_packages = 14;
+  bool material_variants = 15;
+  bool scans = 16;
+  bool ai_materials = 17;
+  bool sets = 18;
+  bool parallax = 19;
+}
+message MultipleImport {
+  bool models = 1;
+  bool materials = 2;
+  bool hdris = 3;
+}
+message Animation {
+  bool axyz_rigged = 1;
+  bool axyz_ambient = 2;
+  bool axyz_4d_animated = 3;
+  bool axyz_4d_walking = 4;
+  bool axyz_vehicles = 5;
+}
+message SoftwareInfo {
+  string name = 1;
+  string version = 2;
+  string icon_url = 3;
+}
+message SupportedSoftwareInfo {
+  string name = 1;
+  string min_version = 2;
+}
+message ImporterDescription {
+  .content.v1beta2.ImporterInfo importer = 1;
+  .content.v1beta2.SoftwareInfo plugin = 2;
+  .content.v1beta2.SoftwareInfo host = 3;
+  .content.v1beta2.ImportOptions supported_import_options = 4;
+  .content.v1beta2.SupportedFeatures supported_features = 5;
+}
+message PackageIdentity {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  string variant_id = 3;
+}
+// FILE v1beta2/import_api.proto package content.v1beta2
+message ImportRequest {
+  .content.v1beta2.ImporterInfo importer = 1;
+  string package_id = 2;
+  uint32 revision_number = 3;
+  .content.v1beta2.ImportOptions options = 4;
+  string meta = 5;
+  string variant_id = 6;
+  repeated .content.v1beta2.PackageIdentity packages = 7;
+  bool unverified = 8;
+  .content.v1beta2.PlacementMode placement_mode = 9;
+}
+message ImportResponse {
+  .content.v1beta2.ImportResponse.Status status = 1;
+  string message = 2;
+  enum Status { STATUS_INVALID=0, STATUS_OK=1, STATUS_PREREQUISITES_NOT_MET=2, STATUS_IMPORTER_DISCONNECTED=3, STATUS_STORAGE_UNAVAILABLE=4 }
+}
+message WaitForImportRequest {
+  .content.v1beta2.ImporterInfo importer = 1;
+  .content.v1beta2.SoftwareInfo plugin = 2;
+  .content.v1beta2.SoftwareInfo host = 3;
+  .content.v1beta2.ImportOptions supported_import_options = 4;
+  .content.v1beta2.SupportedFeatures supported_features = 5;
+  repeated .content.v1beta2.SupportedSoftwareInfo supported_custom_assets_renderers = 6;
+}
+message WaitForImportResponse {
+  .content.v1beta2.ImporterInfo importer = 1;
+  string package_id = 2;
+  uint32 revision_number = 3;
+  .content.v1beta2.ImportOptions options = 4;
+  string meta = 5;
+  string variant_id = 6;
+  repeated .content.v1beta2.PackageIdentity packages = 7;
+  .content.v1beta2.PlacementMode placement_mode = 8;
+}
+message ListImportersRequest {
+}
+message ListImportersResponse {
+  repeated .content.v1beta2.ImporterDescription importers = 1;
+}
+message CancelRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  string variant_id = 3;
+}
+message CancelResponse {
+}
+message WaitForCancelRequest {
+  .content.v1beta2.ImporterInfo importer = 1;
+}
+message WaitForCancelResponse {
+  .content.v1beta2.ImporterInfo importer = 1;
+  string package_id = 2;
+  uint32 revision_number = 3;
+  string variant_id = 4;
+}
+message UpdateImporterRequest {
+  string id = 1;
+  string name = 2;
+}
+message UpdateImporterResponse {
+}
+service ImportAPI {
+  rpc Import(.content.v1beta2.ImportRequest) returns (.content.v1beta2.ImportResponse);
+  rpc WaitForImport(.content.v1beta2.WaitForImportRequest) returns (stream .content.v1beta2.WaitForImportResponse);
+  rpc ListImporters(.content.v1beta2.ListImportersRequest) returns (.content.v1beta2.ListImportersResponse);
+  rpc Cancel(.content.v1beta2.CancelRequest) returns (.content.v1beta2.CancelResponse);
+  rpc WaitForCancel(.content.v1beta2.WaitForCancelRequest) returns (stream .content.v1beta2.WaitForCancelResponse);
+  rpc UpdateImporter(.content.v1beta2.UpdateImporterRequest) returns (.content.v1beta2.UpdateImporterResponse);
+}
+// FILE v1beta2/application_state_api.proto package content.v1beta2
+message WaitForStateChangeRequest {
+  repeated .content.v1beta2.ApplicationStateChange changes = 1;
+}
+message WaitForStateChangeResponse {
+  .content.v1beta2.ApplicationStateChange changed_state = 1;
+  .content.v1beta2.ApplicationState current_state = 2;
+}
+message GetApplicationStateRequest {
+}
+message GetApplicationStateResponse {
+  .content.v1beta2.ApplicationState current_state = 1;
+}
+message ReconnectRequest {
+}
+message ReconnectResponse {
+}
+message CheckForUpdateRequest {
+}
+message CheckForUpdateResponse {
+  bool update_available = 1;
+}
+message PerformUpdateRequest {
+}
+message PerformUpdateResponse {
+}
+message ChangeWorkingDirectoryRequest {
+  string working_directory = 1;
+}
+message ChangeWorkingDirectoryResponse {
+  .content.v1beta2.ChangeWorkingDirectoryResponse.Status status = 1;
+  enum Status { STATUS_INVALID=0, STATUS_OK=1, STATUS_NOT_EXIST=2, STATUS_PERMISSION_DENIED=3, STATUS_DOWNLOAD_IN_PROGRESS=4 }
+}
+message SetProxyRequest {
+  .content.v1beta2.ProxySettings proxy_settings = 1;
+}
+message SetProxyResponse {
+  .content.v1beta2.SetProxyResponse.ProxyStatus status = 1;
+  repeated string failed_probes = 2;
+  enum ProxyStatus { PROXY_STATUS_INVALID=0, PROXY_STATUS_VALID=1 }
+}
+message OpenResourceRequest {
+  .content.v1beta2.OpenResourceRequest.ResourceType type = 1;
+  enum ResourceType { RESOURCE_TYPE_INVALID=0, RESOURCE_TYPE_LOG_DIRECTORY=1, RESOURCE_TYPE_UPDATES_DIRECTORY=2, RESOURCE_TYPE_DB_DIRECTORY=3 }
+}
+message OpenResourceResponse {
+}
+message OpenSelectionDialogRequest {
+  .content.v1beta2.OpenSelectionDialogRequest.DialogType type = 1;
+  string directory = 2;
+  .content.v1beta2.OpenSelectionDialogRequest.FileFilter file_filter = 3;
+  enum DialogType { DIALOG_TYPE_INVALID=0, DIALOG_TYPE_DIRECTORY=1, DIALOG_TYPE_FILE=2, DIALOG_TYPE_MULTIPLE_FILES=3 }
+  message FileFilter {
+    string name = 1;
+    repeated string patterns = 2;
+    bool case_fold = 3;
+  }
+}
+message OpenSelectionDialogResponse {
+  repeated string paths = 1;
+}
+message SetOnlineStatusRequest {
+  bool is_online = 1;
+}
+message SetOnlineStatusResponse {
+}
+service ApplicationStateAPI {
+  rpc WaitForStateChange(.content.v1beta2.WaitForStateChangeRequest) returns (stream .content.v1beta2.WaitForStateChangeResponse);
+  rpc GetApplicationState(.content.v1beta2.GetApplicationStateRequest) returns (.content.v1beta2.GetApplicationStateResponse);
+  rpc Reconnect(.content.v1beta2.ReconnectRequest) returns (.content.v1beta2.ReconnectResponse);
+  rpc CheckForUpdate(.content.v1beta2.CheckForUpdateRequest) returns (.content.v1beta2.CheckForUpdateResponse);
+  rpc PerformUpdate(.content.v1beta2.PerformUpdateRequest) returns (.content.v1beta2.PerformUpdateResponse);
+  rpc ChangeWorkingDirectory(.content.v1beta2.ChangeWorkingDirectoryRequest) returns (.content.v1beta2.ChangeWorkingDirectoryResponse);
+  rpc SetProxy(.content.v1beta2.SetProxyRequest) returns (.content.v1beta2.SetProxyResponse);
+  rpc OpenResource(.content.v1beta2.OpenResourceRequest) returns (.content.v1beta2.OpenResourceResponse);
+  rpc OpenSelectionDialog(.content.v1beta2.OpenSelectionDialogRequest) returns (.content.v1beta2.OpenSelectionDialogResponse);
+  rpc SetOnlineStatus(.content.v1beta2.SetOnlineStatusRequest) returns (.content.v1beta2.SetOnlineStatusResponse);
+}
+// FILE v1beta2/tags_api.proto package content.v1beta2
+message FindAllTagsRequest {
+  .content.v1beta2.VisibilityOption visibility_option = 1;
+}
+message FindAllTagsResponse {
+  repeated .content.v1beta2.Tag tags = 1;
+}
+message FindRootTagsRequest {
+  .content.v1beta2.VisibilityOption visibility_option = 1;
+}
+message FindRootTagsResponse {
+  repeated .content.v1beta2.Tag tags = 1;
+}
+message FindChildTagsRequest {
+  uint32 tag_id = 1;
+  .content.v1beta2.VisibilityOption visibility_option = 2;
+}
+message FindChildTagsResponse {
+  repeated .content.v1beta2.Tag tags = 1;
+}
+message CreateTagsRequest {
+  repeated .content.v1beta2.CreateTagsRequest.TagOptions tags = 1;
+  repeated .content.v1beta2.CreateTagsRequest.ParentOptions parents = 2;
+  message TagOptions {
+    string label = 1;
+    string color = 2;
+    bool well_known = 3;
+    string preview = 4;
+    bool visibility = 5;
+    string description = 6;
+    string logo = 7;
+    string hero = 8;
+    bool internal = 9;
+    bool downloadable = 10;
+  }
+  message ParentOptions {
+    uint32 parent_id = 1;
+  }
+}
+message CreateTagsResponse {
+  repeated .content.v1beta2.Tag tags = 1;
+}
+message LinkTagsRequest {
+  repeated uint32 tag_ids = 1;
+  uint32 parent_id = 2;
+}
+message LinkTagsResponse {
+}
+message UnlinkTagsRequest {
+  repeated uint32 tag_ids = 1;
+  uint32 parent_id = 2;
+}
+message UnlinkTagsResponse {
+}
+message UpdateTagRequest {
+  .content.v1beta2.UpdateTagRequest.TagSelector selector = 1;
+  string label = 2;
+  string color = 3;
+  bool well_known = 4;
+  string preview = 5;
+  bool is_null_preview = 6;
+  repeated uint32 parents = 7;
+  bool visibility = 8;
+  string description = 9;
+  string hero = 10;
+  string logo = 11;
+  bool internal = 12;
+  bool downloadable = 13;
+  message TagSelector {
+    uint32 id = 1;
+  }
+}
+message UpdateTagResponse {
+}
+message DeleteTagRequest {
+  uint32 tag_id = 1;
+}
+message DeleteTagResponse {
+  repeated .content.v1beta2.DeleteTagResponse.ChildTag child_tags = 1;
+  repeated .content.v1beta2.DeleteTagResponse.AssignedPackage assigned_packages = 2;
+  message ChildTag {
+    uint32 id = 1;
+    string label = 2;
+  }
+  message AssignedPackage {
+    string id = 1;
+    string label = 2;
+  }
+}
+message DeleteTagImageRequest {
+  uint32 tag_id = 1;
+  string image_path = 2;
+}
+message DeleteTagImageResponse {
+}
+message MoveTagRequest {
+  uint32 tag_id = 1;
+  uint32 sibling_id = 2;
+  uint32 parent_id = 3;
+  .content.v1beta2.MoveTagRequest.Direction direction = 5;
+  enum Direction { DIRECTION_INVALID=0, DIRECTION_BEFORE=1, DIRECTION_AFTER=2, DIRECTION_TOP=3, DIRECTION_BOTTOM=4 }
+}
+message MoveTagResponse {
+  uint32 tag_order = 1;
+  bool needs_refresh = 2;
+}
+service TagsAPI {
+  rpc FindAllTags(.content.v1beta2.FindAllTagsRequest) returns (.content.v1beta2.FindAllTagsResponse);
+  rpc FindRootTags(.content.v1beta2.FindRootTagsRequest) returns (.content.v1beta2.FindRootTagsResponse);
+  rpc FindChildTags(.content.v1beta2.FindChildTagsRequest) returns (.content.v1beta2.FindChildTagsResponse);
+  rpc CreateTags(.content.v1beta2.CreateTagsRequest) returns (.content.v1beta2.CreateTagsResponse);
+  rpc LinkTags(.content.v1beta2.LinkTagsRequest) returns (.content.v1beta2.LinkTagsResponse);
+  rpc UnlinkTags(.content.v1beta2.UnlinkTagsRequest) returns (.content.v1beta2.UnlinkTagsResponse);
+  rpc UpdateTag(.content.v1beta2.UpdateTagRequest) returns (.content.v1beta2.UpdateTagResponse);
+  rpc DeleteTag(.content.v1beta2.DeleteTagRequest) returns (.content.v1beta2.DeleteTagResponse);
+  rpc DeleteTagImage(.content.v1beta2.DeleteTagImageRequest) returns (.content.v1beta2.DeleteTagImageResponse);
+  rpc MoveTag(.content.v1beta2.MoveTagRequest) returns (.content.v1beta2.MoveTagResponse);
+}
+// FILE v1beta2/application_state_types.proto package content.v1beta2
+enum ApplicationStateChange { APPLICATION_STATE_CHANGE_INVALID=0, APPLICATION_STATE_CHANGE_STOPPING=1, APPLICATION_STATE_CHANGE_UPDATE_AVAILABLE=2, APPLICATION_STATE_CHANGE_ONLINE=3, APPLICATION_STATE_CHANGE_OFFLINE=4, APPLICATION_STATE_CHANGE_DOWNLOAD_PROGRESS=5, APPLICATION_STATE_CHANGE_USER_AUTHENTICATION=6, APPLICATION_STATE_CHANGE_IMPORTERS=7, APPLICATION_STATE_CHANGE_PURCHASE=8, APPLICATION_STATE_CHANGE_DOWNLOAD_COLLECTION=9, APPLICATION_STATE_CHANGE_NOTIFICATIONS=10, APPLICATION_STATE_CHANGE_PACKAGES_UPDATES_AVAILABLE=11, APPLICATION_STATE_CHANGE_GENERATION_OPERATIONS=12 }
+enum ProxyType { PROXY_TYPE_INVALID=0, PROXY_TYPE_AUTO=1, PROXY_TYPE_HTTP=2, PROXY_TYPE_NONE=3 }
+message RunningStateInfo {
+  .content.v1beta2.RunningStateInfo.RunningState running_state = 1;
+  enum RunningState { RUNNING_STATE_INVALID=0, RUNNING_STATE_INITIALIZING=1, RUNNING_STATE_RUNNING=2, RUNNING_STATE_STOPPING=3 }
+}
+message VersionInfo {
+  string current_version = 1;
+  string build_number = 2;
+  string latest_version = 3;
+  string release_notes_url = 4;
+  string download_url = 5;
+}
+message ConfigurationInfo {
+  string working_directory = 1;
+  string frontend_url = 2;
+  string backend_url = 3;
+  string log_file_directory = 4;
+  string default_working_directory = 5;
+  bool offline = 6;
+  string port = 7;
+  string tls_port = 8;
+}
+message ConnectionInfo {
+  bool online = 1;
+}
+message ApiInfo {
+  string version = 1;
+}
+message DownloadingPackageState {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  uint32 total_size = 3;
+  uint32 downloaded_size = 4;
+  bool system_triggered = 5;
+}
+message DownloadingCollectionState {
+  string id = 1;
+  uint32 total_size_deprecated = 2;
+  uint32 downloaded_size_deprecated = 3;
+  uint32 total_packages = 4;
+  uint32 downloaded_packages = 5;
+  uint64 total_size = 6;
+  uint64 downloaded_size = 7;
+  bool system_triggered = 8;
+}
+message DownloadState {
+  repeated .content.v1beta2.DownloadingPackageState downloading_packages = 1;
+  repeated .content.v1beta2.DownloadingCollectionState downloading_collections = 2;
+}
+message UserAuthState {
+  .content.v1beta2.UserAuthState.User user = 1;
+  .content.v1beta2.UserAuthState.License license = 2;
+  bool supports_ula = 3;
+  repeated .content.v1beta2.UserAuthState.ProductLicense licenses = 4;
+  message User {
+    bool anonymous = 1;
+    string user_id = 2;
+    string email = 3;
+    string first_name = 4;
+    string last_name = 5;
+    repeated string features = 6;
+    string avatar_url = 7;
+  }
+  message License {
+    string product_code = 1;
+    string license_type = 2;
+    string billing_cycle = 3;
+    string product_sub_type = 4;
+  }
+  message ProductLicense {
+    uint32 app_id = 1;
+    string name = 2;
+  }
+}
+message OsUser {
+  string username = 1;
+  bool is_admin = 2;
+  string os_name = 3;
+}
+message ProxySettings {
+  .content.v1beta2.ProxyType type = 1;
+  string host = 2;
+  int32 port = 3;
+  string username = 4;
+  string password = 5;
+}
+message Importers {
+  repeated .content.v1beta2.ImporterDescription importers = 1;
+}
+message PurchaseStatus {
+  string package_id = 1;
+  .content.v1beta2.PurchaseStatus.PurchaseError purchase_error = 2;
+  enum PurchaseError { PURCHASE_ERROR_INVALID=0, PURCHASE_ERROR_NONE=1, PURCHASE_ERROR_INTERNAL=2, PURCHASE_ERROR_PACKAGE_NOT_FOUND=3, PURCHASE_ERROR_INSUFFICIENT_BALANCE=4, PURCHASE_ERROR_PURCHASE_FREE_PACKAGE=5, PURCHASE_ERROR_PURCHASE_ALREADY_PURCHASED_PACKAGE=6 }
+}
+message DownloadCollectionStatus {
+  uint32 tag_id = 1;
+  .content.v1beta2.DownloadCollectionStatus.Error error = 2;
+  enum Error { ERROR_INVALID=0, ERROR_NONE=1, ERROR_EMPTY_COLLECTION=2 }
+}
+message ApplicationStateNotifications {
+  repeated .content.v1beta2.RawNotification raw_notifications = 1;
+  repeated .content.v1beta2.PredefinedNotification predefined_notifications = 2;
+}
+message ApplicationStateGenerationOperations {
+  repeated .content.v1beta2.GenerationOperation operations = 1;
+}
+message Frontend {
+  repeated .content.v1beta2.Frontend.FeatureVisibilityEntry feature_visibility = 1;
+  message FeatureVisibilityEntry {
+    string key = 1;
+    bool value = 2;
+  }
+}
+message EnvironmentVariables {
+  repeated .content.v1beta2.EnvironmentVariables.ChaosEntry chaos = 1;
+  repeated .content.v1beta2.EnvironmentVariables.CosmosEntry cosmos = 2;
+  message ChaosEntry {
+    string key = 1;
+    string value = 2;
+  }
+  message CosmosEntry {
+    string key = 1;
+    string value = 2;
+  }
+}
+message ApplicationState {
+  .content.v1beta2.RunningStateInfo running_state_info = 1;
+  .content.v1beta2.VersionInfo version_info = 2;
+  .content.v1beta2.ConfigurationInfo configuration_info = 3;
+  .content.v1beta2.ConnectionInfo connection_info = 4;
+  .content.v1beta2.ApiInfo api_info = 5;
+  .content.v1beta2.DownloadState download_state = 6;
+  .content.v1beta2.UserAuthState user_auth_state = 7;
+  .content.v1beta2.OsUser os_user = 8;
+  .content.v1beta2.ProxySettings proxy_settings = 9;
+  .content.v1beta2.Importers importers = 10;
+  .content.v1beta2.PurchaseStatus purchase_status = 11;
+  .content.v1beta2.DownloadCollectionStatus download_collection_status = 12;
+  .content.v1beta2.ApplicationStateNotifications notifications = 13;
+  bool packages_updates_available = 14;
+  .content.v1beta2.ApplicationStateGenerationOperations generation_operations = 15;
+  .content.v1beta2.Frontend frontend = 16;
+  .content.v1beta2.EnvironmentVariables environment_variables = 17;
+}
+// FILE v1beta2/package_types.proto package content.v1beta2
+enum PackageInfo { PACKAGE_INFO_INVALID=0, PACKAGE_INFO_PLACEMENT=1, PACKAGE_INFO_TEXTURE_DIMENSIONS=2, PACKAGE_INFO_RANDOMIZATION=3, PACKAGE_INFO_LIGHTGEN=4, PACKAGE_INFO_LOW_POLY_OUTLINE=5, PACKAGE_INFO_ATTRIBUTES=6, PACKAGE_INFO_SAMPLE_SIZE=7, PACKAGE_INFO_PARALLAX_DIMENSIONS=8, PACKAGE_INFO_HDRI_EXPOSURE=9, PACKAGE_INFO_GENERATION=10 }
+enum FileFormat { FILE_FORMAT_INVALID=0, FILE_FORMAT_VRSCENE=1, FILE_FORMAT_GLTF=2, FILE_FORMAT_VRMESH=101, FILE_FORMAT_ALEMBIC=102, FILE_FORMAT_OPENVDB=103, FILE_FORMAT_VRMAT=201, FILE_FORMAT_MTLX=202, FILE_FORMAT_TX=301, FILE_FORMAT_PNG=302, FILE_FORMAT_JPG=303, FILE_FORMAT_VRSCAN=401, FILE_FORMAT_IES=402, FILE_FORMAT_ASSET=403, FILE_FORMAT_MBC=501, FILE_FORMAT_JSON=601 }
+enum RepresentationInfo { REPRESENTATION_INFO_INVALID=0, REPRESENTATION_INFO_MATERIAL_ASSIGNMENT=1 }
+enum FileType { FILE_TYPE_INVALID=0, FILE_TYPE_UNKNOWN=1, FILE_TYPE_PACKAGE=2, FILE_TYPE_PREVIEW=3, FILE_TYPE_GEOMETRY=4, FILE_TYPE_MATERIAL=5, FILE_TYPE_TEXTURE=6, FILE_TYPE_VENDOR_LOGO=7, FILE_TYPE_LIGHT=8, FILE_TYPE_RESOURCE=9, FILE_TYPE_SETTINGS=10, FILE_TYPE_EXTRAS=11, FILE_TYPE_VRSCENE=12, FILE_TYPE_ASSET=13, FILE_TYPE_MATERIALS=14, FILE_TYPE_BACKWARD_INCOMPATIBLE_PLUGINS=15 }
+message FindPackagesFilterCriteria {
+  .content.v1beta2.FindPackagesFilterCriteria.Expression expression = 1;
+  repeated .content.v1beta2.Revision.RevisionStatus revisions_statuses = 2;
+  repeated .content.v1beta2.Package.PackageVisibilityStatus visibility_statuses = 3;
+  repeated .content.v1beta2.Package.PackageAvailabilityStatus availability_statuses = 4;
+  bool liked = 5;
+  bool paid = 6;
+  bool purchased = 7;
+  bool for_update = 8;
+  bool has_product_url = 9;
+  bool custom = 10;
+  bool primary = 11;
+  bool contains_variants = 12;
+  bool has_pair = 13;
+  string prompt = 14;
+  .content.v1beta2.FindPackagesFilterCriteria.Image image = 15;
+  string collection_id = 16;
+  message Image {
+    bytes data = 1;
+  }
+  message Expression {
+    .content.v1beta2.FindPackagesFilterCriteria.Expression.LogicalOperator operator = 1;
+    repeated .content.v1beta2.FindPackagesFilterCriteria.Expression.Condition conditions = 2;
+    repeated .content.v1beta2.FindPackagesFilterCriteria.Expression expressions = 3;
+    enum LogicalOperator { LOGICAL_OPERATOR_INVALID=0, LOGICAL_OPERATOR_AND=1, LOGICAL_OPERATOR_OR=2 }
+    message Condition {
+      .content.v1beta2.FindPackagesFilterCriteria.Expression.Condition.ComparisonOperator operator = 1;
+      uint32 tag = 2;
+      string name = 3;
+      string id = 4;
+      string variant_id = 5;
+      enum ComparisonOperator { COMPARISON_OPERATOR_INVALID=0, COMPARISON_OPERATOR_EQUAL=1, COMPARISON_OPERATOR_NOT_EQUAL=2 }
+    }
+  }
+}
+message FindPackagesOrderCriteria {
+  .content.v1beta2.FindPackagesOrderCriteria.OrderBy order_by = 1;
+  .content.v1beta2.FindPackagesOrderCriteria.OrderDirection direction = 2;
+  enum OrderBy { ORDER_BY_INVALID=0, ORDER_BY_DOWNLOADS=1, ORDER_BY_LAST_UPDATED=2, ORDER_BY_NAME=3 }
+  enum OrderDirection { ORDER_DIRECTION_INVALID=0, ORDER_DIRECTION_ASCENDING=1, ORDER_DIRECTION_DESCENDING=2 }
+}
+message FindPackagesLimitCriteria {
+  uint32 offset = 1;
+  uint32 items = 2;
+}
+message Package {
+  .content.v1beta2.Package.PackageVisibilityStatus visibility = 1;
+  .content.v1beta2.Package.PackageAvailabilityStatus availability = 2;
+  .content.v1beta2.Package.PackageIdentification identification = 3;
+  .content.v1beta2.Package.PackageDetails details = 4;
+  .content.v1beta2.Package.PackagePresentation presentation = 5;
+  .content.v1beta2.AvailableImportOptions available_import_options = 6;
+  enum PackageAvailabilityStatus { PACKAGE_AVAILABILITY_STATUS_INVALID=0, PACKAGE_AVAILABILITY_STATUS_READY_TO_PURCHASE=1, PACKAGE_AVAILABILITY_STATUS_READY_TO_DOWNLOAD=2, PACKAGE_AVAILABILITY_STATUS_READY_TO_IMPORT=3, PACKAGE_AVAILABILITY_STATUS_DOWNLOADING=4, PACKAGE_AVAILABILITY_STATUS_UNABLE_TO_DOWNLOAD=5, PACKAGE_AVAILABILITY_STATUS_READY_TO_UPDATE=6, PACKAGE_AVAILABILITY_STATUS_CREATING=7 }
+  enum PackageVisibilityStatus { PACKAGE_VISIBILITY_STATUS_INVALID=0, PACKAGE_VISIBILITY_STATUS_VISIBLE=1, PACKAGE_VISIBILITY_STATUS_ARCHIVED=2, PACKAGE_VISIBILITY_STATUS_HIDDEN=3, PACKAGE_VISIBILITY_STATUS_PENDING=4 }
+  message PackageIdentification {
+    string id = 1;
+    string vendor_id = 2;
+    string signature = 3;
+  }
+  message PackageDetails {
+    string name = 1;
+    string vendor_name = 2;
+    string vendor_logo = 3;
+    string short_description = 4;
+    string long_description = 5;
+    repeated .content.v1beta2.PreviewImage preview_images = 6;
+    repeated .content.v1beta2.Tag tags = 7;
+    .content.v1beta2.Revision current_revision = 8;
+    .content.v1beta2.Revision available_revision = 9;
+    uint32 size = 10;
+    uint32 compressed_size = 11;
+    uint32 downloads = 12;
+    bool readonly = 13;
+    string product_url = 14;
+    bool paid = 15;
+    .content.v1beta2.Price price = 16;
+    bool custom = 18;
+    repeated .content.v1beta2.PreviewImage variant_preview_images = 19;
+    repeated .content.v1beta2.Variant variants = 20;
+    bool primary = 21;
+    repeated .content.v1beta2.Pair pairs = 22;
+  }
+  message PackagePresentation {
+    bool is_new = 1;
+    bool recently_updated = 2;
+    bool featured = 3;
+    bool liked = 4;
+    bool local = 5;
+  }
+}
+message Price {
+  double shared_price = 1;
+}
+message AvailableImportOptions {
+  bool triplanar_mapping = 1;
+  bool real_world_scale = 2;
+}
+message PlacementInfo {
+  .content.v1beta2.Vector3 origin = 1;
+  .content.v1beta2.PlacementInfo.Orientation orientation = 2;
+  .content.v1beta2.Vector3 up_direction = 3;
+  .content.v1beta2.BoundingBox bounding_box = 4;
+  double space_multiplier = 5;
+  double time_multiplier = 6;
+  enum Orientation { ORIENTATION_INVALID=0, ORIENTATION_CW=1, ORIENTATION_CCW=2 }
+}
+message TextureDimensionsInfo {
+  double width_cm = 1;
+  double height_cm = 2;
+}
+message ScanSampleSizeInfo {
+  double width_cm = 1;
+  double height_cm = 2;
+}
+message ParallaxDimensionsInfo {
+  double width_cm = 1;
+  double height_cm = 2;
+}
+message GenerationInfo {
+  string model = 1;
+  repeated .content.v1beta2.GenerationInfo.ParamsEntry params = 2;
+  message ParamsEntry {
+    string key = 1;
+    string value = 2;
+  }
+}
+message RandomizationInfo {
+  repeated .content.v1beta2.RandomizationInfo.RandomizableMaterialsEntry randomizable_materials = 1;
+  enum SlotType { SLOT_TYPE_INVALID=0, SLOT_TYPE_DIFFUSE=1, SLOT_TYPE_REFLECT_COLOR=2, SLOT_TYPE_REFRACT_COLOR=3, SLOT_TYPE_COAT_COLOR=4, SLOT_TYPE_SHEEN_COLOR=5 }
+  message ColorFrequency {
+    .content.v1beta2.RGBColor color = 1;
+    double frequency = 2;
+  }
+  message RandomizationParameters {
+    double hue = 1;
+    double saturation = 2;
+    double gamma = 3;
+    .content.v1beta2.RandomizationInfo.SlotType slot_type = 4;
+    repeated .content.v1beta2.RandomizationInfo.ColorFrequency colors = 5;
+    .content.v1beta2.RandomizationInfo.RandomizationParameters next = 6;
+  }
+  message RandomizableMaterialsEntry {
+    string key = 1;
+    .content.v1beta2.RandomizationInfo.RandomizationParameters value = 2;
+  }
+}
+message LightgenInfo {
+  .content.v1beta2.LightgenInfo.Type type = 1;
+  string version = 2;
+  double altitude = 3;
+  enum Type { TYPE_INVALID=0, TYPE_EXTERIOR=1 }
+}
+message HDRIExposureInfo {
+  double intensity_mult = 1;
+  double camera_ev = 2;
+}
+message LowPolyOutlineInfo {
+  string outline = 1;
+}
+message AttributesInfo {
+  string attributes = 1;
+}
+message RGBColor {
+  uint32 r = 1;
+  uint32 g = 2;
+  uint32 b = 3;
+}
+message Vector3 {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+}
+message BoundingBox {
+  .content.v1beta2.Vector3 min = 1;
+  .content.v1beta2.Vector3 max = 2;
+}
+message Representation {
+  string package_id = 1;
+  string id = 2;
+  string name = 3;
+  repeated .content.v1beta2.PreviewImage preview_images = 4;
+  repeated .content.v1beta2.Representation.Target targets = 5;
+  .content.v1beta2.Geometry geometry = 6;
+  .content.v1beta2.Material material = 7;
+  .content.v1beta2.Light light = 8;
+  .content.v1beta2.Settings settings = 9;
+  repeated .content.v1beta2.Texture textures = 10;
+  repeated .content.v1beta2.File files = 11;
+  .content.v1beta2.Extras extras = 12;
+  .content.v1beta2.Representation.Info info = 13;
+  .content.v1beta2.Vrscene vrscene = 14;
+  repeated .content.v1beta2.Asset assets = 15;
+  repeated .content.v1beta2.Material materials = 16;
+  repeated .content.v1beta2.Representation.BackwardIncompatiblePluginsEntry backward_incompatible_plugins = 17;
+  enum Target { TARGET_INVALID=0, TARGET_2D_TOP=1, TARGET_2D_LEFT=2, TARGET_2D_FRONT=3, TARGET_3D_HIGH=4, TARGET_3D_MEDIUM=5, TARGET_3D_LOW=6, TARGET_3D_RT_HIGH=7, TARGET_3D_RT_LOW=8 }
+  message Info {
+    .content.v1beta2.MaterialAssignmentInfo optional_material_assignment_info = 1;
+    repeated .content.v1beta2.MaterialAssignmentInfo optional_materials_assignment_info = 2;
+  }
+  message BackwardIncompatiblePluginsEntry {
+    string key = 1;
+    .content.v1beta2.Plugin value = 2;
+  }
+}
+message PreviewImage {
+  string path = 1;
+  string description = 2;
+}
+message File {
+  .content.v1beta2.FileFormat format = 1;
+  string path = 2;
+}
+message Geometry {
+  .content.v1beta2.File file = 1;
+}
+message Material {
+  .content.v1beta2.File file = 1;
+}
+message Asset {
+  .content.v1beta2.File file = 1;
+}
+message Plugin {
+  .content.v1beta2.File file = 1;
+}
+message Texture {
+  .content.v1beta2.File file = 1;
+  uint32 width = 2;
+  uint32 height = 3;
+  uint32 bpp = 4;
+  .content.v1beta2.Texture.ColorSpace color_space = 5;
+  enum ColorSpace { COLOR_SPACE_INVALID=0, COLOR_SPACE_LINEAR=1, COLOR_SPACE_SRGB=2, COLOR_SPACE_ACES=3 }
+}
+message Light {
+  .content.v1beta2.File file = 1;
+}
+message Settings {
+  .content.v1beta2.File file = 1;
+}
+message Extras {
+  .content.v1beta2.File file = 1;
+}
+message Vrscene {
+  .content.v1beta2.File file = 1;
+}
+message MaterialAssignmentInfo {
+  repeated .content.v1beta2.MaterialAssignmentInfo.MaterialsByFaceIdEntry materials_by_face_id = 1;
+  repeated .content.v1beta2.MaterialAssignmentInfo.MaterialsByObjectNameEntry materials_by_object_name = 2;
+  message MaterialsByFaceIdEntry {
+    uint32 key = 1;
+    string value = 2;
+  }
+  message MaterialsByObjectNameEntry {
+    string key = 1;
+    string value = 2;
+  }
+}
+message PackageFeature {
+  string code = 1;
+  string option = 2;
+}
+message PackageConfiguration {
+  string id = 1;
+  repeated .content.v1beta2.PackageFeature features = 2;
+}
+message PackageFileInfo {
+  string absolute_path = 1;
+  string checksum = 2;
+  .content.v1beta2.FileType type = 3;
+  int64 size = 4;
+  string description = 5;
+  string remote_path = 6;
+  bool shared = 7;
+}
+message PackageSuggestion {
+  string id = 1;
+  string name = 2;
+}
+message PackageSuggestionFilter {
+  string query = 1;
+  repeated uint32 tags = 2;
+}
+message PackageWithConfigurations {
+  string package_id = 1;
+  repeated string configurations = 2;
+}
+message Pair {
+  string first_package_id = 1;
+  string second_package_id = 2;
+}
+message Variant {
+  string package_id = 1;
+}
+message UpdatePackageMetadata {
+  string id = 1;
+  string name = 2;
+  repeated uint32 tags = 3;
+  string description = 4;
+}
+// FILE v1beta2/packages_api.proto package content.v1beta2
+message FindPackagesRequest {
+  .content.v1beta2.FindPackagesFilterCriteria filter = 1;
+  .content.v1beta2.FindPackagesOrderCriteria order = 2;
+  .content.v1beta2.FindPackagesLimitCriteria limit = 3;
+}
+message FindPackagesResponse {
+  repeated .content.v1beta2.Package packages = 1;
+  uint32 total_count = 2;
+  uint32 matching_count = 3;
+  .content.v1beta2.FindPackagesFilterCriteria filter = 4;
+  .content.v1beta2.FindPackagesOrderCriteria order = 5;
+  .content.v1beta2.FindPackagesLimitCriteria limit = 6;
+  uint32 downloaded_count = 7;
+}
+message FindPackageByIdRequest {
+  string id = 1;
+  uint32 revision_number = 2;
+}
+message FindPackageByIdResponse {
+  .content.v1beta2.Package package = 1;
+}
+message FindAllPackageRevisionsRequest {
+  string id = 1;
+}
+message FindAllPackageRevisionsResponse {
+  repeated .content.v1beta2.Revision revisions = 2;
+}
+message FindAllPackageConfigurationsRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+}
+message FindAllPackageConfigurationsResponse {
+  repeated .content.v1beta2.PackageConfiguration configurations = 1;
+}
+message FindPackageInfoRequest {
+  string id = 1;
+  .content.v1beta2.PackageInfo type = 2;
+}
+message FindPackageInfoResponse {
+  .content.v1beta2.PackageInfo type = 1;
+  .content.v1beta2.PlacementInfo placement_info = 2;
+  .content.v1beta2.TextureDimensionsInfo texture_dimensions_info = 3;
+  .content.v1beta2.RandomizationInfo randomization_info = 4;
+  .content.v1beta2.LightgenInfo lightgen_info = 5;
+  .content.v1beta2.LowPolyOutlineInfo low_poly_outline_info = 6;
+  .content.v1beta2.AttributesInfo attributes_info = 7;
+  .content.v1beta2.ScanSampleSizeInfo scan_sample_size_info = 8;
+  .content.v1beta2.ParallaxDimensionsInfo parallax_dimensions_info = 9;
+  .content.v1beta2.HDRIExposureInfo hdri_exposure_info = 10;
+  .content.v1beta2.GenerationInfo generation_info = 11;
+}
+message FindAllPackageInfoRequest {
+  string id = 1;
+}
+message FindAllPackageInfoResponse {
+  .content.v1beta2.PlacementInfo optional_placement_info = 1;
+  .content.v1beta2.TextureDimensionsInfo optional_texture_dimensions_info = 2;
+  .content.v1beta2.RandomizationInfo optional_randomization_info = 3;
+  .content.v1beta2.LightgenInfo optional_lightgen_info = 4;
+  .content.v1beta2.LowPolyOutlineInfo optional_low_poly_outline_info = 5;
+  .content.v1beta2.AttributesInfo optional_attributes_info = 6;
+  .content.v1beta2.ScanSampleSizeInfo optional_scan_sample_size_info = 7;
+  .content.v1beta2.ParallaxDimensionsInfo optional_parallax_dimensions_info = 8;
+  .content.v1beta2.HDRIExposureInfo optional_hdri_exposure_info = 9;
+  .content.v1beta2.GenerationInfo optional_generation_info = 10;
+}
+message FindNewerPackagesRevisionsRequest {
+  repeated .content.v1beta2.RevisionIdentity identities = 1;
+}
+message FindNewerPackagesRevisionsResponse {
+  repeated .content.v1beta2.RevisionIdentity identities = 1;
+}
+message FindRepresentationByIdRequest {
+  string package_id = 1;
+  string representation_id = 2;
+}
+message FindRepresentationByIdResponse {
+  .content.v1beta2.Representation representation = 1;
+}
+message FindAllRepresentationsRequest {
+  string package_id = 1;
+  repeated .content.v1beta2.Representation.Target targets = 2;
+  uint32 revision_number = 3;
+}
+message FindAllRepresentationsResponse {
+  repeated .content.v1beta2.Representation representations = 1;
+}
+message FindPackageFileInfoRequest {
+  string package_id = 1;
+  string revision_id = 2;
+}
+message FindPackageFileInfoResponse {
+  repeated .content.v1beta2.PackageFileInfo files_info = 1;
+}
+message FindRepresentationInfoRequest {
+  string package_id = 1;
+  string representation_id = 2;
+  .content.v1beta2.RepresentationInfo type = 3;
+}
+message FindRepresentationInfoResponse {
+  .content.v1beta2.RepresentationInfo type = 1;
+  .content.v1beta2.MaterialAssignmentInfo material_assignment_info = 2;
+  .content.v1beta2.FindRepresentationInfoResponse.OptionalMaterialsAssignmentInfo materials_assignment_info = 3;
+  message OptionalMaterialsAssignmentInfo {
+    repeated .content.v1beta2.MaterialAssignmentInfo set = 1;
+  }
+}
+message SuggestPackagesRequest {
+  .content.v1beta2.PackageSuggestionFilter filter = 1;
+  uint32 limit = 2;
+}
+message SuggestPackagesResponse {
+  repeated .content.v1beta2.PackageSuggestion suggestions = 1;
+}
+message CreatePackageRequest {
+  string name = 1;
+  string description = 2;
+  repeated uint32 categories = 3;
+  repeated uint32 tags = 4;
+  repeated .content.v1beta2.PreviewImage preview_images = 5;
+  string vrscene = 6;
+}
+message CreatePackageResponse {
+}
+message UpdatePackageRequest {
+  string id = 1;
+  string name = 2;
+  bool readonly = 3;
+  string short_description = 4;
+  string long_description = 5;
+  string product_url = 6;
+  .content.v1beta2.Price price = 7;
+}
+message UpdatePackageResponse {
+  .content.v1beta2.Package package = 1;
+}
+message UpdatePackagesRequest {
+  repeated .content.v1beta2.UpdatePackageMetadata packages = 1;
+}
+message UpdatePackagesResponse {
+}
+message UpdatePackagesByTagRequest {
+  uint32 tag_id = 1;
+}
+message UpdatePackagesByTagResponse {
+}
+message UpdatePackageInfoRequest {
+  string package_id = 1;
+  .content.v1beta2.PackageInfo type = 2;
+  .content.v1beta2.PlacementInfo placement_info = 3;
+  .content.v1beta2.RandomizationInfo randomization_info = 4;
+  .content.v1beta2.LightgenInfo lightgen_info = 5;
+  .content.v1beta2.LowPolyOutlineInfo low_poly_outline_info = 6;
+  .content.v1beta2.AttributesInfo attributes_info = 7;
+  .content.v1beta2.HDRIExposureInfo hdri_exposure_info = 8;
+}
+message UpdatePackageInfoResponse {
+}
+message UpdatePackagePairingRequest {
+  .content.v1beta2.Pair pair = 1;
+  bool unpair = 2;
+}
+message UpdatePackagePairingResponse {
+}
+message UpdatePackagePreviewsRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  repeated .content.v1beta2.PreviewImage preview_images = 3;
+}
+message UpdatePackagePreviewsResponse {
+}
+message UpdateVariantPreviewsRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  repeated .content.v1beta2.PreviewImage preview_images = 3;
+}
+message UpdateVariantPreviewsResponse {
+}
+message SetLikedPackageRequest {
+  string package_id = 1;
+  bool liked = 2;
+}
+message SetLikedPackageResponse {
+}
+message DeletePackagePreviewRequest {
+  string package_id = 1;
+  uint32 revision_number = 2;
+  string preview_image_path = 3;
+}
+message DeletePackagePreviewResponse {
+}
+message DeletePackageRequest {
+  string package_id = 1;
+  repeated string configurations = 2;
+}
+message DeletePackageResponse {
+  .content.v1beta2.DeletePackageResponse.Status status = 1;
+  enum Status { STATUS_INVALID=0, STATUS_OK=1, STATUS_PERMISSION_DENIED=2 }
+}
+message DeletePackagesRequest {
+  repeated .content.v1beta2.PackageWithConfigurations packages = 1;
+  bool delete_variants = 2;
+}
+message DeletePackagesResponse {
+  .content.v1beta2.DeletePackagesResponse.Status status = 1;
+  repeated string deleted_packages = 2;
+  bool assets_in_use = 3;
+  enum Status { STATUS_INVALID=0, STATUS_OK=1, STATUS_PERMISSION_DENIED=2 }
+}
+message DownloadPackageRequest {
+  string id = 1;
+  uint32 revision_number = 2;
+  bool return_meta = 3;
+  repeated .content.v1beta2.PackageFeature features = 4;
+  bool require_related_packages = 5;
+}
+message DownloadPackageResponse {
+  .content.v1beta2.Package package = 1;
+  .content.v1beta2.DownloadPackageResponse.PackageInfo package_info = 2;
+  repeated .content.v1beta2.PackageFileInfo files = 3;
+  repeated .content.v1beta2.Representation representations = 4;
+  message PackageInfo {
+    .content.v1beta2.PlacementInfo optional_placement_info = 1;
+    .content.v1beta2.TextureDimensionsInfo optional_texture_dimensions_info = 2;
+    .content.v1beta2.RandomizationInfo optional_randomization_info = 3;
+    .content.v1beta2.LightgenInfo optional_lightgen_info = 4;
+    .content.v1beta2.LowPolyOutlineInfo optional_low_poly_outline_info = 5;
+    .content.v1beta2.AttributesInfo optional_attributes_info = 6;
+    .content.v1beta2.ScanSampleSizeInfo optional_scan_sample_size_info = 7;
+    .content.v1beta2.ParallaxDimensionsInfo optional_parallax_dimensions_info = 8;
+    .content.v1beta2.HDRIExposureInfo hdri_exposure_info = 9;
+  }
+}
+message DownloadPackagesRequest {
+  uint32 tag_id = 1;
+}
+message DownloadPackagesResponse {
+}
+message CancelDownloadingPackagesRequest {
+  uint32 tag_id = 1;
+  bool all = 2;
+  string package_id = 3;
+  uint32 revision_number = 4;
+}
+message CancelDownloadingPackagesResponse {
+}
+message AssignTagsToPackagesRequest {
+  repeated string package_ids = 1;
+  repeated uint32 tags_to_remove_ids = 2;
+  repeated uint32 tags_to_add_ids = 3;
+}
+message AssignTagsToPackagesResponse {
+}
+message RemoveTagsHierarchyFromPackagesRequest {
+  repeated string package_ids = 1;
+  repeated uint32 tags_ids = 2;
+}
+message RemoveTagsHierarchyFromPackagesResponse {
+}
+message AssignPackagesToCollectionRequest {
+  string collection_id = 1;
+  repeated string package_ids_to_add = 2;
+  repeated string package_ids_to_remove = 3;
+}
+message AssignPackagesToCollectionResponse {
+}
+message ChangePackagesVisibilityRequest {
+  repeated string package_ids = 1;
+  .content.v1beta2.Package.PackageVisibilityStatus visibility = 2;
+}
+message ChangePackagesVisibilityResponse {
+}
+message WaitForAvailabilityStatusChangeRequest {
+}
+message WaitForAvailabilityStatusChangeResponse {
+  string package_id = 1;
+  .content.v1beta2.Package.PackageAvailabilityStatus status = 2;
+  .content.v1beta2.WaitForAvailabilityStatusChangeResponse.ErrorCode error_code = 3;
+  uint32 revision_number = 4;
+  bool change_self_triggered = 5;
+  .content.v1beta2.AvailableImportOptions available_import_options = 6;
+  repeated .content.v1beta2.PackageConfiguration configurations = 7;
+  string importer_id = 8;
+  enum ErrorCode { ERROR_CODE_INVALID=0, ERROR_CODE_INTERNAL=1, ERROR_CODE_PERMISSION_DENIED=2, ERROR_CODE_UNAVAILABLE_WORKING_DIR=3 }
+}
+message RecoverPackagesRequest {
+  repeated string paths = 1;
+}
+message RecoverPackagesResponse {
+  repeated string not_recovered_paths = 1;
+}
+message UpdateVariantsRequest {
+  string package_id = 1;
+  repeated .content.v1beta2.Variant variants = 2;
+}
+message UpdateVariantsResponse {
+}
+message FindPackagesIdsByNameRequest {
+  string name = 1;
+}
+message FindPackagesIdsByNameResponse {
+  repeated string ids = 1;
+}
+service PackagesAPI {
+  rpc FindPackages(.content.v1beta2.FindPackagesRequest) returns (.content.v1beta2.FindPackagesResponse);
+  rpc FindPackageById(.content.v1beta2.FindPackageByIdRequest) returns (.content.v1beta2.FindPackageByIdResponse);
+  rpc FindAllPackageRevisions(.content.v1beta2.FindAllPackageRevisionsRequest) returns (.content.v1beta2.FindAllPackageRevisionsResponse);
+  rpc FindAllPackageConfigurations(.content.v1beta2.FindAllPackageConfigurationsRequest) returns (.content.v1beta2.FindAllPackageConfigurationsResponse);
+  rpc FindPackageInfo(.content.v1beta2.FindPackageInfoRequest) returns (.content.v1beta2.FindPackageInfoResponse);
+  rpc FindAllPackageInfo(.content.v1beta2.FindAllPackageInfoRequest) returns (.content.v1beta2.FindAllPackageInfoResponse);
+  rpc FindRepresentationById(.content.v1beta2.FindRepresentationByIdRequest) returns (.content.v1beta2.FindRepresentationByIdResponse);
+  rpc FindAllRepresentations(.content.v1beta2.FindAllRepresentationsRequest) returns (.content.v1beta2.FindAllRepresentationsResponse);
+  rpc FindNewerPackagesRevisions(.content.v1beta2.FindNewerPackagesRevisionsRequest) returns (.content.v1beta2.FindNewerPackagesRevisionsResponse);
+  rpc FindPackageFileInfo(.content.v1beta2.FindPackageFileInfoRequest) returns (.content.v1beta2.FindPackageFileInfoResponse);
+  rpc FindRepresentationInfo(.content.v1beta2.FindRepresentationInfoRequest) returns (.content.v1beta2.FindRepresentationInfoResponse);
+  rpc SuggestPackages(.content.v1beta2.SuggestPackagesRequest) returns (.content.v1beta2.SuggestPackagesResponse);
+  rpc CreatePackage(.content.v1beta2.CreatePackageRequest) returns (.content.v1beta2.CreatePackageResponse);
+  rpc UpdatePackage(.content.v1beta2.UpdatePackageRequest) returns (.content.v1beta2.UpdatePackageResponse);
+  rpc UpdatePackages(.content.v1beta2.UpdatePackagesRequest) returns (.content.v1beta2.UpdatePackagesResponse);
+  rpc UpdatePackagesByTag(.content.v1beta2.UpdatePackagesByTagRequest) returns (.content.v1beta2.UpdatePackagesByTagResponse);
+  rpc UpdatePackageInfo(.content.v1beta2.UpdatePackageInfoRequest) returns (.content.v1beta2.UpdatePackageInfoResponse);
+  rpc UpdatePackagePairing(.content.v1beta2.UpdatePackagePairingRequest) returns (.content.v1beta2.UpdatePackagePairingResponse);
+  rpc UpdatePackagePreviews(.content.v1beta2.UpdatePackagePreviewsRequest) returns (.content.v1beta2.UpdatePackagePreviewsResponse);
+  rpc UpdateVariantPreviews(.content.v1beta2.UpdateVariantPreviewsRequest) returns (.content.v1beta2.UpdateVariantPreviewsResponse);
+  rpc SetLikedPackage(.content.v1beta2.SetLikedPackageRequest) returns (.content.v1beta2.SetLikedPackageResponse);
+  rpc DeletePackagePreview(.content.v1beta2.DeletePackagePreviewRequest) returns (.content.v1beta2.DeletePackagePreviewResponse);
+  rpc DeletePackage(.content.v1beta2.DeletePackageRequest) returns (.content.v1beta2.DeletePackageResponse);
+  rpc DeletePackages(.content.v1beta2.DeletePackagesRequest) returns (.content.v1beta2.DeletePackagesResponse);
+  rpc DownloadPackage(.content.v1beta2.DownloadPackageRequest) returns (.content.v1beta2.DownloadPackageResponse);
+  rpc DownloadPackages(.content.v1beta2.DownloadPackagesRequest) returns (.content.v1beta2.DownloadPackagesResponse);
+  rpc CancelDownloadingPackages(.content.v1beta2.CancelDownloadingPackagesRequest) returns (.content.v1beta2.CancelDownloadingPackagesResponse);
+  rpc AssignTagsToPackages(.content.v1beta2.AssignTagsToPackagesRequest) returns (.content.v1beta2.AssignTagsToPackagesResponse);
+  rpc RemoveTagsHierarchyFromPackages(.content.v1beta2.RemoveTagsHierarchyFromPackagesRequest) returns (.content.v1beta2.RemoveTagsHierarchyFromPackagesResponse);
+  rpc AssignPackagesToCollection(.content.v1beta2.AssignPackagesToCollectionRequest) returns (.content.v1beta2.AssignPackagesToCollectionResponse);
+  rpc ChangePackagesVisibility(.content.v1beta2.ChangePackagesVisibilityRequest) returns (.content.v1beta2.ChangePackagesVisibilityResponse);
+  rpc WaitForAvailabilityStatusChange(.content.v1beta2.WaitForAvailabilityStatusChangeRequest) returns (stream .content.v1beta2.WaitForAvailabilityStatusChangeResponse);
+  rpc RecoverPackages(.content.v1beta2.RecoverPackagesRequest) returns (.content.v1beta2.RecoverPackagesResponse);
+  rpc UpdateVariants(.content.v1beta2.UpdateVariantsRequest) returns (.content.v1beta2.UpdateVariantsResponse);
+  rpc FindPackagesIdsByName(.content.v1beta2.FindPackagesIdsByNameRequest) returns (.content.v1beta2.FindPackagesIdsByNameResponse);
+}
