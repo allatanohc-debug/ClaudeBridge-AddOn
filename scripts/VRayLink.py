@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.7e"
+VERSION = "19/10 - v2.8 (végétation facile)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2680,7 +2680,8 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         for k, sc in enumerate(scats):
             unit = SCATTER_TYPES.get(sc.get("type", ""), (0, 1.0))[1]
             dtxt = f"{sc['densite'] * unit:g}/m²" if unit == 1 else f"{sc['densite'] * unit:g} pour {unit:g} m²"
-            tree.insert("", "end", iid=f"s{k}", text=f"{'🌳' if unit != 1 else '🌿'} {sc['nom']} → {sc['surface']} ({dtxt})",
+            lieu = {SOL_AUTOUR: "autour de la maison", ZONE_PLAN: "zone dessinée"}.get(sc["surface"], sc["surface"])
+            tree.insert("", "end", iid=f"s{k}", text=f"{'🌳' if unit != 1 else '🌿'} {sc['nom']} — {lieu} ({dtxt})",
                         values=("au hasard", f"{sc.get('echelle', 1):g}"))
 
     def selected() -> list:
@@ -2844,9 +2845,17 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         msg.set(f"« {e['nom']} » placé (repère orange dans le plan, calque « {CALQUE_OBJETS} »). "
                 "Il apparaîtra au prochain rendu. Double-clic sur un objet à droite = le placer encore.")
 
+    simple = ttk.Frame(tab)
+    simple.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Button(simple, text="📍 Placer un objet (clic dans le plan)", command=place).grid(row=0, column=0, padx=3, ipady=4)
+    ttk.Button(simple, text="🌱 Ajouter de la végétation (herbe, fleurs, arbres)…",
+               command=lambda: assistant()).grid(row=0, column=1, padx=8, ipady=4)
+    adv_on = tk.BooleanVar(value=False)
+    ttk.Checkbutton(simple, text="Réglages experts", variable=adv_on,
+                    command=lambda: acts.grid() if adv_on.get() else acts.grid_remove()).grid(row=0, column=2, padx=8)
     acts = ttk.Frame(tab)
-    acts.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-    ttk.Button(acts, text="📍 Placer dans Archicad (clic dans le plan)", command=place).grid(row=0, column=0, padx=3)
+    acts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    acts.grid_remove()
     ttk.Separator(acts, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
     type_var = tk.StringVar(value="Herbe / gazon")
     type_box = ttk.Combobox(acts, textvariable=type_var, values=list(SCATTER_TYPES), state="readonly", width=15)
@@ -2879,7 +2888,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
 
     def load_surface_names():
         names, _ = project_surfaces(state, key)
-        grass = sorted(n for n in names if any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
+        grass = sorted(n for n in names if n != SOL_AUTOUR and any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
         surf_box.configure(values=[SOL_AUTOUR, ZONE_PLAN] + grass +
                            sorted(n for n in names if n not in grass and n != SOL_AUTOUR))
         if grass and surf_var.get() == SOL_AUTOUR:
@@ -2898,22 +2907,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         item = {"nom": e["nom"], "dossier": e["dossier"], "surface": surf_var.get(), "densite": shown / unit,
                 "variation": var, "echelle": 1.0, "rayon": 15.0, "espacement": gap, "leger": light, "type": type_var.get()}
         if surf_var.get() == ZONE_PLAN:
-            pts = []
-            root.withdraw()
-            try:
-                T.focus_archicad()
-                while True:
-                    p, _why = T.pick_point(f"V-Ray scatter : clique le point {len(pts) + 1} de la zone "
-                                           f"(Échap pour terminer, 3 points minimum)")
-                    if p is None:
-                        break
-                    pts.append([p["x"], p["y"]])
-                try:
-                    item["z"] = story_level()
-                except Exception:  # noqa: BLE001
-                    item["z"] = 0.0
-            finally:
-                root.deiconify()
+            pts, item["z"] = draw_zone()
             if len(pts) < 3:
                 msg.set("Zone annulée : il faut au moins 3 points.")
                 return
@@ -2927,6 +2921,139 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 "Visible au prochain rendu.")
     ttk.Label(tab, textvariable=msg, foreground="#2b5d8a", wraplength=820, justify="left").grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    # ---------------- assistant vegetation : 3 questions simples
+    def kind_of(e) -> str:
+        t = (e["nom"] + " " + e["categorie"]).lower()
+        if any(w in t for w in ("tree", "arbre", "palm", "palmier", "baobab", "oak", "pine")):
+            return "Arbres"
+        if any(w in t for w in ("grass", "herbe", "gazon", "lawn", "turf", "clover", "moss")):
+            return "Herbe / gazon"
+        return "Fleurs / buissons"
+
+    QUANTITES = {"Herbe / gazon": (2.0, 5.0, 10.0), "Fleurs / buissons": (0.3, 0.8, 1.5), "Arbres": (0.005, 0.01, 0.02)}
+
+    def draw_zone():
+        pts = []
+        root.withdraw()
+        try:
+            T.focus_archicad()
+            while True:
+                p, _why = T.pick_point(f"V-Ray : clique le coin {len(pts) + 1} de la zone (Échap pour terminer, 3 coins minimum)")
+                if p is None:
+                    break
+                pts.append([p["x"], p["y"]])
+            try:
+                z = story_level()
+            except Exception:  # noqa: BLE001
+                z = 0.0
+        finally:
+            root.deiconify()
+        return pts, z
+
+    def assistant():
+        win = tk.Toplevel(root)
+        win.title("Ajouter de la végétation")
+        win.attributes("-topmost", True)
+        win.transient(root)
+        f = ttk.Frame(win, padding=14)
+        f.grid(sticky="nsew")
+        big = ("Segoe UI", 11, "bold")
+        plants = [e for e in lib if kind_of(e) != "Fleurs / buissons" or
+                  any(w in (e["nom"] + e["categorie"]).lower() for w in ("plant", "flower", "fleur", "bush", "shrub", "buisson"))]
+        pick = {"e": chosen["entry"] if chosen["entry"] in plants else (plants[0] if plants else None)}
+
+        ttk.Label(f, text="1.  Quelle plante ?", font=big).grid(row=0, column=0, sticky="w")
+        grid_ = tk.Frame(f, background="#fafafa")
+        grid_.grid(row=1, column=0, sticky="w", pady=(4, 10))
+        cells_ = {}
+
+        def choose(e):
+            pick["e"] = e
+            for d, c in cells_.items():
+                on = d == e["dossier"]
+                for w in (c, *c.winfo_children()):
+                    w.configure(background="#cfe6ff" if on else "#fafafa")
+            what.set(f"→ {e['nom']}  ({kind_of(e).lower()})")
+
+        if not plants:
+            ttk.Label(grid_, text="Aucune plante téléchargée pour l'instant.", foreground="#a33").grid(row=0, column=0, sticky="w")
+            ttk.Button(grid_, text="🌐 Télécharger de l'herbe / des arbres dans Cosmos (3D Models › Plants)",
+                       command=lambda: (open_cosmos(), win.destroy())).grid(row=1, column=0, sticky="w", pady=4)
+        for k, e in enumerate(plants[:12]):
+            c = tk.Frame(grid_, background="#fafafa", padx=4, pady=4, cursor="hand2")
+            c.grid(row=k // 6, column=k % 6)
+            tk.Label(c, image=images.get(e["dossier"]) or blank, background="#fafafa").pack()
+            tk.Label(c, text=e["nom"], wraplength=96, font=("Segoe UI", 8), background="#fafafa").pack()
+            cells_[e["dossier"]] = c
+            for w in (c, *c.winfo_children()):
+                w.bind("<Button-1>", lambda _e, en=e: choose(en))
+        what = tk.StringVar()
+
+        ttk.Label(f, text="2.  Où la mettre ?", font=big).grid(row=2, column=0, sticky="w")
+        where = tk.StringVar()
+        wf = ttk.Frame(f)
+        wf.grid(row=3, column=0, sticky="w", pady=(4, 10))
+        names, _ = project_surfaces(state, key)
+        grass = sorted(n for n in names if n != SOL_AUTOUR and any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
+        r = 0
+        for n in grass:
+            ttk.Radiobutton(wf, text=f"Sur la pelouse du projet  « {n} »", value=n, variable=where).grid(row=r, column=0, sticky="w")
+            r += 1
+        ttk.Radiobutton(wf, text="Partout autour de la maison (15 m), sauf sous le bâtiment", value=SOL_AUTOUR,
+                        variable=where).grid(row=r, column=0, sticky="w")
+        ttk.Radiobutton(wf, text="Dans une zone que je dessine dans le plan (je clique les coins)", value=ZONE_PLAN,
+                        variable=where).grid(row=r + 1, column=0, sticky="w")
+        other = tk.StringVar()
+        of = ttk.Frame(wf)
+        of.grid(row=r + 2, column=0, sticky="w")
+        ttk.Radiobutton(of, text="Sur une autre surface :", value="__autre__", variable=where).grid(row=0, column=0)
+        ttk.Combobox(of, textvariable=other, values=sorted(n for n in names if n not in grass and n != SOL_AUTOUR),
+                     state="readonly", width=26).grid(row=0, column=1, padx=4)
+        where.set(grass[0] if grass else SOL_AUTOUR)
+
+        ttk.Label(f, text="3.  Combien ?", font=big).grid(row=4, column=0, sticky="w")
+        qty = tk.IntVar(value=1)
+        qf = ttk.Frame(f)
+        qf.grid(row=5, column=0, sticky="w", pady=(4, 10))
+        for k, lab in enumerate(("Clairsemé", "Normal", "Dense")):
+            ttk.Radiobutton(qf, text=lab, value=k, variable=qty).grid(row=0, column=k, padx=(0, 16))
+
+        ttk.Label(f, textvariable=what, foreground="#2b5d8a").grid(row=6, column=0, sticky="w")
+
+        def add():
+            e = pick["e"]
+            if not e:
+                return
+            target = other.get() if where.get() == "__autre__" else where.get()
+            if not target:
+                return
+            kind = kind_of(e)
+            _d, _u, var, gap, light = SCATTER_TYPES[kind]
+            item = {"nom": e["nom"], "dossier": e["dossier"], "surface": target, "densite": QUANTITES[kind][qty.get()],
+                    "variation": var, "echelle": 1.0, "rayon": 15.0, "espacement": gap, "leger": light, "type": kind}
+            if target == ZONE_PLAN:
+                win.withdraw()
+                pts, z = draw_zone()
+                if len(pts) < 3:
+                    win.deiconify()
+                    what.set("Zone annulée : clique au moins 3 coins dans le plan, puis Échap.")
+                    return
+                item.update(zone=pts, z=z)
+            scats.append(item)
+            save_settings(state)
+            refresh_tree()
+            win.destroy()
+            lieu = {SOL_AUTOUR: "autour de la maison", ZONE_PLAN: "dans ta zone"}.get(target, f"sur « {target} »")
+            msg.set(f"✔ C'est prêt : « {e['nom']} » ({('clairsemé', 'normal', 'dense')[qty.get()]}) {lieu}. "
+                    "Va dans l'onglet Rendu et lance un rendu (Brouillon) pour la voir.")
+
+        bar = ttk.Frame(f)
+        bar.grid(row=7, column=0, sticky="e", pady=(8, 0))
+        ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=0, padx=4)
+        ttk.Button(bar, text="✔  Ajouter", command=add).grid(row=0, column=1, ipadx=10, ipady=3)
+        if pick["e"]:
+            choose(pick["e"])
 
     def on_import(name):
         root.after(0, lambda: (load_library(name), msg.set(f"Nouvel objet reçu de Cosmos : « {name} ».")))
