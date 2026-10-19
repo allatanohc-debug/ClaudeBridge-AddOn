@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.8 (végétation facile)"
+VERSION = "19/10 - v2.8b"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1154,7 +1154,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          "RenderChannelDenoiser denoiser { enabled=1; name=\"VRayDenoiser\"; }",
          f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n}}",
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
-         f"ISO={iso}; exposure=1; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
+         f"ISO={iso}; exposure={0 if (opts.get('hdri') and not opts.get('hdri_soleil', True)) else 1}; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
          f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
          f"specify_focus=1; focus_distance={dist:.3f}; }}",
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
@@ -1565,6 +1565,27 @@ def cosmos_library(kind: str = "Materials") -> list[dict]:
         out.append({"nom": label, "categorie": folder.parent.name.replace("_", " "), "dossier": str(folder),
                     "vrmat": str(vrmats[0]), "vrmesh": str(meshes[0]) if meshes else "",
                     "apercu": str(prev[0]) if prev else "", "date": folder.stat().st_mtime})
+    out.sort(key=lambda e: -e["date"])
+    return out
+
+
+def cosmos_hdris() -> list[dict]:
+    """HDRI telechargees depuis Cosmos (dossier Packages/HDRI...) : [{nom, fichier, apercu, dossier, categorie}]."""
+    out = []
+    base = cosmos_packages()
+    if not base.is_dir():
+        return out
+    for folder in base.glob("*/*/*"):
+        if not folder.is_dir() or "hdr" not in folder.parts[-3].lower():
+            continue
+        files = [p for ext in ("*.exr", "*.hdr", "*.tx") for p in folder.rglob(ext) if "preview" not in str(p).lower()]
+        if not files:
+            continue
+        files.sort(key=lambda p: (p.suffix.lower() != ".exr", p.suffix.lower() != ".hdr", -p.stat().st_size))
+        prev = sorted((folder / "Previews").glob("*.png")) + sorted((folder / "Previews").glob("*.jpg"))
+        out.append({"nom": re.sub(r"_[0-9a-f]{8}$", "", folder.name).replace("_", " "), "fichier": str(files[0]),
+                    "apercu": str(prev[0]) if prev else "", "dossier": str(folder), "categorie": folder.parent.name,
+                    "date": folder.stat().st_mtime})
     out.sort(key=lambda e: -e["date"])
     return out
 
@@ -2260,6 +2281,17 @@ def window(state: dict) -> None:
                 v["hdri"].set(path)
         ttk.Button(en, text="Parcourir…", command=browse).grid(row=0, column=2, padx=4)
         ttk.Button(en, text="Aucun", command=lambda: v["hdri"].set("")).grid(row=0, column=3)
+        hd = cosmos_hdris()
+        if hd:
+            ttk.Label(en, text="HDRI Cosmos").grid(row=5, column=0, sticky="w", pady=(6, 0))
+            hd_var = tk.StringVar()
+            hd_box = ttk.Combobox(en, values=[e["nom"] for e in hd], textvariable=hd_var, state="readonly", width=30)
+            hd_box.grid(row=5, column=1, columnspan=3, sticky="w", pady=(6, 0))
+            hd_box.bind("<<ComboboxSelected>>", lambda _e: v["hdri"].set(next(e["fichier"] for e in hd if e["nom"] == hd_var.get())))
+        else:
+            ttk.Label(en, foreground="#777", wraplength=420, justify="left",
+                      text="Astuce : télécharge une HDRI dans Cosmos (catégorie HDRI) : elle apparaîtra ici dans une liste.").grid(
+                row=5, column=0, columnspan=4, sticky="w", pady=(6, 0))
         ttk.Label(en, text="Intensité").grid(row=1, column=0, sticky="w", pady=(6, 0))
         v["hdri_mult"] = tk.DoubleVar(value=opts.get("hdri_mult", 1.0))
         ttk.Spinbox(en, from_=0.1, to=50, increment=0.5, textvariable=v["hdri_mult"], width=6).grid(row=1, column=1, sticky="w", pady=(6, 0))
