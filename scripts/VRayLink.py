@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0f (matériaux Cosmos)"
+VERSION = "19/10 - v2.0g (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1231,12 +1231,16 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
     """Lance V-Ray ; en cas d'erreur la fenetre noire reste ouverte (message lisible) et un journal est ecrit."""
     bat = scene.parent / "rendre_cette_vue.bat"
     log = scene.parent / "vray_journal.txt"
+    run = f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display={1 if show else 0} -autoClose=0 -verboseLevel=3'
     bat.write_text("\r\n".join([
-        "@echo off", "title V-Ray Link - rendu",
-        f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display={1 if show else 0} -autoClose=0 -verboseLevel=3',
-        "set CODE=%errorlevel%",
-        "if not \"%CODE%\"==\"0\" (", "  echo.", "  echo *** V-Ray s'est arrete (code %CODE%) : fais une capture de cette fenetre. ***",
-        "  pause", ")"]) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
+        "@echo off", "title V-Ray Link - rendu", "set ESSAI=0",
+        f'if exist "{image}" del "{image}"',
+        ":relance", "set /a ESSAI+=1", run, "set CODE=%errorlevel%",
+        f'if exist "{image}" goto fin',
+        "if %ESSAI% LSS 3 (", "  echo.", "  echo V-Ray s'est ferme sans image (code %CODE%) : nouvel essai %ESSAI%/3...",
+        "  timeout /t 3 >nul", "  goto relance", ")",
+        "echo.", "echo *** V-Ray n'a pas pu rendre l'image apres 3 essais (code %CODE%) : fais une capture de cette fenetre. ***",
+        "pause", ":fin"]) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
     try:
         log.unlink()
     except Exception:  # noqa: BLE001
