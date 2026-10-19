@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.7 (réglages avancés)"
+VERSION = "19/10 - v2.7b (réglages avancés)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -873,11 +873,16 @@ class ViewerServer:
                     if self.path.startswith("/modele.bin"):
                         self._send(viewer_mesh(key), "application/octet-stream")
                     elif self.path.startswith("/infos"):
-                        self._send(json.dumps(infos()).encode("utf-8"), "application/json")
+                        self._send(json.dumps(infos() if callable(infos) else infos).encode("utf-8"), "application/json")
                     else:
                         self._send(VIEWER_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                except (ConnectionError, OSError):
+                    pass
                 except Exception as error:  # noqa: BLE001
-                    self.send_error(500, str(error))
+                    try:
+                        self.send_error(500, str(error)[:200])
+                    except Exception:  # noqa: BLE001
+                        pass
 
             def do_POST(self):
                 n = int(self.headers.get("Content-Length", 0) or 0)
@@ -889,7 +894,18 @@ class ViewerServer:
                     self.send_error(400, str(error))
 
         self.on_camera = on_camera
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+
+        class Quiet(http.server.ThreadingHTTPServer):
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):     # pas de fenetre d'erreur Tapir pour une page fermee
+                try:
+                    import traceback
+                    (data_dir() / "visionneuse_erreurs.txt").open("a", encoding="utf-8").write(traceback.format_exc() + "\n")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        self.httpd = Quiet(("127.0.0.1", 0), H)
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
@@ -953,11 +969,18 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 Le cadre clair = l'image exacte du rendu.</div>
 </aside></div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script>
+window.addEventListener("error",e=>{const l=document.getElementById("load");if(l)l.textContent="Erreur : "+(e.message||e)});
+window.addEventListener("unhandledrejection",e=>{const l=document.getElementById("load");if(l)l.textContent="Erreur : "+(e.reason&&e.reason.message||e.reason)});
+setTimeout(()=>{const l=document.getElementById("load");if(l&&!window.__three)l.textContent="Le moteur 3D (three.js) ne se charge pas : vérifie la connexion Internet."},15000);
+</script>
 <script type="module">
 import * as THREE from "three";
+window.__three=true;
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
 const $=id=>document.getElementById(id);
-const info=await (await fetch("/infos")).json();
+const r0=await fetch("/infos"); if(!r0.ok) throw new Error("infos : "+r0.status+" "+(await r0.text()).slice(0,200));
+const info=await r0.json(); $("load").textContent="Chargement du modèle…";
 const aspect=info.largeur/info.hauteur;
 const frame=$("frame"), stage=$("stage");
 const renderer=new THREE.WebGLRenderer({antialias:true});
@@ -984,7 +1007,8 @@ function goTo(c){cam.position.set(...c.eye); controls.target.set(...c.target); $
 info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;o.textContent=c.nom;$("cams").appendChild(o)});
 $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
 // modele
-const buf=await (await fetch("/modele.bin")).arrayBuffer();
+const r1=await fetch("/modele.bin"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
+const buf=await r1.arrayBuffer();
 const dv=new DataView(buf); const nv=dv.getUint32(0,true), ni=dv.getUint32(4,true);
 let o=8; const pos=new Float32Array(buf,o,nv*3); o+=nv*12; const col=new Uint8Array(buf,o,nv*4); o+=nv*4;
 const idx=new Uint32Array(buf.slice(o,o+ni*4));
@@ -2259,6 +2283,7 @@ def window(state: dict) -> None:
     # --- visionneuse 3D (page web locale)
     import queue
     viewer = {"srv": None}
+    snap: dict = {}
     inbox: "queue.Queue[dict]" = queue.Queue()
 
     def viewer_infos() -> dict:
@@ -2337,8 +2362,19 @@ def window(state: dict) -> None:
             except Exception as error:  # noqa: BLE001
                 show([f"Export impossible : {error}"])
                 return
+        try:
+            snap.clear()
+            snap.update(viewer_infos())          # calcule ici (fil principal de Tk), lu ensuite par le serveur web
+        except Exception as error:  # noqa: BLE001
+            show([f"Visionneuse : {error}"])
+            return
+        try:
+            viewer_mesh(key)                     # prepare le modele avant d'ouvrir la page
+        except Exception as error:  # noqa: BLE001
+            show([f"Modèle 3D illisible : {error}"])
+            return
         if viewer["srv"] is None:
-            viewer["srv"] = ViewerServer(key, viewer_infos, inbox.put)
+            viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
         viewer["srv"].open()
         say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
 
