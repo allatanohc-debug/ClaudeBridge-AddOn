@@ -51,7 +51,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1.3 (étape 1)"
+VERSION = "19/10 - v1.4 (étape 1)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -87,12 +87,17 @@ FAMILLES = [
     (("métal", "metal", "alu", "acier", "steel", "zinc", "cuivre", "laiton", "fer "), {"reflect": 0.8, "gloss": 0.7, "metal": 1.0}),
     (("carrel", "céram", "ceram", "faïence", "faience", "marbre", "granit", "tile", "grès", "gres"), {"reflect": 0.6, "gloss": 0.85}),
     (("laqu", "vernis", "brillant", "gloss"), {"reflect": 0.6, "gloss": 0.8}),
-    (("bois", "parquet", "wood", "iroko", "teck", "chêne", "chene"), {"reflect": 0.35, "gloss": 0.62}),
+    (("bois", "parquet", "wood", "iroko", "teck", "chêne", "chene", "oak", "walnut", "timber"),
+     {"reflect": 0.35, "gloss": 0.62, "teinte": (0.50, 0.33, 0.20)}),
     (("cuir", "leather", "plastique", "plastic", "pvc"), {"reflect": 0.35, "gloss": 0.6}),
     (("béton", "beton", "concrete", "ciment", "enduit", "plâtre", "platre", "peint", "paint", "crépi", "crepi"),
      {"reflect": 0.12, "gloss": 0.45}),
     (("brique", "terre", "tuile", "brick", "pierre", "stone", "latérite", "laterite"), {"reflect": 0.08, "gloss": 0.4}),
-    (("herbe", "gazon", "grass", "végét", "veget", "feuill", "leaf", "arbre", "tree"), {"reflect": 0.05, "gloss": 0.35}),
+    (("herbe", "gazon", "grass", "gras", "lawn", "végét", "veget", "feuill", "leaf", "arbre", "tree"),
+     {"reflect": 0.05, "gloss": 0.35, "teinte": (0.32, 0.45, 0.18)}),
+    (("asphalt", "bitum", "goudron", "route", "road", "enrobé", "enrobe"), {"reflect": 0.08, "gloss": 0.45,
+                                                                          "teinte": (0.16, 0.16, 0.16)}),
+    (("gravier", "gravel", "pavé", "pave", "dallage"), {"reflect": 0.08, "gloss": 0.4}),
     (("tissu", "fabric", "textile", "moquette", "carpet", "lin "), {"reflect": 0.03, "gloss": 0.3}),
 ]
 
@@ -199,6 +204,90 @@ def archicad_bbox(kinds=("Wall", "Slab", "Roof", "Column")):
     return (lo, hi) if lo[0] < 1e29 else None
 
 
+def _ids(rows) -> list[dict]:
+    return [{"attributeId": r["attributeId"]} for r in rows if "attributeId" in r]
+
+
+def archicad_surfaces() -> dict:
+    """Surfaces Archicad : par guid, par index et par nom -> {name, rgb, transparence, texture}."""
+    out = {"guid": {}, "index": {}, "name": {}}
+    rows = tapir("GetAttributesByType", {"attributeType": "Surface"}).get("attributes", [])
+    details = []
+    for i in range(0, len(rows), 300):
+        details += tapir("GetSurfaces", {"attributeIds": _ids(rows[i:i + 300]),
+                                         "fields": ["surfaceColor", "transparency", "texture"]}).get("surfaces", [])
+    for r, d in zip(rows, details):
+        if "error" in d:
+            continue
+        c = d.get("surfaceColor") or {}
+        info = {"name": r.get("name", ""), "rgb": (c.get("red", 0.7), c.get("green", 0.7), c.get("blue", 0.7)),
+                "transparence": float(d.get("transparency", 0.0) or 0.0) / 100.0,
+                "texture": (d.get("texture") or {}).get("name", "")}
+        out["guid"][r["attributeId"]["guid"]] = info
+        out["index"][str(r.get("index"))] = info
+        out["name"][info["name"]] = info
+    return out
+
+
+def element_surfaces(surf: dict, report=print) -> dict:
+    """GlobalId IFC de chaque element -> surface Archicad visible (cote de reference, dessus, materiau)."""
+    bms = tapir("GetAttributesByType", {"attributeType": "BuildingMaterial"}).get("attributes", [])
+    bm_surface = {}
+    for i in range(0, len(bms), 300):
+        part = bms[i:i + 300]
+        rows = tapir("GetBuildingMaterials", {"attributeIds": _ids(part), "fields": ["cutSurfaceIndex"]}
+                     ).get("buildingMaterials", [])
+        for r, d in zip(part, rows):
+            info = surf["index"].get(str(d.get("cutSurfaceIndex")))
+            if info:
+                bm_surface[r["attributeId"]["guid"]] = info
+    comps = tapir("GetAttributesByType", {"attributeType": "Composite"}).get("attributes", [])
+    comp_surface = {}
+    for i in range(0, len(comps), 300):
+        part = comps[i:i + 300]
+        rows = tapir("GetComposites", {"attributeIds": _ids(part), "fields": ["skins"]}).get("composites", [])
+        for r, d in zip(part, rows):
+            skins = d.get("skins") or []
+            if skins:
+                g = (skins[0].get("buildingMaterialId") or {}).get("guid")
+                if g in bm_surface:
+                    comp_surface[r["attributeId"]["guid"]] = bm_surface[g]
+    out = {}
+    for kind in ("Wall", "Slab", "Roof", "Shell", "Column", "Beam", "Mesh", "Morph", "Stair", "Railing"):
+        try:
+            els = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+        except Exception:  # noqa: BLE001
+            continue
+        for i in range(0, len(els), 300):
+            part = els[i:i + 300]
+            try:
+                det = tapir("GetDetailsOfElements", {"elements": part, "fields": ["details"]}).get("detailsOfElements", [])
+                ifc = tapir("GetIFCIdsOfElements", {"elements": part}).get("elementIFCIds", [])
+            except Exception:  # noqa: BLE001
+                continue
+            for d, f in zip(det, ifc):
+                gid = f.get("ifcId") if isinstance(f, dict) else None
+                if not gid or "error" in d:
+                    continue
+                dd = d.get("details", {}) or {}
+                info = None
+                for key in ("topMaterial", "referenceMaterial", "surfaceId"):
+                    ov = dd.get(key)
+                    if isinstance(ov, dict) and ov.get("overridden"):
+                        info = surf["guid"].get((ov.get("attributeId") or {}).get("guid"))
+                    elif isinstance(ov, dict) and "guid" in ov:
+                        info = surf["guid"].get(ov["guid"])
+                    if info:
+                        break
+                if not info:
+                    info = comp_surface.get((dd.get("compositeId") or {}).get("guid")) or \
+                        bm_surface.get((dd.get("buildingMaterialId") or {}).get("guid"))
+                if info:
+                    out[gid] = info["name"]
+    report(f"Surfaces Archicad : {len(surf['name'])}, éléments reliés : {len(out)}")
+    return out
+
+
 def export_ifc(path: Path) -> None:
     if path.exists():
         path.unlink()
@@ -273,7 +362,8 @@ def ensure_ifcopenshell(report=print) -> None:
     import ifcopenshell  # noqa: F401  (ModuleNotFoundError si l'installation a echoue)
 
 
-def ifc_meshes(path: Path, report=print) -> tuple[dict, dict, tuple]:
+def ifc_meshes(path: Path, report=print, surf: dict | None = None, by_element: dict | None = None
+               ) -> tuple[dict, dict, tuple]:
     """IFC -> {surface: (sommets, triangles)}, {surface: {rgb, transparence}}, boite."""
     import multiprocessing
 
@@ -304,10 +394,19 @@ def ifc_meshes(path: Path, report=print) -> tuple[dict, dict, tuple]:
             g = sh.geometry
             v, fc, mids = g.verts, g.faces, list(g.material_ids)
             names = [material_name(f, m) for m in g.materials]
+            known = (surf or {}).get("name", {})
+            fallback = (by_element or {}).get(getattr(ent, "GlobalId", None) if cls else None)
+            for k, nm in enumerate(names):          # pas de style IFC : la surface Archicad de l'element
+                if nm not in known and (nm.startswith("Ifc") or nm in ("Sans nom", "")) and fallback:
+                    names[k] = fallback
             for m, nm in zip(g.materials, names):
                 if nm not in mats:
-                    t = getattr(m, "transparency", 0.0)
-                    mats[nm] = {"rgb": _rgb(m), "transparence": 0.0 if t is None or t != t else float(t)}
+                    if nm in known:
+                        a = known[nm]
+                        mats[nm] = {"rgb": a["rgb"], "transparence": a["transparence"], "texture": a["texture"]}
+                    else:
+                        t = getattr(m, "transparency", 0.0)
+                        mats[nm] = {"rgb": _rgb(m), "transparence": 0.0 if t is None or t != t else float(t)}
             for k in range(0, len(v), 3):
                 for a in range(3):
                     lo[a], hi[a] = min(lo[a], v[k + a]), max(hi[a], v[k + a])
@@ -345,7 +444,9 @@ def guess_material(name: str, info: dict, library: dict) -> dict:
         out["type"] = "verre"
     for words, params in FAMILLES:
         if any(w in low for w in words):
-            out.update(params)
+            out.update({k: v for k, v in params.items() if k != "teinte"})
+            if params.get("teinte") and info.get("texture"):      # couleur d'un materiau texture : souvent grise
+                out["rgb"] = list(params["teinte"])
             break
     return out
 
@@ -528,8 +629,15 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     report("Export IFC depuis Archicad...")
     ifc = d / "modele.ifc"
     export_ifc(ifc)
+    surf, by_element = {"name": {}}, {}
+    try:
+        report("Lecture des surfaces Archicad...")
+        surf = archicad_surfaces()
+        by_element = element_surfaces(surf, report)
+    except Exception as error:  # noqa: BLE001
+        report(f"(surfaces Archicad non lues : {error})")
     report("Conversion de la géométrie pour V-Ray...")
-    meshes, mats, (lo, hi) = ifc_meshes(ifc, report)
+    meshes, mats, (lo, hi) = ifc_meshes(ifc, report, surf, by_element)
     if not meshes:
         raise RuntimeError("Aucune géométrie dans l'export IFC (calques masqués ?).")
     offset = (0.0, 0.0, 0.0)
@@ -543,8 +651,9 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     import json
     meta.write_text(json.dumps({"sol": ground, "surfaces": sorted(meshes), "triangles": tris}), encoding="utf-8")
     state.setdefault("surfaces", sorted(meshes))
-    listing = ", ".join(f"{n} ({'/'.join(str(int(c * 255)) for c in mats.get(n, {}).get('rgb', (0, 0, 0)))})"
-                        for n in sorted(meshes)[:25])
+    listing = ", ".join(
+        f"{n} ({'/'.join(str(int(c * 255)) for c in guess_material(n, mats.get(n, {}), state['bibliotheque'])['rgb'])})"
+        for n in sorted(meshes)[:25])
     return geo, ground, (f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ") + "\nSurfaces : " + listing)
 
 
