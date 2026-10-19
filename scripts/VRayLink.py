@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0d (matériaux Cosmos)"
+VERSION = "19/10 - v2.0e (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1223,15 +1223,19 @@ def diagnostic(folder: Path) -> list[str]:
         return ["(pas de diagnostic : géométrie reprise de l'export précédent)"]
 
 
+# cmd lit les .bat dans la page de codes OEM (les accents en UTF-8 cassent la lecture : "1 n'est pas reconnu")
+BAT_ENC = "oem" if os.name == "nt" else "cp850"
+
+
 def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
     """Lance V-Ray ; en cas d'erreur la fenetre noire reste ouverte (message lisible) et un journal est ecrit."""
     bat = scene.parent / "rendre_cette_vue.bat"
     log = scene.parent / "vray_journal.txt"
     bat.write_text("\r\n".join([
-        "@echo off", "chcp 65001 >nul", "title V-Ray Link - rendu",
+        "@echo off", "title V-Ray Link - rendu",
         f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display={1 if show else 0} -autoClose=0 -verboseLevel=3',
         "if errorlevel 1 (", "  echo.", "  echo *** V-Ray s'est arrete sur une erreur : fais une capture de cette fenetre. ***",
-        "  pause", ")"]) + "\r\n", encoding="utf-8")
+        "  pause", ")"]) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
     try:
         log.unlink()
     except Exception:  # noqa: BLE001
@@ -1241,13 +1245,13 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
 
 def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path) -> Path:
     bat = jobs[0][0].parent / "rendre_les_vues.bat"
-    lines = ["@echo off", "chcp 65001 >nul", "title V-Ray Link - rendu des vues"]
+    lines = ["@echo off", "title V-Ray Link - rendu des vues"]
     for k, (scene, image) in enumerate(jobs, 1):
         lines.append(f'echo Vue {k}/{len(jobs)} : {image.stem}')
         lines.append(f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display=1 -autoClose=1')
         lines.append("if errorlevel 1 (echo *** Erreur V-Ray sur cette vue : fais une capture. *** & pause)")
     lines += [f'explorer "{folder}"', "echo Termine.", "timeout /t 5"]
-    bat.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8")
+    bat.write_text("\r\n".join(lines) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
     subprocess.Popen(["cmd", "/c", str(bat)], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
     return bat
 
