@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.4 (objets Cosmos)"
+VERSION = "19/10 - v2.5 (scatter)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1052,6 +1052,13 @@ $("save").onclick=()=>send("enregistrer"); $("render").onclick=()=>send("rendre"
 
 
 # ----------------------------------------------------------------- scene ---
+def _read(p: Path) -> str:
+    try:
+        return p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
     W, H = TAILLES.get(opts["taille"], (1920, 1080))
     minutes, thr = QUALITES.get(opts["qualite"], QUALITES["Haute"])
@@ -1091,7 +1098,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
               "MtlSingleBRDF sol_mtl { brdf=sol_brdf; }",
               "GeomPlane sol_geo { }",
               f"Node sol_node {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),"
-              f"Vector(0,0,{ground_z - 0.005:.4f})); geometry=sol_geo; material=sol_mtl; }}"]
+              f"Vector(0,0,{ground_z - 0.005:.4f})); geometry=sol_geo; "
+              f"material={'sol_cosmos' if 'sol_cosmos' in _read(path.parent / 'materiaux.vrscene') else 'sol_mtl'}; }}"]
     s.append('#include "materiaux.vrscene"')
     s.append(f'#include "{geometry.name}"')
     if (path.parent / "objets.vrscene").exists():
@@ -1530,11 +1538,12 @@ def load_settings() -> dict:
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
             "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
-            "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {}}
+            "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {},
+            "scatter": saved.get("scatter") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -1600,12 +1609,24 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         tris = int(info.get("triangles", 0))
     used = write_materials(d / "materiaux.vrscene", {n: mats.get(n, {}) for n in meshes}, state["bibliotheque"],
                            assigned, report)
+    sol = assigned.get(SOL_AUTOUR)                      # materiau Cosmos pour le sol autour (texture d'herbe...)
+    if sol and sol.get("dossier"):
+        try:
+            fixed, top = vrmat_for_render(sorted(Path(sol["dossier"]).glob("*.vrmat"), key=_lod)[0])
+            block = (f"MtlVRmat sol_cosmos {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n  mtlname=\"{top}\";\n}}\n")
+            for f_ in ("materiaux.vrscene", "materiaux_sans_scan.vrscene"):
+                with (d / f_).open("a", encoding="utf-8") as out:
+                    out.write(block)
+            used.append(f"{SOL_AUTOUR} → {virtual_surface(sol['dossier'])[9:]}")
+        except Exception as error:  # noqa: BLE001
+            report(f"Matériau du sol indisponible : {error}")
     meta.write_text(json.dumps({"version": 3, "sol": ground, "surfaces": sorted(meshes), "triangles": tris,
                                 "selection": sel_sig, "uv": uv_sig,
                                 "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
                     encoding="utf-8")
     state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
     n_obj = write_objects(d / "objets.vrscene", (state.get("objets") or {}).get(key, []), report)
+    n_sc = write_scatter(d / "objets.vrscene", (state.get("scatter") or {}).get(key, []), meshes, offset, ground, key, report)
     summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
     if note:
         summary += f" ({note})"
@@ -1613,6 +1634,8 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         summary += "\nMatériaux Cosmos : " + " ; ".join(used)
     if n_obj:
         summary += f"\nObjets Cosmos : {n_obj}"
+    if n_sc:
+        summary += f"\nScatter : {n_sc:,} exemplaires".replace(",", " ")
     return geo, ground, summary
 
 
@@ -2201,6 +2224,106 @@ def write_objects(path: Path, objs: list, report=print) -> int:
     return n
 
 
+
+SOL_AUTOUR = "Sol autour (gazon)"
+SCATTER_MAX = 30000
+
+
+def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: str) -> list:
+    """Points (x, y, z) repartis au hasard (graine fixe) sur une surface Archicad (faces vers le haut) ou sur le sol autour."""
+    import random
+    rnd = random.Random(f"{sc.get('dossier')}|{sc.get('surface')}")
+    dens = max(0.01, float(sc.get("densite", 4.0)))
+    ox, oy, oz = offset
+    pts = []
+    if sc.get("surface") == SOL_AUTOUR:
+        f = plan_footprint(key) or {}
+        bati = {tuple(c) for c in f.get("sols", []) + f.get("murs", [])}
+        if not f:
+            return []
+        n_i = max([c[0] for c in bati] + [0]) + 1
+        n_j = max([c[1] for c in bati] + [0]) + 1
+        margin = float(sc.get("rayon", 15.0))
+        x0, y0 = f["x0"] - margin, f["y0"] - margin
+        x1, y1 = f["x0"] + n_i * f["pas"] + margin, f["y0"] + n_j * f["pas"] + margin
+        n = min(SCATTER_MAX, int((x1 - x0) * (y1 - y0) * dens))
+        for _ in range(n):
+            x, y = rnd.uniform(x0, x1), rnd.uniform(y0, y1)
+            cell = (int((x - f["x0"]) // f["pas"]), int((y - f["y0"]) // f["pas"]))
+            if cell not in bati:
+                pts.append((x, y, ground))
+        return pts
+    verts, faces = meshes.get(sc.get("surface"), ([], []))
+    up, flat = [], []
+    for t in range(0, len(faces), 3):
+        a, b, c = verts[faces[t]], verts[faces[t + 1]], verts[faces[t + 2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        v = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        nx, ny, nz = u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]
+        area = 0.5 * math.sqrt(nx * nx + ny * ny + nz * nz)
+        if area < 1e-6 or abs(nz) / (2 * area) < 0.7:          # seulement les faces horizontales
+            continue
+        (up if nz > 0 else flat).append((a, b, c, area))      # normale vers le haut = dessus de la dalle
+    chosen, tris, total = (up or flat), [], 0.0
+    for a, b, c, area in chosen:
+        tris.append((total, a, b, c, area))
+        total += area
+    if not tris:
+        return []
+    n = min(SCATTER_MAX, int(total * dens))
+    import bisect
+    keys = [t[0] for t in tris]
+    tops = {}
+    for _ in range(n):
+        k = bisect.bisect_right(keys, rnd.uniform(0, total)) - 1
+        _s, a, b, c, _ar = tris[k]
+        r1, r2 = rnd.random(), rnd.random()
+        if r1 + r2 > 1:
+            r1, r2 = 1 - r1, 1 - r2
+        x = a[0] + r1 * (b[0] - a[0]) + r2 * (c[0] - a[0])
+        y = a[1] + r1 * (b[1] - a[1]) + r2 * (c[1] - a[1])
+        z = a[2] + r1 * (b[2] - a[2]) + r2 * (c[2] - a[2])
+        cell = (round(x, 1), round(y, 1))
+        if cell in tops and tops[cell] >= z:
+            continue
+        tops[cell] = z
+        pts.append((x + ox, y + oy, z + oz))
+    return pts
+
+
+def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, ground: float, key: str, report=print) -> int:
+    """Ajoute a objets.vrscene les objets repartis : une geometrie (.vrmesh) partagee, un Node par exemplaire."""
+    import random
+    total = 0
+    with path.open("a", encoding="utf-8") as out:
+        for k, sc in enumerate(scatters):
+            try:
+                folder = Path(sc["dossier"])
+                mesh = sorted(folder.glob("*.vrmesh"), key=_lod)[-1 if sc.get("leger", True) else 0]
+                vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
+                fixed, top = vrmat_for_render(vrmat)
+            except Exception as error:  # noqa: BLE001
+                report(f"Scatter « {sc.get('nom')} » indisponible : {error}")
+                continue
+            pts = scatter_points(sc, meshes, offset, ground, key)
+            if len(pts) >= SCATTER_MAX:
+                report(f"Scatter « {sc.get('nom')} » limité à {SCATTER_MAX} exemplaires (baisse la densité).")
+            sid = f"sc{k}"
+            out.write(f"// scatter : {sc.get('nom')} sur {sc.get('surface')} ({len(pts)} exemplaires)\n"
+                      f"GeomMeshFile {sid}_geo {{\n  file=\"{str(mesh).replace(chr(92), '/')}\";\n}}\n"
+                      f"MtlVRmat {sid}_mtl {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n  mtlname=\"{top}\";\n}}\n")
+            rnd = random.Random(k)
+            base, var = float(sc.get("echelle", 1.0)) * ECHELLE_COSMOS, float(sc.get("variation", 30)) / 100.0
+            for i, (x, y, z) in enumerate(pts):
+                a = rnd.uniform(0, 2 * math.pi)
+                sz = base * (1 + rnd.uniform(-var, var))
+                c, si = math.cos(a) * sz, math.sin(a) * sz
+                out.write(f"Node {sid}_{i} {{ transform=Transform(Matrix(Vector({c:.5f},{si:.5f},0),Vector({-si:.5f},{c:.5f},0),"
+                          f"Vector(0,0,{sz:.5f})),Vector({x:.3f},{y:.3f},{z:.3f})); geometry={sid}_geo; material={sid}_mtl; }}\n")
+            total += len(pts)
+    return total
+
+
 def draw_object_marker(o: dict) -> list:
     """Repere de l'objet dans le plan : cercle + fleche d'orientation + nom (calque des objets Cosmos)."""
     story = tapir("GetStories").get("actStory", 0)
@@ -2252,6 +2375,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     cells: dict = {}
     chosen = {"entry": None}
     objs = state.setdefault("objets", {}).setdefault(key, [])
+    scats = state.setdefault("scatter", {}).setdefault(key, [])
 
     # ---------------- gauche : objets places
     left = ttk.LabelFrame(tab, text="Objets placés dans le projet", padding=6)
@@ -2282,16 +2406,30 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         tree.delete(*tree.get_children())
         for k, o in enumerate(objs):
             tree.insert("", "end", iid=str(k), text=o["nom"], values=(f"{o.get('rotation', 0):.0f}°", f"{o.get('echelle', 1):g}"))
+        for k, sc in enumerate(scats):
+            tree.insert("", "end", iid=f"s{k}", text=f"🌿 {sc['nom']} → {sc['surface']} ({sc['densite']:g}/m²)",
+                        values=("au hasard", f"{sc.get('echelle', 1):g}"))
 
     def selected() -> list:
-        return [objs[int(i)] for i in tree.selection() if int(i) < len(objs)]
+        out = []
+        for i in tree.selection():
+            if i.startswith("s"):
+                if int(i[1:]) < len(scats):
+                    out.append(scats[int(i[1:])])
+            elif int(i) < len(objs):
+                out.append(objs[int(i)])
+        return out
 
     def redraw(o):
+        if o in scats:
+            return
         delete_elements(o.get("traces", []))
         o["traces"] = draw_object_marker(o)
 
     def rotate(deg):
         for o in selected():
+            if o in scats:
+                continue
             o["rotation"] = (float(o.get("rotation", 0)) + deg) % 360
             redraw(o)
         save_settings(state)
@@ -2314,6 +2452,9 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
 
     def remove():
         for o in selected():
+            if o in scats:
+                scats.remove(o)
+                continue
             delete_elements(o.get("traces", []))
             objs.remove(o)
         save_settings(state)
@@ -2433,6 +2574,41 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     acts = ttk.Frame(tab)
     acts.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     ttk.Button(acts, text="📍 Placer dans Archicad (clic dans le plan)", command=place).grid(row=0, column=0, padx=3)
+    ttk.Separator(acts, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
+    ttk.Label(acts, text="🌿 Scatter sur").grid(row=0, column=2)
+    surf_var = tk.StringVar(value=SOL_AUTOUR)
+    surf_box = ttk.Combobox(acts, textvariable=surf_var, width=22, state="readonly")
+    surf_box.grid(row=0, column=3, padx=3)
+    ttk.Label(acts, text="Densité /m²").grid(row=0, column=4)
+    dens_var = tk.DoubleVar(value=6.0)
+    ttk.Spinbox(acts, from_=0.1, to=60, increment=1, textvariable=dens_var, width=5).grid(row=0, column=5, padx=3)
+    ttk.Label(acts, text="Variation %").grid(row=0, column=6)
+    var_var = tk.IntVar(value=30)
+    ttk.Spinbox(acts, from_=0, to=90, increment=5, textvariable=var_var, width=4).grid(row=0, column=7, padx=3)
+    ttk.Button(acts, text="Répartir l'objet choisi", command=lambda: scatter()).grid(row=0, column=8, padx=3)
+
+    def load_surface_names():
+        names, _ = project_surfaces(state, key)
+        grass = sorted(n for n in names if any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
+        surf_box.configure(values=[SOL_AUTOUR] + grass + sorted(n for n in names if n not in grass))
+        if grass and surf_var.get() == SOL_AUTOUR:
+            surf_var.set(grass[0])
+
+    def scatter():
+        e = chosen["entry"]
+        if not e:
+            msg.set("Choisis d'abord à droite l'objet à répartir (touffe d'herbe, fleurs, gravier…).")
+            return
+        try:
+            dens, var = float(dens_var.get()), int(var_var.get())
+        except (ValueError, tk.TclError):
+            return
+        scats.append({"nom": e["nom"], "dossier": e["dossier"], "surface": surf_var.get(), "densite": dens,
+                      "variation": var, "echelle": 1.0, "rayon": 15.0})
+        save_settings(state)
+        refresh_tree()
+        msg.set(f"« {e['nom']} » sera réparti sur « {surf_var.get()} » ({dens:g} par m², taille ±{var} %, rotation au hasard) "
+                "au prochain rendu. Commence avec une densité faible pour un rendu rapide.")
     ttk.Label(tab, textvariable=msg, foreground="#2b5d8a", wraplength=820, justify="left").grid(
         row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
@@ -2456,6 +2632,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             loaded["v"] = True
             refresh_tree()
             load_library()
+            load_surface_names()
             hooks = state.get("_cosmos") or {}
             if hooks.get("connect"):
                 hooks["connect"]()
@@ -2470,7 +2647,9 @@ def project_surfaces(state: dict, key: str) -> tuple[dict, bool]:
     try:
         info = json.loads(meta.read_text(encoding="utf-8"))
         if info.get("couleurs"):
-            return {n: tuple(c) for n, c in info["couleurs"].items()}, True
+            out = {n: tuple(c) for n, c in info["couleurs"].items()}
+            out[SOL_AUTOUR] = (0.33, 0.47, 0.22)
+            return out, True
     except Exception:  # noqa: BLE001
         pass
     try:
