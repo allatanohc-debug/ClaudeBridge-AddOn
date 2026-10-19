@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.1 (caméras)"
+VERSION = "19/10 - v2.2 (visionneuse 3D)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -804,6 +804,213 @@ def draw_cameras_in_plan(cams: list, state: dict, key: str, current: str = "") -
         created += mine
     state.setdefault("traces", {})[key] = created
     return len(cams)
+
+
+
+# ------------------------------------------------------------ visionneuse 3D ---
+# Une page web locale (three.js) affiche le modele du dernier export : on s'y deplace comme dans la 3D d'Archicad,
+# puis « Rendre cette vue » / « Enregistrer la vue » renvoient la camera a V-Ray Link.
+def viewer_mesh(key: str) -> bytes:
+    """Modele en binaire pour la visionneuse : nv, ni, positions f32, couleurs u8 (rgba), indices u32 (cache)."""
+    d = data_dir() / key
+    cache, out = d / "geometrie.pkl", d / "visionneuse.bin"
+    if out.exists() and out.stat().st_mtime >= cache.stat().st_mtime:
+        return out.read_bytes()
+    meshes, mats, offset, _ground = pickle.loads(cache.read_bytes())
+    import array
+    pos, col, idx = array.array("f"), array.array("B"), array.array("I")
+    for name, (verts, faces) in meshes.items():
+        if not faces:
+            continue
+        base = len(pos) // 3
+        rgb = (mats.get(name) or {}).get("rgb", (0.75, 0.75, 0.75))
+        c = [max(0, min(255, int(float(v) * 255))) for v in rgb[:3]] + [255]
+        for x, y, z in verts:
+            pos.extend((x + offset[0], y + offset[1], z + offset[2]))
+            col.extend(c)
+        idx.extend(base + f for f in faces)
+    if sys.byteorder != "little":
+        pos.byteswap()
+        idx.byteswap()
+    data = struct.pack("<II", len(pos) // 3, len(idx)) + pos.tobytes() + col.tobytes() + idx.tobytes()
+    out.write_bytes(data)
+    return data
+
+
+class ViewerServer:
+    """Petit serveur web local : /, /modele.bin, /infos (JSON), POST /camera."""
+
+    def __init__(self, key: str, infos, on_camera):
+        import http.server
+        owner = self
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_a):
+                pass
+
+            def _send(self, body: bytes, ctype: str):
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                try:
+                    if self.path.startswith("/modele.bin"):
+                        self._send(viewer_mesh(key), "application/octet-stream")
+                    elif self.path.startswith("/infos"):
+                        self._send(json.dumps(infos()).encode("utf-8"), "application/json")
+                    else:
+                        self._send(VIEWER_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                except Exception as error:  # noqa: BLE001
+                    self.send_error(500, str(error))
+
+            def do_POST(self):
+                n = int(self.headers.get("Content-Length", 0) or 0)
+                try:
+                    msg = json.loads(self.rfile.read(n).decode("utf-8"))
+                    owner.on_camera(msg)
+                    self._send(b'{"ok":true}', "application/json")
+                except Exception as error:  # noqa: BLE001
+                    self.send_error(400, str(error))
+
+        self.on_camera = on_camera
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def open(self) -> None:
+        url = f"http://127.0.0.1:{self.port}/"
+        for edge in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+                     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"):
+            if Path(edge).exists():
+                subprocess.Popen([edge, f"--app={url}", "--window-size=1280,820"])
+                return
+        import webbrowser
+        webbrowser.open(url)
+
+
+VIEWER_HTML = r"""<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>V-Ray Link · Visionneuse 3D</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#16181c;--panel:#20232a;--line:#30343d;--txt:#e8e6e1;--mute:#9aa0aa;--acc:#e0702a}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px "Segoe UI",system-ui,sans-serif}
+#app{display:grid;grid-template-columns:1fr 270px;height:100%}
+#stage{position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}
+#frame{position:relative;box-shadow:0 0 0 1px var(--line),0 0 0 9999px rgba(0,0,0,.55)}
+canvas{display:block}
+#hud{position:absolute;left:12px;bottom:10px;color:var(--mute);font-size:12px;line-height:1.5;pointer-events:none}
+#load{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--mute);font-size:15px}
+aside{background:var(--panel);border-left:1px solid var(--line);padding:16px;display:flex;flex-direction:column;gap:14px;overflow:auto}
+h1{font-size:15px;margin:0}h1 b{color:var(--acc)}
+label{display:block;color:var(--mute);font-size:12px;margin-bottom:4px}
+select,input{width:100%;background:#15171b;color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:7px 8px;font:inherit}
+.row{display:flex;gap:6px}.row>*{flex:1}
+button{background:#2b2f37;color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:9px 10px;font:inherit;cursor:pointer}
+button:hover{border-color:#4a505c}button.main{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.seg{display:flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.seg button{flex:1;border:0;border-radius:0}
+.seg button.on{background:#3a3f4a;color:#fff}
+#msg{color:var(--mute);font-size:12px;min-height:32px}
+kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
+</style></head><body>
+<div id="app"><div id="stage"><div id="frame"><div id="load">Chargement du modèle…</div></div>
+<div id="hud"></div></div>
+<aside>
+<h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
+<div><label>Aller à une vue</label><select id="cams"></select></div>
+<div><label>Navigation</label><div class="seg"><button id="mOrbit" class="on">Tourner autour</button><button id="mWalk">Marcher</button></div></div>
+<div class="row"><div><label>Focale</label><select id="foc"></select></div>
+<div><label>Hauteur yeux (m)</label><input id="eyeh" type="number" step="0.1" value="1.6"></div></div>
+<button id="eyeBtn">Se mettre à hauteur d'yeux</button>
+<div><label>Nom de la vue</label><input id="name" value="Vue 3D"></div>
+<button id="save">Enregistrer la vue</button>
+<button id="render" class="main">Rendre cette vue</button>
+<div id="msg"></div>
+<div style="color:var(--mute);font-size:12px;line-height:1.7">
+<b style="color:var(--txt)">Tourner autour</b> : clic gauche = tourner, clic droit = déplacer, molette = avancer.<br>
+<b style="color:var(--txt)">Marcher</b> : clic gauche glissé = regarder, <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches = avancer / côtés, <kbd>A</kbd>/<kbd>E</kbd> = monter / descendre, <kbd>Maj</kbd> = plus vite.<br>
+Le cadre clair = l'image exacte du rendu.</div>
+</aside></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from "three";
+import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+const $=id=>document.getElementById(id);
+const info=await (await fetch("/infos")).json();
+const aspect=info.largeur/info.hauteur;
+const frame=$("frame"), stage=$("stage");
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+frame.appendChild(renderer.domElement);
+const scene=new THREE.Scene(); scene.background=new THREE.Color(0xbcd3e6);
+scene.fog=new THREE.Fog(0xbcd3e6,400,2000);
+const cam=new THREE.PerspectiveCamera(50,aspect,0.05,5000); cam.up.set(0,0,1);
+scene.add(new THREE.HemisphereLight(0xffffff,0x8a8f7a,1.1));
+const sun=new THREE.DirectionalLight(0xffffff,1.6); sun.position.set(info.soleil[0],info.soleil[1],info.soleil[2]); scene.add(sun);
+const ground=new THREE.Mesh(new THREE.PlaneGeometry(4000,4000),new THREE.MeshLambertMaterial({color:0x7d9a5c}));
+ground.position.z=info.sol-0.01; scene.add(ground);
+const controls=new OrbitControls(cam,renderer.domElement); controls.enableDamping=true; controls.dampingFactor=0.12;
+function fit(){const W=stage.clientWidth-24,H=stage.clientHeight-24;let w=W,h=W/aspect;if(h>H){h=H;w=H*aspect}
+ renderer.setSize(Math.floor(w),Math.floor(h)); cam.aspect=aspect; cam.updateProjectionMatrix();}
+addEventListener("resize",fit); fit();
+function setFocal(f){const hf=2*Math.atan(18/f); cam.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(hf/2)/aspect)); cam.updateProjectionMatrix();}
+for(const f of info.focales){const o=document.createElement("option");o.value=f;o.textContent=f+" mm";$("foc").appendChild(o)}
+$("foc").value=24; setFocal(24); $("foc").onchange=()=>setFocal(+$("foc").value);
+function goTo(c){cam.position.set(...c.eye); controls.target.set(...c.target); $("foc").value=c.focale||24; setFocal(+$("foc").value);
+ if(!c.auto) $("name").value=c.nom; controls.update();}
+info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;o.textContent=c.nom;$("cams").appendChild(o)});
+$("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
+// modele
+const buf=await (await fetch("/modele.bin")).arrayBuffer();
+const dv=new DataView(buf); const nv=dv.getUint32(0,true), ni=dv.getUint32(4,true);
+let o=8; const pos=new Float32Array(buf,o,nv*3); o+=nv*12; const col=new Uint8Array(buf,o,nv*4); o+=nv*4;
+const idx=new Uint32Array(buf.slice(o,o+ni*4));
+let g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttribute(pos,3));
+g.setAttribute("color",new THREE.BufferAttribute(col,4,true)); g.setIndex(new THREE.BufferAttribute(idx,1));
+g=g.toNonIndexed(); g.computeVertexNormals();
+scene.add(new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide})));
+const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
+scene.add(edges);
+$("load").remove();
+goTo(info.cameras.find(c=>c.nom===info.courante)||info.cameras[0]);
+// marcher
+let mode="orbit"; const keys={};
+$("mOrbit").onclick=()=>{mode="orbit";$("mOrbit").classList.add("on");$("mWalk").classList.remove("on");controls.enabled=true};
+$("mWalk").onclick=()=>{mode="walk";$("mWalk").classList.add("on");$("mOrbit").classList.remove("on");controls.enabled=false};
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;keys[e.code]=true});addEventListener("keyup",e=>keys[e.code]=false);
+let drag=null; renderer.domElement.addEventListener("pointerdown",e=>{if(mode==="walk"){drag=[e.clientX,e.clientY];renderer.domElement.setPointerCapture(e.pointerId)}});
+renderer.domElement.addEventListener("pointerup",()=>drag=null);
+renderer.domElement.addEventListener("pointermove",e=>{if(!drag||mode!=="walk")return;const dx=e.clientX-drag[0],dy=e.clientY-drag[1];drag=[e.clientX,e.clientY];
+ const d=new THREE.Vector3().subVectors(controls.target,cam.position);const r=d.length();
+ let yaw=Math.atan2(d.y,d.x)-dx*0.004, pit=Math.asin(THREE.MathUtils.clamp(d.z/r,-1,1))-dy*0.004; pit=THREE.MathUtils.clamp(pit,-1.45,1.45);
+ controls.target.set(cam.position.x+r*Math.cos(pit)*Math.cos(yaw),cam.position.y+r*Math.cos(pit)*Math.sin(yaw),cam.position.z+r*Math.sin(pit)); cam.lookAt(controls.target)});
+renderer.domElement.addEventListener("wheel",e=>{if(mode!=="walk")return;e.preventDefault();step(-Math.sign(e.deltaY)*1.0,0,0)},{passive:false});
+function step(f,s,u){const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;d.normalize();
+ const side=new THREE.Vector3(d.y,-d.x,0);const m=d.multiplyScalar(f).add(side.multiplyScalar(s)).add(new THREE.Vector3(0,0,u));
+ cam.position.add(m);controls.target.add(m)}
+const clock=new THREE.Clock();
+function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
+ if(mode==="walk"||Object.values(keys).some(Boolean)){
+  const f=(keys.KeyW||keys.KeyZ||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
+  const s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA&&mode!=="walk"||keys.KeyQ||keys.ArrowLeft?1:0);
+  const u=(mode==="walk"&&keys.KeyE?1:0)-(mode==="walk"&&keys.KeyA?1:0);
+  if(f||s||u)step(f*v,s*v,u*v);}
+ if(mode==="orbit")controls.update(); else cam.lookAt(controls.target);
+ const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${$("foc").value} mm`;
+ renderer.render(scene,cam);requestAnimationFrame(loop)}
+loop();
+$("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;
+ if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
+async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
+ eye:cam.position.toArray(),target:controls.target.toArray()};
+ $("msg").textContent=action==="rendre"?"Rendu demandé : la fenêtre V-Ray va s'ouvrir…":"Vue enregistrée dans V-Ray Link.";
+ try{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
+ catch(e){$("msg").textContent="V-Ray Link est fermé : relance-le."}}
+$("save").onclick=()=>send("enregistrer"); $("render").onclick=()=>send("rendre");
+</script></body></html>"""
 
 
 # ----------------------------------------------------------------- scene ---
@@ -1634,6 +1841,7 @@ def window(state: dict) -> None:
     pr.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
     ttk.Button(pr, text="📐 Montrer les caméras dans le plan Archicad", command=lambda: to_plan()).grid(row=0, column=0)
     ttk.Button(pr, text="Les retirer du plan", command=lambda: off_plan()).grid(row=0, column=1, padx=4)
+    ttk.Button(pr, text="🧭 Visionneuse 3D : se déplacer et rendre", command=lambda: open_viewer()).grid(row=0, column=2, padx=4)
 
     def focal_changed(_ev=None):
         cam = next((c for c in all_cams() if c["nom"] == current.get()), None)
@@ -1835,6 +2043,66 @@ def window(state: dict) -> None:
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
     ttk.Button(buttons, text="Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
                ).grid(row=0, column=2, padx=3)
+
+    # --- visionneuse 3D (page web locale)
+    import queue
+    viewer = {"srv": None}
+    inbox: "queue.Queue[dict]" = queue.Queue()
+
+    def viewer_infos() -> dict:
+        W, H = TAILLES.get(opts["taille"], (1920, 1080))
+        try:
+            ground = float(json.loads((data_dir() / key / "geometrie.json").read_text(encoding="utf-8")).get("sol", 0.0))
+        except Exception:  # noqa: BLE001
+            ground = 0.0
+        try:
+            az, alt = sun_position(proj["lat"], proj["lon"], dt.date(2026, int(opts["mois"]), min(28, int(opts["jour"]))),
+                                   float(opts["heure"]), float(proj.get("fuseau", 0.0)))
+            sv = [c * 100 for c in sun_vector(az, max(alt, 0.2), proj["north"])]
+        except Exception:  # noqa: BLE001
+            sv = [50, -50, 80]
+        return {"largeur": W, "hauteur": H, "sol": ground, "focales": list(FOCALES), "soleil": sv,
+                "courante": current.get(),
+                "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
+                             "auto": bool(c.get("auto"))} for c in all_cams()]}
+
+    def poll_viewer():
+        try:
+            while True:
+                msg = inbox.get_nowait()
+                name = str(msg.get("nom") or "Vue 3D")[:60]
+                cam = {"nom": name, "focale": int(msg.get("focale", 24)),
+                       "eye": [float(v) for v in msg["eye"]][:3], "target": [float(v) for v in msg["target"]][:3]}
+                cams = [c for c in state["cameras"].get(key, []) if c["nom"] != name]
+                state["cameras"][key] = cams + [cam]
+                save_settings(state)
+                refresh()
+                current.set(name)
+                if state.get("traces", {}).get(key):
+                    to_plan(quiet=True)
+                if msg.get("action") == "rendre":
+                    render([name])
+                else:
+                    say(f"Vue « {name} » enregistrée depuis la visionneuse 3D.")
+        except queue.Empty:
+            pass
+        root.after(300, poll_viewer)
+
+    def open_viewer():
+        collect()
+        if not (data_dir() / key / "geometrie.pkl").exists():
+            try:
+                say("Premier export du modèle pour la visionneuse...")
+                prepare_geometry(state, proj, say)
+            except Exception as error:  # noqa: BLE001
+                show([f"Export impossible : {error}"])
+                return
+        if viewer["srv"] is None:
+            viewer["srv"] = ViewerServer(key, viewer_infos, inbox.put)
+        viewer["srv"].open()
+        say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
+
+    root.after(300, poll_viewer)
     materials_tab(root, nb, state, proj, key)
     root.protocol("WM_DELETE_WINDOW", lambda: (collect(), root.destroy()))
     root.after(100, compute_autos)
