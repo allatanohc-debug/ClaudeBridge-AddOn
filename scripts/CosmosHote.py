@@ -18,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 4 (plateforme SketchUp)"
+VERSION = "19/10 - test hote 4b (etat page)"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -452,6 +452,21 @@ def main():
             log("hotes connectes maintenant :", show(decode(native.unary("ImportAPI/ListImporters", b""))))
         except Exception as e:  # noqa: BLE001
             log("ListImporters :", e)
+
+        def etat():
+            for i in range(6):
+                for nom, f in (("natif", lambda: native.unary("ApplicationStateAPI/GetApplicationState", b"")),
+                               ("web", lambda: call(base, "ApplicationStateAPI/GetApplicationState", b""))):
+                    try:
+                        st = decode(f())
+                        cur = (st.get(1) or [{}])[0]
+                        imps = (cur.get(10) or [{}])[0] if isinstance(cur, dict) else {}
+                        log(f"etat Cosmos ({nom}) : hotes vus par la page =", show(imps)[:1500],
+                            "| autres champs :", sorted(cur.keys()) if isinstance(cur, dict) else cur)
+                    except Exception as e:  # noqa: BLE001
+                        log(f"etat Cosmos ({nom}) :", str(e)[:200])
+                time.sleep(5)
+        threading.Thread(target=etat, daemon=True).start()
         scheme, port = base
         host = "localhost" if scheme == "https" else "127.0.0.1"
         url = (f"https://localhost:30306/?utm_campaign=cosmos&utm_source=V-Ray+7.20.00"
