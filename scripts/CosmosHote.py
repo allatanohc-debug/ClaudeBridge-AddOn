@@ -18,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 2 (gRPC natif)"
+VERSION = "19/10 - test hote 2b"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -172,15 +172,20 @@ def ensure_grpc():
         return
     except ModuleNotFoundError:
         pass
-    log("installation du module grpcio (une seule fois, ~1 min)...")
+    log("installation du module grpcio (une seule fois, ~1 min)... Python", sys.version.split()[0], sys.executable)
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     for cmd in ([sys.executable, "-m", "pip", "install", "--user", "grpcio"],
                 [sys.executable, "-m", "pip", "install", "grpcio"],
+                [sys.executable, "-m", "ensurepip", "--user"],
+                [sys.executable, "-m", "pip", "install", "--user", "grpcio"],
                 ["uv", "pip", "install", "--python", sys.executable, "grpcio"]):
         try:
-            if subprocess.run(cmd, capture_output=True, creationflags=flags, timeout=900).returncode == 0:
+            r = subprocess.run(cmd, capture_output=True, text=True, creationflags=flags, timeout=900)
+            log("  ", " ".join(cmd[1:]), "-> code", r.returncode, (r.stdout + r.stderr).strip().replace("\n", " | ")[-700:])
+            if r.returncode == 0 and "ensurepip" not in cmd:
                 break
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            log("  ", cmd[0], "->", e)
             continue
     import importlib
     import site
