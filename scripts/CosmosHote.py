@@ -18,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 3 (HTTP/2 integre)"
+VERSION = "19/10 - test hote 3b"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -177,9 +177,9 @@ def cbservice_ports():
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
         tl = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cbservice.exe", "/FO", "CSV", "/NH"],
-                            capture_output=True, text=True, creationflags=flags, timeout=20).stdout
+                            capture_output=True, text=True, encoding="mbcs" if os.name == "nt" else None, errors="replace", creationflags=flags, timeout=20).stdout
         pids = set(re.findall(r'"cbservice\.exe","(\d+)"', tl, re.I))
-        ns = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+        ns = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True, encoding="mbcs" if os.name == "nt" else None, errors="replace",
                             creationflags=flags, timeout=20).stdout
         for line in ns.splitlines():
             m = re.search(r"TCP\s+(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d+)\s+\S+\s+LISTENING\s+(\d+)", line)
