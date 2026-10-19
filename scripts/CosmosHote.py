@@ -18,11 +18,14 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 3b"
+VERSION = "19/10 - test hote 4 (plateforme SketchUp)"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
 CBSERVICE = Path(r"C:\Program Files\Chaos\Cosmos\cbservice.exe")
+# Cosmos ne connait que les logiciels qu'il supporte : on se presente avec la meme "plateforme"
+# que V-Ray pour SketchUp (memes formats de fichiers V-Ray), sous le nom V-Ray Link.
+HOTE = ("SketchUp", "26.2.243")
 IMPORTER_ID = str(uuid.uuid5(uuid.NAMESPACE_URL, "claudebridge/vray-link/archicad"))
 SVC = "/content.v1beta2."
 BASES = [("http", 30305), ("https", 30306)]
@@ -329,7 +332,7 @@ def wait_for_import_request():
     options = pb((3, [1, 2]))
     return pb((1, importer_info()),
               (2, pb((1, "V-Ray"), (2, "7.20.00"))),
-              (3, pb((1, "Archicad"), (2, "28"))),
+              (3, pb((1, HOTE[0]), (2, HOTE[1]))),
               (4, options), (5, features))
 
 
@@ -451,8 +454,8 @@ def main():
             log("ListImporters :", e)
         scheme, port = base
         host = "localhost" if scheme == "https" else "127.0.0.1"
-        url = (f"{scheme}://{host}:{port}/?utm_campaign=cosmos&utm_source=V-Ray+Link&utm_medium=Archicad+28"
-               f"&importer_id={IMPORTER_ID}&first_importer_id={IMPORTER_ID}")
+        url = (f"https://localhost:30306/?utm_campaign=cosmos&utm_source=V-Ray+7.20.00"
+               f"&utm_medium={HOTE[0]}+Pro+{HOTE[1]}&importer_id={IMPORTER_ID}")
         log("ouverture de Cosmos :", url)
         webbrowser.open(url)
         log(">>> Dans Cosmos : telecharge UN materiau (ex. beton) puis UN objet. Laisse cette fenetre ouverte.")
