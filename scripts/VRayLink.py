@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0c (matériaux Cosmos)"
+VERSION = "19/10 - v2.0d (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -298,7 +298,23 @@ def element_surfaces(surf: dict, report=print) -> dict:
 def export_ifc(path: Path) -> None:
     if path.exists():
         path.unlink()
-    res = tapir("IFCFileOperation", {"method": "save", "ifcFilePath": str(path), "fileType": "ifc"}, timeout=1800)
+    # Archicad n'exporte que la selection si quelque chose est selectionne : on deselectionne le temps de l'export
+    sel = []
+    try:
+        sel = [{"elementId": e["elementId"]} for e in tapir("GetSelectedElements").get("elements", [])
+               if isinstance(e, dict) and "elementId" in e]
+        if sel:
+            tapir("ChangeSelectionOfElements", {"addElementsToSelection": [], "removeElementsFromSelection": sel})
+    except Exception:  # noqa: BLE001
+        sel = []
+    try:
+        res = tapir("IFCFileOperation", {"method": "save", "ifcFilePath": str(path), "fileType": "ifc"}, timeout=1800)
+    finally:
+        if sel:
+            try:
+                tapir("ChangeSelectionOfElements", {"addElementsToSelection": sel, "removeElementsFromSelection": []})
+            except Exception:  # noqa: BLE001
+                pass
     if isinstance(res, dict) and res.get("success") is False:
         raise RuntimeError(f"Export IFC refusé : {res.get('error')}")
     for _ in range(60):
@@ -1142,7 +1158,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
             info = json.loads(meta.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             info = {}
-    reuse = (state["options"].get("reutiliser") and geo.exists() and cache.exists() and info.get("version") == 2
+    reuse = (state["options"].get("reutiliser") and geo.exists() and cache.exists() and info.get("version") == 3
              and info.get("selection") == sel_sig)
     if reuse:
         meshes, mats, offset, ground = pickle.loads(cache.read_bytes())
@@ -1187,7 +1203,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         tris = int(info.get("triangles", 0))
     used = write_materials(d / "materiaux.vrscene", {n: mats.get(n, {}) for n in meshes}, state["bibliotheque"],
                            assigned, report)
-    meta.write_text(json.dumps({"version": 2, "sol": ground, "surfaces": sorted(meshes), "triangles": tris,
+    meta.write_text(json.dumps({"version": 3, "sol": ground, "surfaces": sorted(meshes), "triangles": tris,
                                 "selection": sel_sig, "uv": uv_sig,
                                 "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
                     encoding="utf-8")
