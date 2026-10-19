@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0g (matériaux Cosmos)"
+VERSION = "19/10 - v2.0h (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1223,41 +1223,43 @@ def diagnostic(folder: Path) -> list[str]:
         return ["(pas de diagnostic : géométrie reprise de l'export précédent)"]
 
 
-# cmd lit les .bat dans la page de codes OEM (les accents en UTF-8 cassent la lecture : "1 n'est pas reconnu")
-BAT_ENC = "oem" if os.name == "nt" else "cp850"
+def _run_bat(bat: Path, lines: list, env_vars: dict, cwd: Path | None = None) -> None:
+    """Le .bat reste en ASCII : les chemins (accents : Facade, aerienne...) passent par des variables
+    d'environnement, que cmd transmet sans les abimer."""
+    bat.write_text("\r\n".join(lines) + "\r\n", encoding="ascii", errors="replace", newline="")
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in env_vars.items()})
+    subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(cwd) if cwd else None, env=env,
+                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
 
 
 def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
-    """Lance V-Ray ; en cas d'erreur la fenetre noire reste ouverte (message lisible) et un journal est ecrit."""
-    bat = scene.parent / "rendre_cette_vue.bat"
-    log = scene.parent / "vray_journal.txt"
-    run = f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display={1 if show else 0} -autoClose=0 -verboseLevel=3'
-    bat.write_text("\r\n".join([
+    """Lance V-Ray (relance jusqu'a 3 fois s'il se ferme sans image ; sinon la fenetre reste ouverte)."""
+    _run_bat(scene.parent / "rendre_cette_vue.bat", [
         "@echo off", "title V-Ray Link - rendu", "set ESSAI=0",
-        f'if exist "{image}" del "{image}"',
-        ":relance", "set /a ESSAI+=1", run, "set CODE=%errorlevel%",
-        f'if exist "{image}" goto fin',
+        'if exist "%VRL_IMAGE%" del "%VRL_IMAGE%"',
+        ":relance", "set /a ESSAI+=1",
+        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" -display={1 if show else 0} -autoClose=0 -verboseLevel=3',
+        "set CODE=%errorlevel%",
+        'if exist "%VRL_IMAGE%" goto fin',
         "if %ESSAI% LSS 3 (", "  echo.", "  echo V-Ray s'est ferme sans image ^(code %CODE%^) : nouvel essai...",
         "  timeout /t 3 >nul", "  goto relance", ")",
-        "echo.", "echo *** V-Ray n'a pas pu rendre l'image apres 3 essais (code %CODE%) : fais une capture de cette fenetre. ***",
-        "pause", ":fin"]) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
-    try:
-        log.unlink()
-    except Exception:  # noqa: BLE001
-        pass
-    subprocess.Popen(["cmd", "/c", str(bat)], cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        "echo.", "echo *** V-Ray n'a pas pu rendre l'image apres 3 essais ^(code %CODE%^) : fais une capture de cette fenetre. ***",
+        "pause", ":fin"], {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image}, scene.parent)
 
 
 def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path) -> Path:
     bat = jobs[0][0].parent / "rendre_les_vues.bat"
     lines = ["@echo off", "title V-Ray Link - rendu des vues"]
+    env = {"VRL_VRAY": vray, "VRL_DOSSIER": folder}
     for k, (scene, image) in enumerate(jobs, 1):
-        lines.append(f'echo Vue {k}/{len(jobs)} : {image.stem}')
-        lines.append(f'"{vray}" -sceneFile="{scene}" -imgFile="{image}" -display=1 -autoClose=1')
-        lines.append("if not \"%errorlevel%\"==\"0\" (echo *** Erreur V-Ray sur cette vue : fais une capture. *** & pause)")
-    lines += [f'explorer "{folder}"', "echo Termine.", "timeout /t 5"]
-    bat.write_text("\r\n".join(lines) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
-    subprocess.Popen(["cmd", "/c", str(bat)], creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+        env[f"VRL_S{k}"], env[f"VRL_I{k}"] = scene, image
+        lines.append(f"echo Vue {k}/{len(jobs)}")
+        lines.append(f'"%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
+        lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
+        lines.append(f'if not exist "%VRL_I{k}%" (echo *** Erreur V-Ray sur cette vue : fais une capture. *** & pause)')
+    lines += ['explorer "%VRL_DOSSIER%"', "echo Termine.", "timeout /t 5"]
+    _run_bat(bat, lines, env, bat.parent)
     return bat
 
 
