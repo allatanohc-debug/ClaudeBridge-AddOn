@@ -20,11 +20,17 @@ Utilise vray.exe installe avec V-Ray pour SketchUp (C:\\Program Files\\Chaos\\..
 
 import argparse
 import datetime as dt
+import hashlib
+import json
 import math
 import os
+import pickle
 import re
+import ssl
+import struct
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -51,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1.5 (étape 1)"
+VERSION = "19/10 - v2.0 (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -464,44 +470,115 @@ def guess_material(name: str, info: dict, library: dict) -> dict:
     return out
 
 
-def write_geometry(path: Path, meshes: dict, mats: dict, offset: tuple, library: dict) -> int:
+def mat_id(name: str) -> str:
+    return "M_" + hashlib.md5(name.encode("utf-8")).hexdigest()[:10]
+
+
+def _box_uv(verts, faces, offset, k: float):
+    """Coordonnees de texture en projection boite (1 unite = 1 m, multipliee par k) : sommets doubles par axe."""
+    uv, idx, out = [], {}, []
+    ox, oy, oz = offset
+    for t in range(0, len(faces), 3):
+        a, b, c = faces[t], faces[t + 1], faces[t + 2]
+        pa, pb_, pc = verts[a], verts[b], verts[c]
+        u = (pb_[0] - pa[0], pb_[1] - pa[1], pb_[2] - pa[2])
+        v = (pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2])
+        n = (abs(u[1] * v[2] - u[2] * v[1]), abs(u[2] * v[0] - u[0] * v[2]), abs(u[0] * v[1] - u[1] * v[0]))
+        axis = 0 if n[0] >= n[1] and n[0] >= n[2] else 1 if n[1] >= n[2] else 2
+        for vi in (a, b, c):
+            key = (vi, axis)
+            j = idx.get(key)
+            if j is None:
+                x, y, z = verts[vi][0] + ox, verts[vi][1] + oy, verts[vi][2] + oz
+                p = (y, z) if axis == 0 else (x, z) if axis == 1 else (x, y)
+                j = idx[key] = len(uv)
+                uv.append((p[0] * k, p[1] * k))
+            out.append(j)
+    return uv, out
+
+
+def write_geometry(path: Path, meshes: dict, offset: tuple, scales: dict | None = None) -> int:
+    """Geometrie seule (les materiaux sont dans materiaux.vrscene) + coordonnees de texture pour les materiaux Cosmos."""
     tris = 0
+    scales = scales or {}
+    ox, oy, oz = offset
     with path.open("w", encoding="utf-8") as out:
         out.write("// Geometrie Archicad -> V-Ray (V-Ray Link)\n")
         for k, (name, (verts, faces)) in enumerate(meshes.items()):
             if not faces:
                 continue
-            m = guess_material(name, mats.get(name, {}), library)
-            mid = f"m{k}"
-            r, g, b = (srgb_to_linear(c) for c in m["rgb"])
-            out.write(f"// surface : {name}\n")
-            if m.get("type") == "verre":
-                out.write(f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor(0.02,0.02,0.02,1);\n  reflect=AColor(1,1,1,1);\n"
-                          f"  reflect_glossiness=1;\n  fresnel=1;\n  refract=AColor({0.9 * max(r, .6):.4f},{0.9 * max(g, .6):.4f},"
-                          f"{0.9 * max(b, .6):.4f},1);\n  refract_ior=1.5;\n  refract_affect_shadows=1;\n}}\n")
-            elif m.get("type") == "eau":
-                out.write(f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor(0.01,0.03,0.04,1);\n  reflect=AColor(1,1,1,1);\n"
-                          f"  reflect_glossiness=0.98;\n  fresnel=1;\n  refract=AColor(0.85,0.95,0.95,1);\n  refract_ior=1.33;\n"
-                          f"  fog_color=Color(0.6,0.85,0.85);\n  fog_mult=0.3;\n  refract_affect_shadows=1;\n}}\n")
-            else:
-                rf = float(m.get("reflect", 0.15))
-                out.write(f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor({r:.4f},{g:.4f},{b:.4f},1);\n"
-                          f"  reflect=AColor({rf:.3f},{rf:.3f},{rf:.3f},1);\n  reflect_glossiness={float(m.get('gloss', .5)):.3f};\n"
-                          f"  fresnel=1;\n  metalness={float(m.get('metal', 0.0)):.2f};\n}}\n")
-            out.write(f"MtlSingleBRDF {mid} {{\n  brdf={mid}_brdf;\n}}\n")
-            out.write(f"GeomStaticMesh {mid}_geo {{\n  vertices=ListVector(")
-            ox, oy, oz = offset
+            gid = f"g{k}"
+            out.write(f"// surface : {name}\nGeomStaticMesh {gid} {{\n  vertices=ListVector(")
             for i in range(0, len(verts), 2000):
                 chunk = ",".join(f"Vector({x + ox:.4f},{y + oy:.4f},{z + oz:.4f})" for x, y, z in verts[i:i + 2000])
                 out.write(("," if i else "") + chunk)
             out.write(");\n  faces=ListInt(")
             for i in range(0, len(faces), 6000):
                 out.write(("," if i else "") + ",".join(str(c) for c in faces[i:i + 6000]))
-            out.write(");\n}\n")
-            out.write(f"Node {mid}_node {{\n  transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),"
-                      f"Vector(0,0,0));\n  geometry={mid}_geo;\n  material={mid};\n}}\n")
+            uv, uvf = _box_uv(verts, faces, offset, float(scales.get(name, 1.0)))
+            out.write(");\n  map_channels=List(List(1,ListVector(")
+            for i in range(0, len(uv), 2000):
+                out.write(("," if i else "") + ",".join(f"Vector({a:.4f},{b:.4f},0)" for a, b in uv[i:i + 2000]))
+            out.write("),ListInt(")
+            for i in range(0, len(uvf), 6000):
+                out.write(("," if i else "") + ",".join(str(c) for c in uvf[i:i + 6000]))
+            out.write(")));\n}\n")
+            out.write(f"Node {gid}_node {{\n  transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),"
+                      f"Vector(0,0,0));\n  geometry={gid};\n  material={mat_id(name)};\n}}\n")
             tris += len(faces) // 3
     return tris
+
+
+def _brdf(mid: str, m: dict) -> str:
+    r, g, b = (srgb_to_linear(c) for c in m["rgb"])
+    if m.get("type") == "verre":
+        return (f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor(0.02,0.02,0.02,1);\n  reflect=AColor(1,1,1,1);\n"
+                f"  reflect_glossiness=1;\n  fresnel=1;\n  refract=AColor({0.9 * max(r, .6):.4f},{0.9 * max(g, .6):.4f},"
+                f"{0.9 * max(b, .6):.4f},1);\n  refract_ior=1.5;\n  refract_affect_shadows=1;\n}}\n")
+    if m.get("type") == "eau":
+        return (f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor(0.01,0.03,0.04,1);\n  reflect=AColor(1,1,1,1);\n"
+                f"  reflect_glossiness=0.98;\n  fresnel=1;\n  refract=AColor(0.85,0.95,0.95,1);\n  refract_ior=1.33;\n"
+                f"  fog_color=Color(0.6,0.85,0.85);\n  fog_mult=0.3;\n  refract_affect_shadows=1;\n}}\n")
+    rf = float(m.get("reflect", 0.15))
+    return (f"BRDFVRayMtl {mid}_brdf {{\n  diffuse=AColor({r:.4f},{g:.4f},{b:.4f},1);\n"
+            f"  reflect=AColor({rf:.3f},{rf:.3f},{rf:.3f},1);\n  reflect_glossiness={float(m.get('gloss', .5)):.3f};\n"
+            f"  fresnel=1;\n  metalness={float(m.get('metal', 0.0)):.2f};\n}}\n")
+
+
+def cosmos_assignments(state: dict, key: str) -> dict:
+    """Surface -> materiau Cosmos (associations par nom de surface + elements choisis dans Archicad)."""
+    out = dict(state.get("cosmos") or {})
+    for gid, folder in ((state.get("selection") or {}).get(key) or {}).items():
+        out[virtual_surface(folder)] = {"dossier": folder, "echelle": 1.0}
+    return out
+
+
+def virtual_surface(folder: str) -> str:
+    return "Cosmos · " + re.sub(r"_[0-9a-f]{8}$", "", Path(folder).name).replace("_", " ")
+
+
+def write_materials(path: Path, mats: dict, library: dict, assigned: dict, report=print) -> list[str]:
+    """Un materiau par surface : materiau Cosmos s'il est associe, sinon couleur Archicad + reglages devines."""
+    used = []
+    with path.open("w", encoding="utf-8") as out:
+        out.write("// Materiaux (V-Ray Link)\n")
+        for name, info in mats.items():
+            mid = mat_id(name)
+            a = assigned.get(name)
+            if a and a.get("dossier"):
+                try:
+                    folder = Path(a["dossier"])
+                    vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
+                    fixed, top = vrmat_for_render(vrmat)
+                    out.write(f"// {name} <- Cosmos : {folder.name}\nMtlVRmat {mid} {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n"
+                              f"  mtlname=\"{top}\";\n}}\n")
+                    used.append(f"{name} → {virtual_surface(str(folder))[9:]}")
+                    continue
+                except Exception as error:  # noqa: BLE001
+                    report(f"Matériau Cosmos indisponible pour {name} : {error}")
+            m = guess_material(name, info, library)
+            out.write(f"// surface : {name}\n" + _brdf(mid, m) + f"MtlSingleBRDF {mid} {{\n  brdf={mid}_brdf;\n}}\n")
+    return used
 
 
 # ---------------------------------------------------------------- soleil ---
@@ -609,8 +686,425 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
               "GeomPlane sol_geo { }",
               f"Node sol_node {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),"
               f"Vector(0,0,{ground_z - 0.005:.4f})); geometry=sol_geo; material=sol_mtl; }}"]
+    s.append('#include "materiaux.vrscene"')
     s.append(f'#include "{geometry.name}"')
     path.write_text("\n".join(s) + "\n", encoding="utf-8")
+
+
+# ------------------------------------------------------------------ Cosmos ---
+# V-Ray Link se presente a Chaos Cosmos comme un logiciel hote (meme "plateforme" que V-Ray pour SketchUp,
+# donc memes fichiers V-Ray : .vrmat / .vrmesh / .vrscan). Cosmos envoie alors chaque telechargement.
+# Protocole : gRPC content.v1beta2 (ImportAPI/WaitForImport) sur HTTP/2, ecrit ici sans dependance.
+COSMOS_EXE = Path(r"C:\Program Files\Chaos\Cosmos\cbservice.exe")
+COSMOS_HOTE = ("SketchUp", "26.2.243")
+COSMOS_ID = "351afdea-cf1f-5e8a-b423-acfcb0c01648"        # identifiant fixe de V-Ray Link aupres de Cosmos
+SVC = "/content.v1beta2."
+TEXTURE_EXT = ("tx", "jpg", "jpeg", "png", "exr", "tif", "tiff", "hdr", "bmp", "vrscan", "vrmesh", "ies", "vrmat", "vrscene")
+
+def _varint(n: int) -> bytes:
+    out = bytearray()
+    n &= (1 << 64) - 1
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def pb(*fields) -> bytes:
+    """fields : (numero, valeur) ; valeur int/bool -> varint, str/bytes -> length-delimited, list -> repete."""
+    out = bytearray()
+    for num, val in fields:
+        vals = val if isinstance(val, list) else [val]
+        for v in vals:
+            if v is None:
+                continue
+            if isinstance(v, bool) or isinstance(v, int):
+                out += _varint(num << 3) + _varint(int(v))
+            else:
+                b = v.encode() if isinstance(v, str) else v
+                out += _varint(num << 3 | 2) + _varint(len(b)) + b
+    return bytes(out)
+
+
+def _rvarint(b, i):
+    n = s = 0
+    while True:
+        c = b[i]
+        i += 1
+        n |= (c & 0x7F) << s
+        s += 7
+        if c < 0x80:
+            return n, i
+
+
+def decode(b: bytes, depth=0):
+    """Decodage generique -> {numero: [valeurs]} ; sous-messages decodes si possible."""
+    out = {}
+    i = 0
+    while i < len(b):
+        key, i = _rvarint(b, i)
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = _rvarint(b, i)
+        elif wt == 2:
+            ln, i = _rvarint(b, i)
+            raw = b[i:i + ln]
+            i += ln
+            v = raw
+            try:
+                txt = raw.decode("utf-8")
+                if all(c.isprintable() or c in "\r\n\t" for c in txt):
+                    v = txt
+            except UnicodeDecodeError:
+                pass
+            if isinstance(v, bytes) and depth < 8:
+                try:
+                    v = decode(raw, depth + 1)
+                except Exception:  # noqa: BLE001
+                    v = raw.hex()
+        elif wt == 5:
+            v = struct.unpack("<f", b[i:i + 4])[0]
+            i += 4
+        elif wt == 1:
+            v = struct.unpack("<d", b[i:i + 8])[0]
+            i += 8
+        else:
+            raise ValueError("wire type %d" % wt)
+        out.setdefault(num, []).append(v)
+    return out
+
+
+
+
+class H2Call:
+    """Client gRPC minimal sur HTTP/2 (bibliotheque standard uniquement, pas de grpcio)."""
+
+    def __init__(self, port, tls, timeout):
+        import socket
+        sock = socket.create_connection(("127.0.0.1", port), timeout=timeout)
+        if tls:
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE        # certificat local auto-signe (127.0.0.1)
+            ctx.set_alpn_protocols(["h2"])
+            sock = ctx.wrap_socket(sock, server_hostname="localhost")
+        self.s, self.port, self.tls = sock, port, tls
+        self.buf = b""
+        self.s.sendall(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+                       + self._frame(4, 0, 0, struct.pack(">HI", 4, 16 * 1024 * 1024))
+                       + self._frame(8, 0, 0, struct.pack(">I", 1 << 30)))
+
+    @staticmethod
+    def _frame(typ, flags, sid, payload):
+        return struct.pack(">I", len(payload))[1:] + bytes([typ, flags]) + struct.pack(">I", sid) + payload
+
+    @staticmethod
+    def _hstr(b):
+        n = len(b)
+        if n < 127:
+            return bytes([n]) + b
+        out, n = bytearray([127]), n - 127
+        while n >= 128:
+            out.append((n & 0x7F) | 0x80)
+            n >>= 7
+        out.append(n)
+        return bytes(out) + b
+
+    def request(self, method, msg):
+        hdrs = [(":method", "POST"), (":scheme", "https" if self.tls else "http"), (":path", SVC + method),
+                (":authority", f"127.0.0.1:{self.port}"), ("content-type", "application/grpc"), ("te", "trailers"),
+                ("user-agent", "vraylink-grpc/1.0")]
+        block = b"".join(b"\x00" + self._hstr(k.encode()) + self._hstr(v.encode()) for k, v in hdrs)
+        body = b"\x00" + struct.pack(">I", len(msg)) + msg
+        self.s.sendall(self._frame(1, 0x4, 1, block) + self._frame(0, 0x1, 1, body))
+
+    def _read(self, n):
+        while len(self.buf) < n:
+            d = self.s.recv(65536)
+            if not d:
+                raise ConnectionError("connexion fermee par Cosmos")
+            self.buf += d
+        out, self.buf = self.buf[:n], self.buf[n:]
+        return out
+
+    def messages(self):
+        data = b""
+        while True:
+            head = self._read(9)
+            ln = int.from_bytes(head[:3], "big")
+            typ, flags, sid = head[3], head[4], int.from_bytes(head[5:9], "big") & 0x7FFFFFFF
+            payload = self._read(ln) if ln else b""
+            if typ == 0 and sid == 1:                       # DATA
+                if flags & 0x8:                             # padding
+                    payload = payload[1:len(payload) - payload[0]]
+                data += payload
+                if ln:
+                    self.s.sendall(self._frame(8, 0, 0, struct.pack(">I", ln)) + self._frame(8, 0, 1, struct.pack(">I", ln)))
+                while len(data) >= 5 and len(data) >= 5 + int.from_bytes(data[1:5], "big"):
+                    m = int.from_bytes(data[1:5], "big")
+                    yield data[5:5 + m]
+                    data = data[5 + m:]
+                if flags & 0x1:
+                    return
+            elif typ == 1 and sid == 1 and flags & 0x1:     # trailers -> fin
+                return
+            elif typ == 4 and not flags & 0x1:              # SETTINGS -> ACK
+                self.s.sendall(self._frame(4, 0x1, 0, b""))
+            elif typ == 6 and not flags & 0x1:              # PING -> reponse
+                self.s.sendall(self._frame(6, 0x1, 0, payload))
+            elif typ == 3 and sid == 1:                     # RST_STREAM
+                raise ConnectionError("flux refuse (RST code %d)" % int.from_bytes(payload[:4], "big"))
+            elif typ == 7:                                  # GOAWAY
+                raise ConnectionError("GOAWAY code %d %s" % (int.from_bytes(payload[4:8], "big"), payload[8:200]))
+
+    def close(self):
+        try:
+            self.s.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _quiet_run(cmd: list) -> str:
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return subprocess.run(cmd, capture_output=True, text=True, encoding="mbcs" if os.name == "nt" else None,
+                          errors="replace", creationflags=flags, timeout=20).stdout or ""
+
+
+def _port_open(port: int) -> bool:
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
+def cosmos_ports() -> list:
+    """Ports des services Cosmos en cours (il peut y en avoir plusieurs)."""
+    ports = []
+    rt = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "Chaos" / "Cosmos" / "runtime.json"
+    try:
+        ports += [int(p) for p in re.findall(r"(?:port\D{1,4}|:)(\d{4,5})", rt.read_text("utf-8", "replace"))]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        pids = set(re.findall(r'"cbservice\.exe","(\d+)"',
+                              _quiet_run(["tasklist", "/FI", "IMAGENAME eq cbservice.exe", "/FO", "CSV", "/NH"]), re.I))
+        for line in _quiet_run(["netstat", "-ano", "-p", "TCP"]).splitlines():
+            m = re.search(r"TCP\s+(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d+)\s+\S+\s+LISTENING\s+(\d+)", line)
+            if m and m.group(3) in pids:
+                ports.append(int(m.group(2)))
+    except Exception:  # noqa: BLE001
+        pass
+    return list(dict.fromkeys(ports + [30305]))
+
+
+class _Grpc:
+    def __init__(self, port: int, tls: bool):
+        self.port, self.tls = port, tls
+
+    def unary(self, method: str, msg: bytes, timeout: float = 10):
+        c = H2Call(self.port, self.tls, timeout)
+        try:
+            c.request(method, msg)
+            for m in c.messages():
+                return m
+            raise RuntimeError("pas de réponse")
+        finally:
+            c.close()
+
+    def stream(self, method: str, msg: bytes):
+        c = H2Call(self.port, self.tls, 15)
+        c.request(method, msg)
+        c.s.settimeout(None)
+        try:
+            yield from c.messages()
+        finally:
+            c.close()
+
+
+def _first(d: dict, k: int, default=None):
+    v = d.get(k)
+    return v[0] if v else default
+
+
+class CosmosHost:
+    """Connexion permanente a Cosmos ; `on_import(nom_du_paquet)` est appele a chaque telechargement."""
+
+    def __init__(self, on_import, on_status):
+        self.on_import, self.on_status = on_import, on_status
+        self.ports: set = set()
+        self.running = False
+        self.lock = threading.Lock()
+
+    def request(self) -> bytes:
+        info = pb((1, "V-Ray Link (Archicad)"), (2, COSMOS_ID), (3, os.getpid()))
+        feats = pb((1, True), (2, True), (4, True), (6, True), (7, True), (8, True), (9, True), (11, True),
+                   (12, pb((1, True), (2, True), (3, True))), (14, True), (15, True), (16, True), (18, True))
+        return pb((1, info), (2, pb((1, "V-Ray"), (2, "7.20.00"))), (3, pb((1, COSMOS_HOTE[0]), (2, COSMOS_HOTE[1]))),
+                  (4, pb((3, [1, 2]))), (5, feats))
+
+    def start(self) -> None:
+        if self.running:
+            self.scan()
+            return
+        self.running = True
+        threading.Thread(target=self._loop, daemon=True).start()
+
+    def _loop(self) -> None:
+        while self.running:
+            try:
+                self.scan()
+            except Exception as error:  # noqa: BLE001
+                self.on_status(f"Cosmos : {error}")
+            time.sleep(20)                   # Cosmos redemarre parfois : on se reconnecte
+
+    def scan(self) -> None:
+        if not _port_open(30305) and COSMOS_EXE.exists():
+            self.on_status("Démarrage de Chaos Cosmos...")
+            os.startfile(str(COSMOS_EXE))  # type: ignore[attr-defined]
+            for _ in range(30):
+                time.sleep(1)
+                if _port_open(30305):
+                    break
+        found = 0
+        for port in cosmos_ports():
+            with self.lock:
+                if port in self.ports or port - 1 in self.ports:
+                    found += 1
+                    continue
+            for tls in (False, True):
+                api = _Grpc(port, tls)
+                try:
+                    api.unary("ImportAPI/ListImporters", b"", timeout=4)
+                except Exception:  # noqa: BLE001
+                    continue
+                with self.lock:
+                    self.ports.add(port)
+                threading.Thread(target=self._listen, args=(api,), daemon=True).start()
+                found += 1
+                break
+        self.on_status("Cosmos connecté : télécharge des matériaux, ils arrivent ici." if found
+                       else "Cosmos introuvable (est-il installé ?).")
+
+    def _listen(self, api: _Grpc) -> None:
+        try:
+            for body in api.stream("ImportAPI/WaitForImport", self.request()):
+                if body:
+                    ev = decode(body)
+                    threading.Thread(target=self._received, args=(api, ev), daemon=True).start()
+        except Exception:  # noqa: BLE001
+            pass
+        with self.lock:
+            self.ports.discard(api.port)
+
+    def _received(self, api: _Grpc, ev: dict) -> None:
+        pid, rev = _first(ev, 2, ""), _first(ev, 3, 0)
+        name = ""
+        try:
+            info = decode(api.unary("PackagesAPI/FindPackageById", pb((1, pid), (2, rev))))
+            name = _first(_first(_first(info, 1, {}), 4, {}), 1, "")
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(1.5)                       # laisse Cosmos finir d'ecrire les fichiers
+        self.on_import(name or pid)
+
+
+def cosmos_url() -> str:
+    return (f"http://127.0.0.1:30305/?utm_campaign=cosmos&utm_source=V-Ray+7.20.00"
+            f"&utm_medium={COSMOS_HOTE[0]}+Pro+{COSMOS_HOTE[1]}&importer_id={COSMOS_ID}")
+
+
+def cosmos_packages() -> Path:
+    home = Path(os.environ.get("USERPROFILE", Path.home()))
+    for p in (home / "OneDrive" / "Documents" / "Chaos Cosmos" / "Packages", home / "Documents" / "Chaos Cosmos" / "Packages"):
+        if p.is_dir():
+            return p
+    return home / "Documents" / "Chaos Cosmos" / "Packages"
+
+
+_LOD = {"3dh": 0, "3d": 1, "3dm": 2, "3dl": 3}
+
+
+def _lod(path: Path) -> int:
+    m = re.search(r"_(3dh|3dm|3dl|3d)_", path.name)
+    return _LOD.get(m.group(1), 4) if m else 4
+
+
+def cosmos_library(kind: str = "Materials") -> list[dict]:
+    """Paquets Cosmos telecharges : [{nom, categorie, dossier, vrmat, vrmesh, apercu, date}] du plus recent au plus ancien."""
+    base = cosmos_packages() / kind
+    out = []
+    if not base.is_dir():
+        return out
+    for folder in base.glob("*/*"):
+        if not folder.is_dir():
+            continue
+        vrmats = sorted(folder.glob("*.vrmat"), key=_lod)
+        if not vrmats:
+            continue
+        meshes = sorted(folder.glob("*.vrmesh"), key=_lod)
+        prev = sorted((folder / "Previews").glob("*.png")) or sorted((folder / "Previews").glob("*.jpg"))
+        label = re.sub(r"_[0-9a-f]{8}$", "", folder.name).replace("_", " ")
+        out.append({"nom": label, "categorie": folder.parent.name.replace("_", " "), "dossier": str(folder),
+                    "vrmat": str(vrmats[0]), "vrmesh": str(meshes[0]) if meshes else "",
+                    "apercu": str(prev[0]) if prev else "", "date": folder.stat().st_mtime})
+    out.sort(key=lambda e: -e["date"])
+    return out
+
+
+def vrmat_for_render(vrmat: Path) -> tuple[Path, str]:
+    """Copie du .vrmat avec des chemins absolus (textures, scans) + nom du materiau principal."""
+    text = vrmat.read_text("utf-8", "replace")
+    folder = vrmat.parent
+    files = {p.name.lower(): p for p in folder.rglob("*") if p.is_file()}
+
+    def fix(m):
+        raw = m.group(1).strip()
+        p = Path(raw.replace("\\", "/"))
+        if p.is_absolute() and p.exists():
+            return m.group(0)
+        cand = folder / raw.lstrip("/\\")
+        if not cand.exists():
+            base = p.name.lower()
+            cand = files.get(base) or next((f for n, f in files.items() if n.endswith("_" + base) or n.endswith(base)), None)
+        if not cand:
+            return m.group(0)
+        return ">" + str(cand).replace("\\", "/").replace("&", "&amp;") + "<"
+
+    pattern = r">([^<>]+?\.(?:" + "|".join(TEXTURE_EXT) + r"))<"
+    fixed = re.sub(pattern, fix, text, flags=re.I)
+    urls = re.findall(r'<Asset\s+[^>]*?url="([^"]+)"[^>]*?type="material"', fixed) + \
+        re.findall(r'<Asset\s+[^>]*?type="material"[^>]*?url="([^"]+)"', fixed)
+    urls = list(dict.fromkeys(urls))
+    top = next((u for u in urls if fixed.count(u) == 1), urls[0] if urls else "")
+    out = data_dir() / "cosmos" / f"{safe(vrmat.parent.name)}.vrmat"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(fixed, encoding="utf-8")
+    return out, top.lstrip("/")
+
+
+def thumbnail(entry: dict, size: int = 96):
+    """Petite image d'apercu (mise en cache) pour la liste des materiaux."""
+    import tkinter as tk
+    cache = data_dir() / "cosmos" / "apercus" / f"{safe(Path(entry['dossier']).name)}_{size}.png"
+    try:
+        if cache.exists():
+            return tk.PhotoImage(file=str(cache))
+        if not entry.get("apercu"):
+            return None
+        img = tk.PhotoImage(file=entry["apercu"])
+        k = max(1, max(img.width(), img.height()) // size)
+        small = img.subsample(k, k)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        small.write(str(cache), format="png")
+        return small
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------- etat ---
@@ -622,52 +1116,88 @@ def load_settings() -> dict:
             "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
-            "vray": saved.get("vray", ""), "coches": saved.get("coches") or {}}
+            "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
+            "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {}}
 
 
 def save_settings(state: dict) -> None:
-    save_json(REGLAGES, {k: state[k] for k in ("options", "cameras", "bibliotheque", "vray", "coches")})
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection")}
+    out["vray"] = state.get("vray") or ""
+    save_json(REGLAGES, out)
 
 
 def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float, str]:
-    """Exporte et convertit le modele (ou reprend la conversion precedente). Renvoie (fichier, sol z, resume)."""
-    d = data_dir() / safe(proj["name"])
+    """Exporte et convertit le modele (ou reprend la conversion precedente), puis ecrit les materiaux.
+    Renvoie (fichier geometrie, sol z, resume)."""
+    key = safe(proj["name"])
+    d = data_dir() / key
     d.mkdir(parents=True, exist_ok=True)
-    geo, meta = d / "geometrie.vrscene", d / "geometrie.json"
-    if state["options"].get("reutiliser") and geo.exists() and meta.exists():
-        import json
-        info = json.loads(meta.read_text(encoding="utf-8"))
-        return geo, float(info.get("sol", 0.0)), "géométrie reprise de l'export précédent"
-    ensure_ifcopenshell(report)
-    report("Export IFC depuis Archicad...")
-    ifc = d / "modele.ifc"
-    export_ifc(ifc)
-    surf, by_element = {"name": {}}, {}
-    try:
-        report("Lecture des surfaces Archicad...")
-        surf = archicad_surfaces()
-        by_element = element_surfaces(surf, report)
-    except Exception as error:  # noqa: BLE001
-        report(f"(surfaces Archicad non lues : {error})")
-    report("Conversion de la géométrie pour V-Ray...")
-    meshes, mats, (lo, hi) = ifc_meshes(ifc, report, surf, by_element)
-    if not meshes:
-        raise RuntimeError("Aucune géométrie dans l'export IFC (calques masqués ?).")
-    offset = (0.0, 0.0, 0.0)
-    box = archicad_bbox()
-    if box:                                  # IFC decale par rapport a Archicad (point de base, site) : on recale
-        dx = [box[0][k] - lo[k] for k in range(3)]
-        if any(abs(c) > 0.05 for c in dx):
-            offset = tuple(dx)
-    tris = write_geometry(geo, meshes, mats, offset, state["bibliotheque"])
-    ground = (box[0][2] if box else lo[2] + offset[2])
-    import json
-    meta.write_text(json.dumps({"sol": ground, "surfaces": sorted(meshes), "triangles": tris}), encoding="utf-8")
-    state.setdefault("surfaces", sorted(meshes))
-    listing = ", ".join(
-        f"{n} ({'/'.join(str(int(c * 255)) for c in guess_material(n, mats.get(n, {}), state['bibliotheque'])['rgb'])})"
-        for n in sorted(meshes)[:25])
-    return geo, ground, (f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ") + "\nSurfaces : " + listing)
+    geo, meta, cache = d / "geometrie.vrscene", d / "geometrie.json", d / "geometrie.pkl"
+    assigned = cosmos_assignments(state, key)
+    selection = (state.get("selection") or {}).get(key) or {}
+    sel_sig = hashlib.md5(json.dumps(sorted(selection.items())).encode()).hexdigest()
+    info = {}
+    if meta.exists():
+        try:
+            info = json.loads(meta.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            info = {}
+    reuse = (state["options"].get("reutiliser") and geo.exists() and cache.exists() and info.get("version") == 2
+             and info.get("selection") == sel_sig)
+    if reuse:
+        meshes, mats, offset, ground = pickle.loads(cache.read_bytes())
+        note = "géométrie reprise de l'export précédent"
+    else:
+        if state["options"].get("reutiliser") and info.get("selection") not in (None, sel_sig):
+            report("Matériaux appliqués à des éléments : nouvel export du modèle...")
+        ensure_ifcopenshell(report)
+        report("Export IFC depuis Archicad...")
+        ifc = d / "modele.ifc"
+        export_ifc(ifc)
+        surf, by_element = {"name": {}}, {}
+        try:
+            report("Lecture des surfaces Archicad...")
+            surf = archicad_surfaces()
+            by_element = element_surfaces(surf, report)
+        except Exception as error:  # noqa: BLE001
+            report(f"(surfaces Archicad non lues : {error})")
+        for gid, folder in selection.items():          # elements choisis dans Archicad : materiau Cosmos force
+            by_element[gid] = (virtual_surface(folder), True)
+        report("Conversion de la géométrie pour V-Ray...")
+        meshes, mats, (lo, hi) = ifc_meshes(ifc, report, surf, by_element)
+        if not meshes:
+            raise RuntimeError("Aucune géométrie dans l'export IFC (calques masqués ?).")
+        for name in meshes:
+            mats.setdefault(name, {"rgb": (0.75, 0.75, 0.75), "transparence": 0.0})
+        offset = (0.0, 0.0, 0.0)
+        box = archicad_bbox()
+        if box:                                  # IFC decale par rapport a Archicad (point de base, site) : on recale
+            dx = [box[0][k] - lo[k] for k in range(3)]
+            if any(abs(c) > 0.05 for c in dx):
+                offset = tuple(dx)
+        ground = (box[0][2] if box else lo[2] + offset[2])
+        cache.write_bytes(pickle.dumps((meshes, mats, offset, ground)))
+        note = ""
+    scales = {n: float(a.get("echelle", 1.0)) for n, a in assigned.items() if n in meshes}
+    uv_sig = hashlib.md5(json.dumps(sorted(scales.items())).encode()).hexdigest()
+    if not (reuse and info.get("uv") == uv_sig):
+        report("Écriture de la géométrie...")
+        tris = write_geometry(geo, meshes, offset, scales)
+    else:
+        tris = int(info.get("triangles", 0))
+    used = write_materials(d / "materiaux.vrscene", {n: mats.get(n, {}) for n in meshes}, state["bibliotheque"],
+                           assigned, report)
+    meta.write_text(json.dumps({"version": 2, "sol": ground, "surfaces": sorted(meshes), "triangles": tris,
+                                "selection": sel_sig, "uv": uv_sig,
+                                "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
+                    encoding="utf-8")
+    state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
+    summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
+    if note:
+        summary += f" ({note})"
+    if used:
+        summary += "\nMatériaux Cosmos : " + " ; ".join(used)
+    return geo, ground, summary
 
 
 def diagnostic(folder: Path) -> list[str]:
@@ -706,8 +1236,12 @@ def window(state: dict) -> None:
     root = tk.Tk()
     root.title(f"V-Ray Link - version {VERSION}")
     root.attributes("-topmost", True)
-    outer = ttk.Frame(root, padding=12)
-    outer.grid()
+    nb = ttk.Notebook(root)
+    nb.grid(sticky="nsew")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    outer = ttk.Frame(nb, padding=12)
+    nb.add(outer, text="  Rendu  ")
     status = tk.StringVar(value="Choisis la vue, le soleil et la qualité, puis « Rendre cette vue ».")
     head = ttk.Frame(outer)
     head.grid(row=0, column=0, sticky="ew")
@@ -958,9 +1492,359 @@ def window(state: dict) -> None:
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
     ttk.Button(buttons, text="Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
                ).grid(row=0, column=2, padx=3)
+    materials_tab(root, nb, state, proj, key)
     root.protocol("WM_DELETE_WINDOW", lambda: (collect(), root.destroy()))
     root.after(100, compute_autos)
     root.mainloop()
+
+
+# ---------------------------------------------------------- onglet Materiaux ---
+def project_surfaces(state: dict, key: str) -> tuple[dict, bool]:
+    """Surfaces du projet -> couleur. (vrai, si elles viennent du dernier rendu = seulement celles utilisees)"""
+    meta = data_dir() / key / "geometrie.json"
+    try:
+        info = json.loads(meta.read_text(encoding="utf-8"))
+        if info.get("couleurs"):
+            return {n: tuple(c) for n, c in info["couleurs"].items()}, True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return {n: tuple(i["rgb"]) for n, i in archicad_surfaces()["name"].items()}, False
+    except Exception:  # noqa: BLE001
+        return {}, False
+
+
+def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
+    import tkinter as tk
+    from tkinter import ttk
+
+    tab = ttk.Frame(nb, padding=10)
+    nb.add(tab, text="  Matériaux  ")
+    tab.columnconfigure(0, weight=2)
+    tab.columnconfigure(1, weight=3)
+    tab.rowconfigure(1, weight=1)
+    msg = tk.StringVar(value="1. Choisis une ou plusieurs surfaces à gauche   2. Clique un matériau à droite   "
+                             "3. « Associer » (ou double-clic sur le matériau).")
+    cosmos_state = tk.StringVar(value="○ Cosmos non connecté")
+    lib: list = []
+    chosen = {"entry": None}
+    cells: dict = {}
+    images: dict = {}
+    swatches: dict = {}
+
+    # ---------------- gauche : surfaces
+    left = ttk.LabelFrame(tab, text="Surfaces du projet", padding=6)
+    left.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, 8))
+    left.rowconfigure(1, weight=1)
+    left.columnconfigure(0, weight=1)
+    sfilter = tk.StringVar()
+    top = ttk.Frame(left)
+    top.grid(row=0, column=0, sticky="ew")
+    ttk.Label(top, text="Filtre").pack(side="left")
+    ttk.Entry(top, textvariable=sfilter, width=18).pack(side="left", padx=4)
+    ttk.Button(top, text="↻", width=3, command=lambda: load_surfaces(True)).pack(side="left")
+    origin = ttk.Label(left, text="", foreground="#777", wraplength=330)
+    tree = ttk.Treeview(left, columns=("mat", "ech"), show="tree headings", height=18, selectmode="extended")
+    tree.heading("#0", text="Surface Archicad")
+    tree.heading("mat", text="Matériau V-Ray")
+    tree.heading("ech", text="Échelle")
+    tree.column("#0", width=190)
+    tree.column("mat", width=170)
+    tree.column("ech", width=55, anchor="center")
+    tree.grid(row=1, column=0, sticky="nsew", pady=4)
+    sb = ttk.Scrollbar(left, orient="vertical", command=tree.yview)
+    sb.grid(row=1, column=1, sticky="ns", pady=4)
+    tree.configure(yscrollcommand=sb.set)
+    origin.grid(row=2, column=0, columnspan=2, sticky="w")
+    surfaces: dict = {}
+
+    def swatch(rgb):
+        k = tuple(int(c * 255) for c in rgb)
+        if k not in swatches:
+            img = tk.PhotoImage(width=14, height=14)
+            img.put("#%02x%02x%02x" % k, to=(0, 0, 14, 14))
+            swatches[k] = img
+        return swatches[k]
+
+    def label_of(folder: str) -> str:
+        return virtual_surface(folder)[9:]
+
+    def fill_tree():
+        sel = set(tree.selection())
+        tree.delete(*tree.get_children())
+        f = sfilter.get().strip().lower()
+        assigned = state.get("cosmos") or {}
+        for name in sorted(surfaces, key=lambda n: (n not in assigned, n.lower())):
+            if f and f not in name.lower():
+                continue
+            a = assigned.get(name)
+            mat = f"◆ {label_of(a['dossier'])}" if a else "auto (couleur Archicad)"
+            ech = f"×{float(a.get('echelle', 1.0)):g}" if a else ""
+            tree.insert("", "end", iid=name, text=" " + name, image=swatch(surfaces[name]), values=(mat, ech))
+        keep = [i for i in sel if tree.exists(i)]
+        if keep:
+            tree.selection_set(keep)
+
+    def load_surfaces(force=False):
+        nonlocal surfaces
+        found, from_render = project_surfaces(state, key)
+        if found:
+            surfaces = found
+        origin.configure(text=("Surfaces vues au dernier rendu." if from_render else
+                               "Toutes les surfaces Archicad (après un premier rendu, seules celles utilisées s'affichent)."))
+        fill_tree()
+
+    sfilter.trace_add("write", lambda *_: fill_tree())
+
+    # ---------------- droite : bibliotheque Cosmos
+    right = ttk.LabelFrame(tab, text="Matériaux V-Ray (Chaos Cosmos)", padding=6)
+    right.grid(row=0, column=1, rowspan=2, sticky="nsew")
+    right.columnconfigure(0, weight=1)
+    right.rowconfigure(2, weight=1)
+    bar = ttk.Frame(right)
+    bar.grid(row=0, column=0, sticky="ew")
+    ttk.Button(bar, text="🌐  Ouvrir Chaos Cosmos", command=lambda: open_cosmos()).pack(side="left")
+    state_lbl = ttk.Label(bar, textvariable=cosmos_state, foreground="#777")
+    state_lbl.pack(side="left", padx=8)
+    srch = ttk.Frame(right)
+    srch.grid(row=1, column=0, sticky="ew", pady=(6, 4))
+    query = tk.StringVar()
+    cat = tk.StringVar(value="Toutes")
+    ttk.Label(srch, text="Rechercher").pack(side="left")
+    ttk.Entry(srch, textvariable=query, width=20).pack(side="left", padx=4)
+    cat_box = ttk.Combobox(srch, textvariable=cat, state="readonly", width=16, values=["Toutes"])
+    cat_box.pack(side="left", padx=4)
+    count = ttk.Label(srch, text="", foreground="#777")
+    count.pack(side="left", padx=6)
+
+    canvas = tk.Canvas(right, width=470, height=380, background="#fafafa", highlightthickness=0)
+    canvas.grid(row=2, column=0, sticky="nsew")
+    vs = ttk.Scrollbar(right, orient="vertical", command=canvas.yview)
+    vs.grid(row=2, column=1, sticky="ns")
+    canvas.configure(yscrollcommand=vs.set)
+    grid = tk.Frame(canvas, background="#fafafa")
+    canvas.create_window((0, 0), window=grid, anchor="nw")
+    grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
+                    if str(nb.select()) == str(tab) else None)
+    empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
+        "Aucun matériau Cosmos sur ce PC pour l'instant.\n\nClique « Ouvrir Chaos Cosmos », choisis un matériau "
+        "(Materials, Chaos Scans, V-Ray Material Library…) et télécharge-le : il apparaît ici tout seul."))
+
+    def blank():
+        if "blank" not in swatches:
+            img = tk.PhotoImage(width=96, height=96)
+            img.put("#e4e4e4", to=(0, 0, 96, 96))
+            swatches["blank"] = img
+        return swatches["blank"]
+
+    def highlight(entry):
+        chosen["entry"] = entry
+        for folder, cell in cells.items():
+            on = entry is not None and folder == entry["dossier"]
+            cell.configure(background="#cfe6ff" if on else "#fafafa")
+            for w in cell.winfo_children():
+                w.configure(background="#cfe6ff" if on else "#fafafa")
+        if entry:
+            msg.set(f"Matériau choisi : {entry['nom']}  ({entry['categorie']}).  Clique « Associer » pour l'appliquer aux "
+                    f"surfaces sélectionnées.")
+
+    def fill_grid():
+        for w in grid.winfo_children():
+            w.destroy()
+        cells.clear()
+        q, c = query.get().strip().lower(), cat.get()
+        shown = [e for e in lib if (c == "Toutes" or e["categorie"] == c) and
+                 (not q or q in e["nom"].lower() or q in e["categorie"].lower())]
+        count.configure(text=f"{len(shown)} / {len(lib)}")
+        if not lib:
+            empty.grid(row=2, column=0, sticky="nw", padx=10, pady=10)
+        else:
+            empty.grid_forget()
+        cols = 4
+        for k, e in enumerate(shown):
+            cell = tk.Frame(grid, background="#fafafa", padx=4, pady=4, cursor="hand2")
+            cell.grid(row=k // cols, column=k % cols, sticky="n")
+            img = images.get(e["dossier"]) or blank()
+            pic = tk.Label(cell, background="#fafafa", image=img)
+            pic.pack()
+            tk.Label(cell, text=e["nom"], background="#fafafa", wraplength=104, font=("Segoe UI", 8),
+                     justify="center").pack()
+            cells[e["dossier"]] = cell
+            for w in (cell, *cell.winfo_children()):
+                w.bind("<Button-1>", lambda _e, en=e: highlight(en))
+                w.bind("<Double-Button-1>", lambda _e, en=e: (highlight(en), associate()))
+        if chosen["entry"] and chosen["entry"]["dossier"] in cells:
+            highlight(chosen["entry"])
+        load_thumbs([e for e in shown if e["dossier"] not in images])
+
+    def load_thumbs(todo):
+        if not todo:
+            return
+        e = todo.pop(0)
+        img = thumbnail(e)
+        images[e["dossier"]] = img
+        cell = cells.get(e["dossier"])
+        if cell and img:
+            cell.winfo_children()[0].configure(image=img)
+        root.after(15, load_thumbs, todo)
+
+    def load_library(select_name: str = ""):
+        nonlocal lib
+        lib = cosmos_library("Materials")
+        cats = sorted({e["categorie"] for e in lib})
+        cat_box.configure(values=["Toutes"] + cats)
+        if select_name:
+            hit = next((e for e in lib if select_name.lower().replace(" ", "") in e["nom"].lower().replace(" ", "")), lib[0]
+                       if lib else None)
+            if hit:
+                query.set("")
+                cat.set("Toutes")
+                chosen["entry"] = hit
+        fill_grid()
+
+    query.trace_add("write", lambda *_: fill_grid())
+    cat_box.bind("<<ComboboxSelected>>", lambda *_: fill_grid())
+
+    # ---------------- actions
+    acts = ttk.Frame(tab)
+    acts.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Button(acts, text="◀  Associer aux surfaces sélectionnées", command=lambda: associate()).grid(row=0, column=0, padx=3)
+    ttk.Button(acts, text="Appliquer aux éléments sélectionnés dans Archicad",
+               command=lambda: apply_selection()).grid(row=0, column=1, padx=3)
+    ttk.Button(acts, text="Retirer (revenir à la couleur Archicad)", command=lambda: remove()).grid(row=0, column=2, padx=3)
+    ttk.Label(acts, text="Échelle").grid(row=0, column=3, padx=(12, 2))
+    scale_var = tk.DoubleVar(value=1.0)
+    ttk.Spinbox(acts, from_=0.05, to=20, increment=0.25, textvariable=scale_var, width=5).grid(row=0, column=4)
+    ttk.Button(acts, text="Appliquer l'échelle", command=lambda: set_scale()).grid(row=0, column=5, padx=3)
+    sel_info = tk.StringVar()
+    ttk.Label(tab, textvariable=sel_info, foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    ttk.Button(tab, text="Effacer les matériaux posés sur des éléments", command=lambda: clear_selection()
+               ).grid(row=3, column=1, sticky="e", pady=(6, 0))
+    ttk.Label(tab, textvariable=msg, foreground="#2a5d9f", wraplength=900).grid(row=4, column=0, columnspan=2, sticky="w",
+                                                                            pady=(4, 0))
+
+    def refresh_sel_info():
+        n = len((state.get("selection") or {}).get(key) or {})
+        sel_info.set(f"{n} élément(s) Archicad avec un matériau Cosmos posé directement." if n else "")
+
+    def associate():
+        e = chosen["entry"]
+        names = list(tree.selection())
+        if not e:
+            msg.set("Choisis d'abord un matériau à droite.")
+            return
+        if not names:
+            msg.set("Choisis d'abord une ou plusieurs surfaces à gauche (Ctrl+clic pour en prendre plusieurs).")
+            return
+        cosmos = state.setdefault("cosmos", {})
+        for n in names:
+            old = cosmos.get(n) or {}
+            cosmos[n] = {"dossier": e["dossier"], "echelle": float(old.get("echelle", 1.0))}
+        save_settings(state)
+        fill_tree()
+        msg.set(f"« {e['nom']} » associé à {len(names)} surface(s). Il sera utilisé au prochain rendu "
+                f"(et dans tous tes projets qui ont ces surfaces).")
+
+    def remove():
+        names = list(tree.selection())
+        cosmos = state.setdefault("cosmos", {})
+        for n in names:
+            cosmos.pop(n, None)
+        save_settings(state)
+        fill_tree()
+        msg.set(f"{len(names)} surface(s) reviennent à la couleur Archicad.")
+
+    def set_scale():
+        names = [n for n in tree.selection() if n in (state.get("cosmos") or {})]
+        try:
+            k = max(0.01, float(scale_var.get()))
+        except (ValueError, tk.TclError):
+            return
+        for n in names:
+            state["cosmos"][n]["echelle"] = k
+        save_settings(state)
+        fill_tree()
+        msg.set(f"Échelle ×{k:g} pour {len(names)} surface(s) : >1 = motif plus petit et plus serré, <1 = motif plus grand."
+                if names else "Choisis d'abord des surfaces qui ont un matériau Cosmos.")
+
+    def apply_selection():
+        e = chosen["entry"]
+        if not e:
+            msg.set("Choisis d'abord un matériau à droite, puis sélectionne les éléments dans Archicad.")
+            return
+        try:
+            els = tapir("GetSelectedElements").get("elements", [])
+            if not els:
+                msg.set("Rien n'est sélectionné dans Archicad : sélectionne des murs, dalles, objets… puis recommence.")
+                return
+            ids = tapir("GetIFCIdsOfElements", {"elements": els}).get("elementIFCIds", [])
+        except Exception as error:  # noqa: BLE001
+            msg.set(f"Lecture de la sélection impossible : {error}")
+            return
+        sel = state.setdefault("selection", {}).setdefault(key, {})
+        n = 0
+        for r in ids:
+            gid = r.get("ifcId") if isinstance(r, dict) else None
+            if gid:
+                sel[gid] = e["dossier"]
+                n += 1
+        save_settings(state)
+        refresh_sel_info()
+        msg.set(f"« {e['nom']} » posé sur {n} élément(s) sélectionné(s). Au prochain rendu, le modèle est réexporté "
+                f"pour en tenir compte.")
+
+    def clear_selection():
+        (state.get("selection") or {}).pop(key, None)
+        save_settings(state)
+        refresh_sel_info()
+        msg.set("Matériaux posés sur des éléments effacés : les éléments reprennent le matériau de leur surface.")
+
+    # ---------------- Cosmos
+    host = {"h": None}
+
+    def on_status(text):
+        root.after(0, lambda: cosmos_state.set(("● " if "connecté" in text else "○ ") + text))
+
+    def on_import(name):
+        def ui():
+            load_library(name)
+            msg.set(f"Nouveau matériau reçu de Cosmos : « {name} ». Choisis des surfaces à gauche puis « Associer ».")
+            try:
+                root.deiconify()
+                root.lift()
+            except Exception:  # noqa: BLE001
+                pass
+        root.after(0, ui)
+
+    def connect():
+        if host["h"] is None:
+            host["h"] = CosmosHost(on_import, on_status)
+        cosmos_state.set("○ Connexion à Cosmos...")
+        threading.Thread(target=host["h"].start, daemon=True).start()
+
+    def open_cosmos():
+        connect()
+
+        def go():
+            for _ in range(40):
+                if host["h"].ports:
+                    break
+                time.sleep(0.5)
+            import webbrowser
+            webbrowser.open(cosmos_url())
+        threading.Thread(target=go, daemon=True).start()
+        msg.set("Cosmos s'ouvre dans ton navigateur. Télécharge un matériau (bouton de téléchargement / import) : "
+                "il arrive ici automatiquement.")
+
+    def on_tab(_e=None):
+        if str(nb.select()) == str(tab) and not surfaces:
+            load_surfaces()
+            load_library()
+            refresh_sel_info()
+            connect()
+
+    nb.bind("<<NotebookTabChanged>>", on_tab)
 
 
 def main() -> int:
