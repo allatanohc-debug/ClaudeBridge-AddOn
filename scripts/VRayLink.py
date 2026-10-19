@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0 (matériaux Cosmos)"
+VERSION = "19/10 - v2.0b (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1364,10 +1364,10 @@ def window(state: dict) -> None:
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-    report = tk.Text(outer, width=78, height=12, wrap="word", state="disabled", background="#f6f6f6",
+    report = tk.Text(outer, width=78, height=6, wrap="word", state="disabled", background="#f6f6f6",
                      font=("Segoe UI", 9))
-    report.grid(row=5, column=0, pady=(8, 0))
-    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=560).grid(row=6, column=0, sticky="w")
+    report.grid(row=6, column=0, pady=(6, 0))
+    ttk.Label(outer, textvariable=status, foreground="#555", wraplength=560).grid(row=7, column=0, sticky="w")
 
     def show(lines):
         report.configure(state="normal")
@@ -1486,7 +1486,7 @@ def window(state: dict) -> None:
             show([str(folder)])
 
     buttons = ttk.Frame(outer)
-    buttons.grid(row=7, column=0, sticky="e", pady=(8, 0))
+    buttons.grid(row=5, column=0, sticky="e", pady=(8, 0))
     ttk.Button(buttons, text="Ouvrir le dossier des rendus", command=open_folder).grid(row=0, column=0, padx=3)
     ttk.Button(buttons, text="Rendre les vues cochées", command=lambda: render(
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
