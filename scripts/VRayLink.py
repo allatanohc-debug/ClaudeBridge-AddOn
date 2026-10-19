@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.3 (ombres)"
+VERSION = "19/10 - v2.4 (objets Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1010,6 +1010,8 @@ $("useSun").onclick=async()=>{await fetch("/camera",{method:"POST",headers:{"Con
 const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
 scene.add(edges);
 $("load").remove();
+for(const ob of (info.objets||[])){const r=0.4*(ob.echelle||1);const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,1.0*(ob.echelle||1),16),
+ new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.75}));m.rotation.x=Math.PI/2;m.position.set(ob.x,ob.y,ob.z+0.5*(ob.echelle||1));m.castShadow=true;scene.add(m)}
 goTo(info.cameras.find(c=>c.nom===info.courante)||info.cameras[0]);
 // marcher
 let mode="orbit"; const keys={};
@@ -1092,6 +1094,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
               f"Vector(0,0,{ground_z - 0.005:.4f})); geometry=sol_geo; material=sol_mtl; }}"]
     s.append('#include "materiaux.vrscene"')
     s.append(f'#include "{geometry.name}"')
+    if (path.parent / "objets.vrscene").exists():
+        s.append('#include "objets.vrscene"')
     text = "\n".join(s) + "\n"
     path.write_text(text, encoding="utf-8")
     secours = path.with_name(path.stem + "_sans_scan.vrscene")      # secours si un materiau scanne fait planter V-Ray
@@ -1526,11 +1530,11 @@ def load_settings() -> dict:
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
             "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
-            "traces": saved.get("traces") or {}}
+            "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -1601,11 +1605,14 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
                                 "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
                     encoding="utf-8")
     state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
+    n_obj = write_objects(d / "objets.vrscene", (state.get("objets") or {}).get(key, []), report)
     summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
     if note:
         summary += f" ({note})"
     if used:
         summary += "\nMatériaux Cosmos : " + " ; ".join(used)
+    if n_obj:
+        summary += f"\nObjets Cosmos : {n_obj}"
     return geo, ground, summary
 
 
@@ -2101,6 +2108,8 @@ def window(state: dict) -> None:
         return {"largeur": W, "hauteur": H, "sol": ground, "focales": list(FOCALES), "soleil": sv,
                 "lat": proj["lat"], "lon": proj["lon"], "fuseau": float(proj.get("fuseau", 0.0)), "north": proj["north"],
                 "heure": float(opts["heure"]), "jour": int(opts["jour"]), "mois": int(opts["mois"]),
+                "objets": [{"nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "echelle": o.get("echelle", 1.0)}
+                           for o in (state.get("objets") or {}).get(key, [])],
                 "courante": current.get(),
                 "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
                              "auto": bool(c.get("auto"))} for c in all_cams()]}
@@ -2153,9 +2162,305 @@ def window(state: dict) -> None:
 
     root.after(300, poll_viewer)
     materials_tab(root, nb, state, proj, key)
+    objects_tab(root, nb, state, proj, key)
     root.protocol("WM_DELETE_WINDOW", lambda: (collect(), root.destroy()))
     root.after(100, compute_autos)
     root.mainloop()
+
+
+
+# ------------------------------------------------------------------ objets ---
+CALQUE_OBJETS = "V-Ray Link - Objets Cosmos"
+ECHELLE_COSMOS = 0.01          # les modeles Cosmos (.vrmesh) sont en centimetres ; reglable par objet
+
+
+def write_objects(path: Path, objs: list, report=print) -> int:
+    """Objets Cosmos places : proxy .vrmesh + materiau .vrmat, position/rotation/echelle."""
+    n = 0
+    with path.open("w", encoding="utf-8") as out:
+        out.write("// Objets Cosmos (V-Ray Link)\n")
+        for k, o in enumerate(objs):
+            try:
+                folder = Path(o["dossier"])
+                mesh = sorted(folder.glob("*.vrmesh"), key=_lod)[0]
+                vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
+                fixed, top = vrmat_for_render(vrmat)
+            except Exception as error:  # noqa: BLE001
+                report(f"Objet « {o.get('nom')} » indisponible : {error}")
+                continue
+            a = math.radians(float(o.get("rotation", 0.0)))
+            s = float(o.get("echelle", 1.0)) * ECHELLE_COSMOS
+            c, si = math.cos(a) * s, math.sin(a) * s
+            oid = f"obj{k}"
+            out.write(f"// {o.get('nom')}\nGeomMeshFile {oid}_geo {{\n  file=\"{str(mesh).replace(chr(92), '/')}\";\n}}\n"
+                      f"MtlVRmat {oid}_mtl {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n  mtlname=\"{top}\";\n}}\n"
+                      f"Node {oid} {{\n  transform=Transform(Matrix(Vector({c:.6f},{si:.6f},0),Vector({-si:.6f},{c:.6f},0),"
+                      f"Vector(0,0,{s:.6f})),Vector({o['x']:.4f},{o['y']:.4f},{o['z']:.4f}));\n"
+                      f"  geometry={oid}_geo;\n  material={oid}_mtl;\n}}\n")
+            n += 1
+    return n
+
+
+def draw_object_marker(o: dict) -> list:
+    """Repere de l'objet dans le plan : cercle + fleche d'orientation + nom (calque des objets Cosmos)."""
+    story = tapir("GetStories").get("actStory", 0)
+    layer = _layer_index(CALQUE_OBJETS)
+    x, y, r = o["x"], o["y"], 0.4 * float(o.get("echelle", 1.0))
+    a = math.radians(float(o.get("rotation", 0.0)))
+    circle = [{"x": x + r * math.cos(t * math.pi / 8), "y": y + r * math.sin(t * math.pi / 8)} for t in range(17)]
+    arrow = [{"x": x, "y": y}, {"x": x + r * 1.4 * math.cos(a - math.pi / 2), "y": y + r * 1.4 * math.sin(a - math.pi / 2)}]
+    guids = []
+    try:
+        res = tapir("CreatePolylines", {"polylinesData": [
+            {"floorInd": story, "layerIndex": layer, "linePenIndex": 20, "coordinates": circle},
+            {"floorInd": story, "layerIndex": layer, "linePenIndex": 20, "coordinates": arrow}]}).get("elements", [])
+        guids += [e["elementId"]["guid"] for e in res if "elementId" in e]
+        res = tapir("CreateTexts", {"textsData": [{"coordinate": {"x": x, "y": y - r - 0.35, "z": 0.0}, "text": o["nom"],
+                                                   "floorIndex": story, "style": {"height": 2.0, "penIndex": 20,
+                                                   "anchor": "MiddleMiddle", "justification": "Center"}}]}).get("elements", [])
+        guids += [e["elementId"]["guid"] for e in res if "elementId" in e]
+        if guids:
+            tapir("SetDetailsOfElements", {"elementsWithDetails": [
+                {"elementId": {"guid": g}, "details": {"layerIndex": layer}} for g in guids]})
+            tapir("CreateGroups", {"elementGroups": [{"elements": [{"elementId": {"guid": g}} for g in guids]}]})
+    except Exception:  # noqa: BLE001
+        pass
+    return guids
+
+
+def delete_elements(guids: list) -> None:
+    if guids:
+        try:
+            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids]})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
+    import tkinter as tk
+    from tkinter import ttk
+
+    tab = ttk.Frame(nb, padding=10)
+    nb.add(tab, text="  Objets  ")
+    tab.columnconfigure(0, weight=2)
+    tab.columnconfigure(1, weight=3)
+    tab.rowconfigure(0, weight=1)
+    msg = tk.StringVar(value="1. Choisis un objet à droite   2. « Placer dans Archicad » puis clique dans le plan   "
+                             "3. Ajuste rotation / taille à gauche.")
+    lib: list = []
+    images: dict = {}
+    cells: dict = {}
+    chosen = {"entry": None}
+    objs = state.setdefault("objets", {}).setdefault(key, [])
+
+    # ---------------- gauche : objets places
+    left = ttk.LabelFrame(tab, text="Objets placés dans le projet", padding=6)
+    left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+    left.rowconfigure(0, weight=1)
+    left.columnconfigure(0, weight=1)
+    tree = ttk.Treeview(left, columns=("rot", "ech"), show="tree headings", height=16, selectmode="extended")
+    tree.heading("#0", text="Objet")
+    tree.heading("rot", text="Rotation")
+    tree.heading("ech", text="Taille")
+    tree.column("#0", width=200)
+    tree.column("rot", width=70, anchor="center")
+    tree.column("ech", width=60, anchor="center")
+    tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
+    ttk.Button(left, text="↺ 15°", width=7, command=lambda: rotate(-15)).grid(row=1, column=0, pady=4)
+    ttk.Button(left, text="↻ 15°", width=7, command=lambda: rotate(15)).grid(row=1, column=1)
+    ttk.Button(left, text="↻ 90°", width=7, command=lambda: rotate(90)).grid(row=1, column=2)
+    size_var = tk.DoubleVar(value=1.0)
+    ttk.Spinbox(left, from_=0.1, to=50, increment=0.1, textvariable=size_var, width=5).grid(row=1, column=3, padx=(8, 2))
+    ttk.Button(left, text="Taille", command=lambda: resize()).grid(row=1, column=4)
+    ttk.Button(left, text="Supprimer", command=lambda: remove()).grid(row=1, column=5, padx=4)
+    ttk.Label(left, foreground="#777", wraplength=360, justify="left",
+              text="Taille 1 = taille réelle de l'objet Cosmos. Si un objet sort 100 fois trop grand ou trop petit, "
+                   "mets 0.01 ou 100 et dis-le-moi : je corrigerai l'unité par défaut.").grid(
+        row=2, column=0, columnspan=6, sticky="w")
+
+    def refresh_tree():
+        tree.delete(*tree.get_children())
+        for k, o in enumerate(objs):
+            tree.insert("", "end", iid=str(k), text=o["nom"], values=(f"{o.get('rotation', 0):.0f}°", f"{o.get('echelle', 1):g}"))
+
+    def selected() -> list:
+        return [objs[int(i)] for i in tree.selection() if int(i) < len(objs)]
+
+    def redraw(o):
+        delete_elements(o.get("traces", []))
+        o["traces"] = draw_object_marker(o)
+
+    def rotate(deg):
+        for o in selected():
+            o["rotation"] = (float(o.get("rotation", 0)) + deg) % 360
+            redraw(o)
+        save_settings(state)
+        keep = tree.selection()
+        refresh_tree()
+        tree.selection_set(keep)
+
+    def resize():
+        try:
+            v = float(size_var.get())
+        except (ValueError, tk.TclError):
+            return
+        for o in selected():
+            o["echelle"] = v
+            redraw(o)
+        save_settings(state)
+        keep = tree.selection()
+        refresh_tree()
+        tree.selection_set(keep)
+
+    def remove():
+        for o in selected():
+            delete_elements(o.get("traces", []))
+            objs.remove(o)
+        save_settings(state)
+        refresh_tree()
+        msg.set("Objet(s) supprimé(s) du rendu et du plan.")
+
+    # ---------------- droite : bibliotheque Cosmos (modeles 3D)
+    right = ttk.LabelFrame(tab, text="Objets 3D (Chaos Cosmos)", padding=6)
+    right.grid(row=0, column=1, sticky="nsew")
+    right.rowconfigure(2, weight=1)
+    right.columnconfigure(0, weight=1)
+    head = ttk.Frame(right)
+    head.grid(row=0, column=0, sticky="ew")
+    ttk.Button(head, text="🌐 Ouvrir Chaos Cosmos", command=lambda: open_cosmos()).pack(side="left")
+    ttk.Button(head, text="↻", width=3, command=lambda: load_library()).pack(side="left", padx=4)
+    srch = ttk.Frame(right)
+    srch.grid(row=1, column=0, sticky="ew", pady=(6, 4))
+    query, cat = tk.StringVar(), tk.StringVar(value="Toutes")
+    ttk.Label(srch, text="Rechercher").pack(side="left")
+    ttk.Entry(srch, textvariable=query, width=20).pack(side="left", padx=4)
+    cat_box = ttk.Combobox(srch, textvariable=cat, state="readonly", width=16, values=["Toutes"])
+    cat_box.pack(side="left", padx=4)
+    canvas = tk.Canvas(right, width=470, height=360, background="#fafafa", highlightthickness=0)
+    canvas.grid(row=2, column=0, sticky="nsew")
+    vs = ttk.Scrollbar(right, orient="vertical", command=canvas.yview)
+    vs.grid(row=2, column=1, sticky="ns")
+    canvas.configure(yscrollcommand=vs.set)
+    grid = tk.Frame(canvas, background="#fafafa")
+    canvas.create_window((0, 0), window=grid, anchor="nw")
+    grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+    empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
+        "Aucun objet Cosmos sur ce PC pour l'instant.\n\nClique « Ouvrir Chaos Cosmos », choisis un objet "
+        "(meubles, plantes, voitures, personnages…) et télécharge-le : il apparaît ici tout seul."))
+    blank = tk.PhotoImage(width=96, height=96)
+    blank.put("#e4e4e4", to=(0, 0, 96, 96))
+
+    def highlight(entry):
+        chosen["entry"] = entry
+        for folder, cell in cells.items():
+            on = entry is not None and folder == entry["dossier"]
+            for w in (cell, *cell.winfo_children()):
+                w.configure(background="#cfe6ff" if on else "#fafafa")
+        if entry:
+            msg.set(f"Objet choisi : {entry['nom']}. Clique « Placer dans Archicad » puis clique son emplacement dans le plan.")
+
+    def fill_grid():
+        for w in grid.winfo_children():
+            w.destroy()
+        cells.clear()
+        q, c = query.get().strip().lower(), cat.get()
+        shown = [e for e in lib if (c == "Toutes" or e["categorie"] == c) and (not q or q in e["nom"].lower())]
+        if lib:
+            empty.grid_forget()
+        else:
+            empty.grid(row=2, column=0, sticky="nw", padx=10, pady=10)
+        for k, e in enumerate(shown):
+            cell = tk.Frame(grid, background="#fafafa", padx=4, pady=4, cursor="hand2")
+            cell.grid(row=k // 4, column=k % 4, sticky="n")
+            tk.Label(cell, background="#fafafa", image=images.get(e["dossier"]) or blank).pack()
+            tk.Label(cell, text=e["nom"], background="#fafafa", wraplength=104, font=("Segoe UI", 8)).pack()
+            cells[e["dossier"]] = cell
+            for w in (cell, *cell.winfo_children()):
+                w.bind("<Button-1>", lambda _e, en=e: highlight(en))
+                w.bind("<Double-Button-1>", lambda _e, en=e: (highlight(en), place()))
+        if chosen["entry"] and chosen["entry"]["dossier"] in cells:
+            highlight(chosen["entry"])
+        todo = [e for e in shown if e["dossier"] not in images]
+
+        def thumbs():
+            if not todo:
+                return
+            e = todo.pop(0)
+            images[e["dossier"]] = thumbnail(e)
+            cell = cells.get(e["dossier"])
+            if cell and images[e["dossier"]]:
+                cell.winfo_children()[0].configure(image=images[e["dossier"]])
+            root.after(15, thumbs)
+        thumbs()
+
+    def load_library(select_name: str = ""):
+        nonlocal lib
+        lib = [e for e in cosmos_library("3D_Models") if e.get("vrmesh")]
+        cat_box.configure(values=["Toutes"] + sorted({e["categorie"] for e in lib}))
+        if select_name:
+            hit = next((e for e in lib if select_name.lower().replace(" ", "") in e["nom"].lower().replace(" ", "")), None)
+            if hit:
+                chosen["entry"] = hit
+        fill_grid()
+
+    query.trace_add("write", lambda *_: fill_grid())
+    cat_box.bind("<<ComboboxSelected>>", lambda *_: fill_grid())
+
+    def place():
+        e = chosen["entry"]
+        if not e:
+            msg.set("Choisis d'abord un objet à droite.")
+            return
+        root.withdraw()
+        try:
+            T.focus_archicad()
+            p, why = T.pick_point(f"V-Ray : clique l'emplacement de « {e['nom']} »")
+            z0 = story_level()
+        finally:
+            root.deiconify()
+        if p is None:
+            msg.set(f"Placement annulé. {why}")
+            return
+        o = {"nom": e["nom"], "dossier": e["dossier"], "x": p["x"], "y": p["y"], "z": z0, "rotation": 0.0, "echelle": 1.0}
+        o["traces"] = draw_object_marker(o)
+        objs.append(o)
+        save_settings(state)
+        refresh_tree()
+        tree.selection_set(str(len(objs) - 1))
+        msg.set(f"« {e['nom']} » placé (repère orange dans le plan, calque « {CALQUE_OBJETS} »). "
+                "Il apparaîtra au prochain rendu. Double-clic sur un objet à droite = le placer encore.")
+
+    acts = ttk.Frame(tab)
+    acts.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+    ttk.Button(acts, text="📍 Placer dans Archicad (clic dans le plan)", command=place).grid(row=0, column=0, padx=3)
+    ttk.Label(tab, textvariable=msg, foreground="#2b5d8a", wraplength=820, justify="left").grid(
+        row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+    def on_import(name):
+        root.after(0, lambda: (load_library(name), msg.set(f"Nouvel objet reçu de Cosmos : « {name} ».")))
+
+    def open_cosmos():
+        hooks = state.get("_cosmos") or {}
+        if hooks.get("open"):
+            hooks["open"]()
+        else:
+            import webbrowser
+            webbrowser.open(cosmos_url())
+        msg.set("Cosmos s'ouvre : télécharge un objet (3D Models), il arrive ici automatiquement.")
+
+    state.setdefault("_cosmos", {}).setdefault("listeners", []).append(on_import)
+    loaded = {"v": False}
+
+    def on_tab(_e=None):
+        if str(nb.select()) == str(tab) and not loaded["v"]:
+            loaded["v"] = True
+            refresh_tree()
+            load_library()
+            hooks = state.get("_cosmos") or {}
+            if hooks.get("connect"):
+                hooks["connect"]()
+
+    nb.bind("<<NotebookTabChanged>>", on_tab, add="+")
 
 
 # ---------------------------------------------------------- onglet Materiaux ---
@@ -2467,6 +2772,12 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         root.after(0, lambda: cosmos_state.set(("● " if "connecté" in text else "○ ") + text))
 
     def on_import(name):
+        for listener in (state.get("_cosmos") or {}).get("listeners", []):
+            try:
+                listener(name)
+            except Exception:  # noqa: BLE001
+                pass
+
         def ui():
             load_library(name)
             msg.set(f"Nouveau matériau reçu de Cosmos : « {name} ». Choisis des surfaces à gauche puis « Associer ».")
@@ -2504,7 +2815,8 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             refresh_sel_info()
             connect()
 
-    nb.bind("<<NotebookTabChanged>>", on_tab)
+    nb.bind("<<NotebookTabChanged>>", on_tab, add="+")
+    state.setdefault("_cosmos", {}).update(connect=connect, open=open_cosmos)
 
 
 def main() -> int:
