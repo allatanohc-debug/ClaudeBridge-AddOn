@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.8b"
+VERSION = "19/10 - v2.8c"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2654,10 +2654,55 @@ def draw_object_marker(o: dict) -> list:
     return guids
 
 
-def delete_elements(guids: list) -> None:
-    if guids:
+CALQUE_VEGETATION = "V-Ray Link - Végétation"
+
+
+def draw_scatter_in_plan(sc: dict, key: str) -> list:
+    """Apercu du scatter dans le plan : un petit rond par touffe (echantillon), un grand par arbre, + nom."""
+    try:
+        meshes, _m, offset, ground = pickle.loads((data_dir() / key / "geometrie.pkl").read_bytes())
+    except Exception:  # noqa: BLE001
+        meshes, offset, ground = {}, (0.0, 0.0, 0.0), 0.0
+    pts = scatter_points(sc, meshes, offset, ground, key)
+    if not pts:
+        return []
+    tree = sc.get("type") == "Arbres"
+    import random
+    sample = pts if len(pts) <= 600 else random.Random(1).sample(pts, 600)
+    r = 2.0 * float(sc.get("echelle", 1.0)) if tree else 0.12
+    n = 12 if tree else 5
+    story = tapir("GetStories").get("actStory", 0)
+    layer = _layer_index(CALQUE_VEGETATION)
+    data = [{"floorInd": story, "layerIndex": layer, "linePenIndex": 3 if not tree else 16,
+             "coordinates": [{"x": x + r * math.cos(2 * math.pi * k / n), "y": y + r * math.sin(2 * math.pi * k / n)}
+                             for k in range(n + 1)]} for x, y, _z in sample]
+    guids = []
+    for i in range(0, len(data), 300):
         try:
-            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids]})
+            res = tapir("CreatePolylines", {"polylinesData": data[i:i + 300]}).get("elements", [])
+            guids += [e["elementId"]["guid"] for e in res if "elementId" in e]
+        except Exception:  # noqa: BLE001
+            break
+    try:
+        cx, cy = sum(p[0] for p in sample) / len(sample), sum(p[1] for p in sample) / len(sample)
+        res = tapir("CreateTexts", {"textsData": [{"coordinate": {"x": cx, "y": cy, "z": 0.0},
+                                                   "text": f"{sc['nom']} ({len(pts)})", "floorIndex": story,
+                                                   "style": {"height": 2.5, "bold": True, "penIndex": 3,
+                                                             "anchor": "MiddleMiddle", "justification": "Center"}}]})
+        guids += [e["elementId"]["guid"] for e in res.get("elements", []) if "elementId" in e]
+        for i in range(0, len(guids), 300):
+            tapir("SetDetailsOfElements", {"elementsWithDetails": [
+                {"elementId": {"guid": g}, "details": {"layerIndex": layer}} for g in guids[i:i + 300]]})
+        tapir("CreateGroups", {"elementGroups": [{"elements": [{"elementId": {"guid": g}} for g in guids]}]})
+    except Exception:  # noqa: BLE001
+        pass
+    return guids
+
+
+def delete_elements(guids: list) -> None:
+    for i in range(0, len(guids or []), 300):
+        try:
+            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids[i:i + 300]]})
         except Exception:  # noqa: BLE001
             pass
 
@@ -2759,6 +2804,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     def remove():
         for o in selected():
             if o in scats:
+                delete_elements(o.get("traces", []))
                 scats.remove(o)
                 continue
             delete_elements(o.get("traces", []))
@@ -2882,9 +2928,20 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     ttk.Button(simple, text="📍 Placer un objet (clic dans le plan)", command=place).grid(row=0, column=0, padx=3, ipady=4)
     ttk.Button(simple, text="🌱 Ajouter de la végétation (herbe, fleurs, arbres)…",
                command=lambda: assistant()).grid(row=0, column=1, padx=8, ipady=4)
+    def show_vegetation():
+        n = 0
+        for sc in scats:
+            delete_elements(sc.get("traces", []))
+            sc["traces"] = draw_scatter_in_plan(sc, key)
+            n += 1 if sc["traces"] else 0
+        save_settings(state)
+        msg.set(f"Végétation dessinée dans le plan (calque « {CALQUE_VEGETATION} ») : {n} sur {len(scats)}."
+                + ("" if n == len(scats) else "  Les autres n'ont aucun emplacement : fais d'abord un rendu (export du modèle)."))
+
+    ttk.Button(simple, text="👁 Voir la végétation dans le plan", command=show_vegetation).grid(row=0, column=3, padx=3, ipady=4)
     adv_on = tk.BooleanVar(value=False)
     ttk.Checkbutton(simple, text="Réglages experts", variable=adv_on,
-                    command=lambda: acts.grid() if adv_on.get() else acts.grid_remove()).grid(row=0, column=2, padx=8)
+                    command=lambda: acts.grid() if adv_on.get() else acts.grid_remove()).grid(row=0, column=4, padx=8)
     acts = ttk.Frame(tab)
     acts.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     acts.grid_remove()
@@ -2944,9 +3001,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 msg.set("Zone annulée : il faut au moins 3 points.")
                 return
             item["zone"] = pts
-        scats.append(item)
-        save_settings(state)
-        refresh_tree()
+        add_scatter(item)
         unit_txt = "par m²" if unit == 1 else f"pour {unit:g} m²"
         msg.set(f"« {e['nom']} » ({type_var.get()}) sera réparti sur « {surf_var.get()} » : {shown:g} {unit_txt}, "
                 f"taille ±{var} %{f', au moins {gap:g} m entre deux' if gap else ''}, rotation au hasard. "
@@ -2955,6 +3010,19 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
 
     # ---------------- assistant vegetation : 3 questions simples
+    def add_scatter(item: dict) -> None:
+        for old in [sc for sc in scats if sc["dossier"] == item["dossier"] and sc["surface"] == item["surface"]
+                    and item["surface"] != ZONE_PLAN]:
+            delete_elements(old.get("traces", []))             # meme plante au meme endroit : on remplace
+            scats.remove(old)
+        try:
+            item["traces"] = draw_scatter_in_plan(item, key)
+        except Exception:  # noqa: BLE001
+            item["traces"] = []
+        scats.append(item)
+        save_settings(state)
+        refresh_tree()
+
     def kind_of(e) -> str:
         t = (e["nom"] + " " + e["categorie"]).lower()
         if any(w in t for w in ("tree", "arbre", "palm", "palmier", "baobab", "oak", "pine")):
@@ -3072,13 +3140,12 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                     what.set("Zone annulée : clique au moins 3 coins dans le plan, puis Échap.")
                     return
                 item.update(zone=pts, z=z)
-            scats.append(item)
-            save_settings(state)
-            refresh_tree()
             win.destroy()
+            add_scatter(item)
             lieu = {SOL_AUTOUR: "autour de la maison", ZONE_PLAN: "dans ta zone"}.get(target, f"sur « {target} »")
             msg.set(f"✔ C'est prêt : « {e['nom']} » ({('clairsemé', 'normal', 'dense')[qty.get()]}) {lieu}. "
-                    "Va dans l'onglet Rendu et lance un rendu (Brouillon) pour la voir.")
+                    f"{'Les touffes sont dessinées dans le plan (petits ronds). ' if item.get('traces') else ''}"
+                    "Lance un rendu (onglet Rendu, Brouillon) pour la voir.")
 
         bar = ttk.Frame(f)
         bar.grid(row=7, column=0, sticky="e", pady=(8, 0))
