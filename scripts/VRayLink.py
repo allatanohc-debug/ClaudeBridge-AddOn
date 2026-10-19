@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.8c"
+VERSION = "19/10 - v2.9 (gazon sélection, intensité soleil)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -976,6 +976,8 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <input id="hour" type="range" min="5.5" max="19.5" step="0.05" style="padding:0">
 <div class="row" style="margin-top:6px"><div><label>Jour</label><input id="day" type="number" min="1" max="31"></div>
 <div><label>Mois</label><input id="month" type="number" min="1" max="12"></div></div>
+<div style="margin-top:6px"><label>Intensité du soleil : <span id="intTxt"></span></label>
+<input id="sunInt" type="range" min="0" max="3" step="0.05" style="padding:0"></div>
 <div class="row" style="margin-top:6px"><button id="play">▶ Course du soleil</button></div>
 <button id="useSun" style="width:100%;margin-top:6px">Utiliser cette heure pour les rendus</button></div>
 <div><label>Nom de la vue</label><input id="name" value="Vue 3D"></div>
@@ -1059,16 +1061,17 @@ const COMPASS=["N","NE","E","SE","S","SO","O","NO"];
 function updateSun(){const h=+$("hour").value, d=Math.max(1,Math.min(31,+$("day").value||1)), m=Math.max(1,Math.min(12,+$("month").value||1));
  const s=sunDir(h,d,m); const up=Math.max(s.alt,0.0);
  sun.position.copy(mid).addScaledVector(s.v,rad*2); sun.target.position.copy(mid);
- sun.intensity=s.alt>0?2.2*Math.min(1,s.alt*4+0.15):0; hemi.intensity=s.alt>0?0.75:0.25;
+ const k=+$("sunInt").value; $("intTxt").textContent=Math.round(k*100)+" %";
+ sun.intensity=s.alt>0?2.2*k*Math.min(1,s.alt*4+0.15):0; hemi.intensity=s.alt>0?0.75:0.25;
  const hh=Math.floor(h), mm=Math.round((h%1)*60)%60;
  $("sunTxt").textContent=`${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")} · hauteur ${(s.alt*180/Math.PI).toFixed(0)}° · ${COMPASS[Math.round(s.az/(Math.PI/4))%8]}${s.alt<=0?" (nuit)":""}`;}
-$("hour").value=info.heure; $("day").value=info.jour; $("month").value=info.mois;
-for(const id of ["hour","day","month"]) $(id).addEventListener("input",updateSun);
+$("hour").value=info.heure; $("day").value=info.jour; $("month").value=info.mois; $("sunInt").value=info.intensite??1;
+for(const id of ["hour","day","month","sunInt"]) $(id).addEventListener("input",updateSun);
 updateSun();
 let playing=null; $("play").onclick=()=>{if(playing){clearInterval(playing);playing=null;$("play").textContent="▶ Course du soleil";return}
  $("play").textContent="■ Arrêter"; playing=setInterval(()=>{let h=+$("hour").value+0.05; if(h>19.5)h=5.5; $("hour").value=h; updateSun()},40)};
 $("useSun").onclick=async()=>{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},
- body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value})});
+ body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value})});
  $("msg").textContent="Heure et date envoyées à V-Ray Link : les rendus utiliseront ce soleil."};
 const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
 scene.add(edges);
@@ -1106,7 +1109,7 @@ $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new TH
  if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
 async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
  eye:cam.position.toArray(),target:controls.target.toArray(),
- heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value};
+ heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value};
  $("msg").textContent=action==="rendre"?"Rendu demandé : la fenêtre V-Ray va s'ouvrir…":"Vue enregistrée dans V-Ray Link.";
  try{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
  catch(e){$("msg").textContent="V-Ray Link est fermé : relance-le."}}
@@ -1158,7 +1161,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
          f"specify_focus=1; focus_distance={dist:.3f}; }}",
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
-         f"  intensity_multiplier=1;\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
+         f"  intensity_multiplier={float(opts.get('soleil_intensite', 1.0)):.3f};\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
          "TexSky sky { sun=sun; }"]
     hdri = str(opts.get("hdri") or "")
@@ -1173,7 +1176,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
         env = "hdri_tex"
         if not opts.get("hdri_soleil", True):
             s[s.index(next(l for l in s if l.startswith("SunLight sun")))] = \
-                next(l for l in s if l.startswith("SunLight sun")).replace("intensity_multiplier=1;", "intensity_multiplier=0;")
+                re.sub(r"intensity_multiplier=[0-9.]+;", "intensity_multiplier=0;", next(l for l in s if l.startswith("SunLight sun")))
     s.append(f"SettingsEnvironment {{ bg_tex={env}; gi_tex={env}; reflect_tex={env}; refract_tex={env}; "
              "bg_tex_on=1; gi_tex_on=1; reflect_tex_on=1; refract_tex_on=1; }")
     for name in opts.get("canaux") or []:
@@ -1646,7 +1649,7 @@ def load_settings() -> dict:
     today = dt.date.today()
     opts = {"qualite": "Haute", "taille": "1920 × 1080 (16:9)", "ambiance": "Extérieur jour", "sol": "Gazon",
             "jour": today.day, "mois": today.month, "heure": 16.5, "fuseau": 0.0, "verticales": True, "moteur": "CPU (processeur)", "format": "PNG", "canaux": [],
-            "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True,
+            "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True, "soleil_intensite": 1.0,
             "balance": 0.0, "vignettage": 0.3, "contraste": 1.0,
             "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
@@ -2304,6 +2307,10 @@ def window(state: dict) -> None:
         ttk.Label(en, foreground="#777", text="Sans HDRI : ciel physique V-Ray (lieu, date, heure).").grid(
             row=4, column=0, columnspan=4, sticky="w")
 
+        ttk.Label(en, text="Intensité du soleil").grid(row=6, column=0, sticky="w", pady=(6, 0))
+        v["soleil_intensite"] = tk.DoubleVar(value=opts.get("soleil_intensite", 1.0))
+        ttk.Spinbox(en, from_=0, to=5, increment=0.1, textvariable=v["soleil_intensite"], width=6).grid(
+            row=6, column=1, sticky="w", pady=(6, 0))
         ch = section("Canaux de rendu (pour Photoshop)", 4)
         chosen_ch = set(opts.get("canaux") or [])
         for k, name in enumerate(CANAUX):
@@ -2316,7 +2323,7 @@ def window(state: dict) -> None:
         def ok():
             try:
                 for name in ("moteur", "format", "dof", "dof_f", "balance", "vignettage", "hdri", "hdri_mult", "hdri_rot",
-                             "hdri_soleil", "contraste"):
+                             "hdri_soleil", "contraste", "soleil_intensite"):
                     opts[name] = v[name].get()
                 opts["canaux"] = [n for n in CANAUX if v["ch_" + n].get()]
             except (ValueError, tk.TclError):
@@ -2369,6 +2376,7 @@ def window(state: dict) -> None:
         return {"largeur": W, "hauteur": H, "sol": ground, "focales": list(FOCALES), "soleil": sv,
                 "lat": proj["lat"], "lon": proj["lon"], "fuseau": float(proj.get("fuseau", 0.0)), "north": proj["north"],
                 "heure": float(opts["heure"]), "jour": int(opts["jour"]), "mois": int(opts["mois"]),
+                "intensite": float(opts.get("soleil_intensite", 1.0)),
                 "objets": [{"nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "echelle": o.get("echelle", 1.0)}
                            for o in (state.get("objets") or {}).get(key, [])],
                 "arbres": tree_points(),
@@ -2398,6 +2406,9 @@ def window(state: dict) -> None:
                     month_var.set(int(msg["mois"]))
                     show_hour()
                     collect()
+                    if "intensite" in msg:
+                        opts["soleil_intensite"] = max(0.0, min(5.0, float(msg["intensite"])))
+                        save_settings(state)
                 if msg.get("action") == "soleil":
                     say(f"Soleil réglé depuis la visionneuse : {opts['jour']}/{opts['mois']} à "
                         f"{int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.")
@@ -2489,6 +2500,45 @@ def write_objects(path: Path, objs: list, report=print) -> int:
 
 SOL_AUTOUR = "Sol autour (gazon)"
 ZONE_PLAN = "Zone dessinée dans le plan…"
+DALLES_SEL = "Dalles sélectionnées dans Archicad"
+
+
+def _inside(poly, x, y) -> bool:
+    ok, j = False, len(poly) - 1
+    for i in range(len(poly)):
+        (xi, yi), (xj, yj) = poly[i], poly[j]
+        if (yi > y) != (yj > y) and x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-12) + xi:
+            ok = not ok
+        j = i
+    return ok
+
+
+def selected_slab_zones() -> list:
+    """Contours (et trous) des dalles / maillages / zones selectionnes dans Archicad, avec leur hauteur de dessus."""
+    els = tapir("GetSelectedElements").get("elements", [])
+    els = [{"elementId": e["elementId"]} for e in els if isinstance(e, dict) and "elementId" in e]
+    if not els:
+        return []
+    det = tapir("GetDetailsOfElements", {"elements": els, "fields": ["type", "details"]}).get("detailsOfElements", [])
+    try:
+        boxes = tapir("Get3DBoundingBoxes", {"elements": els}).get("boundingBoxes3D", [])
+    except Exception:  # noqa: BLE001
+        boxes = []
+    zones = []
+    for k, d in enumerate(det):
+        if not isinstance(d, dict) or "error" in d:
+            continue
+        dd = d.get("details", {}) or {}
+        outline = dd.get("polygonOutline") or dd.get("polygonCoordinates") or dd.get("coordinates") or []
+        poly = [[float(c["x"]), float(c["y"])] for c in outline if "x" in c]
+        if len(poly) < 3:
+            continue
+        holes = [[[float(c["x"]), float(c["y"])] for c in (h.get("polygonOutline") or h.get("polygonCoordinates") or [])]
+                 for h in dd.get("holes", []) or []]
+        b = boxes[k].get("boundingBox3D", boxes[k]) if k < len(boxes) and isinstance(boxes[k], dict) else {}
+        z = float(b.get("zMax", dd.get("zCoordinate", 0.0)))
+        zones.append({"poly": poly, "trous": [h for h in holes if len(h) >= 3], "z": z})
+    return zones
 SCATTER_TYPES = {  # densite affichee, unite (m2 par unite), variation %, espacement min (m), version legere
     "Herbe / gazon": (6.0, 1.0, 30, 0.0, True),
     "Fleurs / buissons": (1.0, 1.0, 25, 0.6, True),
@@ -2504,6 +2554,16 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
     dens = max(0.01, float(sc.get("densite", 4.0)))
     ox, oy, oz = offset
     pts = []
+    if sc.get("zones"):                                   # dalles selectionnees dans Archicad
+        for zn in sc["zones"]:
+            poly = zn["poly"]
+            xs, ys = [q[0] for q in poly], [q[1] for q in poly]
+            n = min(SCATTER_MAX * 4, int((max(xs) - min(xs)) * (max(ys) - min(ys)) * dens))
+            for _ in range(n):
+                x, y = rnd.uniform(min(xs), max(xs)), rnd.uniform(min(ys), max(ys))
+                if _inside(poly, x, y) and not any(_inside(h, x, y) for h in zn.get("trous", [])):
+                    pts.append((x, y, float(zn["z"])))
+        return _spaced(pts, float(sc.get("espacement", 0.0)))
     if sc.get("surface") == ZONE_PLAN and sc.get("zone"):
         poly = sc["zone"]
         xs, ys = [q[0] for q in poly], [q[1] for q in poly]
@@ -2939,6 +2999,31 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 + ("" if n == len(scats) else "  Les autres n'ont aucun emplacement : fais d'abord un rendu (export du modèle)."))
 
     ttk.Button(simple, text="👁 Voir la végétation dans le plan", command=show_vegetation).grid(row=0, column=3, padx=3, ipady=4)
+
+    def quick_lawn():
+        grass = [e for e in lib if kind_of(e) == "Herbe / gazon"]
+        e = chosen["entry"] if chosen["entry"] in grass else (grass[0] if grass else None)
+        if not e:
+            msg.set("Aucune herbe téléchargée : « Ouvrir Chaos Cosmos » › 3D Models › Plants, cherche « grass ».")
+            return
+        try:
+            zones = selected_slab_zones()
+        except Exception as error:  # noqa: BLE001
+            msg.set(f"Lecture de la sélection impossible : {error}")
+            return
+        if not zones:
+            msg.set("⚠ Sélectionne d'abord dans Archicad la ou les dalles de gazon, puis reclique « Gazon sur la sélection ».")
+            return
+        _d, _u, var, gap, light = SCATTER_TYPES["Herbe / gazon"]
+        item = {"nom": e["nom"], "dossier": e["dossier"], "surface": f"{len(zones)} dalle(s) sélectionnée(s)",
+                "zones": zones, "densite": 5.0, "variation": var, "echelle": 1.0, "espacement": gap, "leger": light,
+                "type": "Herbe / gazon"}
+        add_scatter(item)
+        n = len(scatter_points(item, {}, (0, 0, 0), 0.0, key))
+        msg.set(f"✔ « {e['nom']} » posé sur {len(zones)} dalle(s) : {n:,} touffes (ronds verts dans le plan). ".replace(",", " ")
+                + "Lance un rendu pour la voir.")
+
+    ttk.Button(simple, text="🌿 Gazon sur la sélection", command=quick_lawn).grid(row=0, column=2, padx=3, ipady=4)
     adv_on = tk.BooleanVar(value=False)
     ttk.Checkbutton(simple, text="Réglages experts", variable=adv_on,
                     command=lambda: acts.grid() if adv_on.get() else acts.grid_remove()).grid(row=0, column=4, padx=8)
@@ -3012,7 +3097,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     # ---------------- assistant vegetation : 3 questions simples
     def add_scatter(item: dict) -> None:
         for old in [sc for sc in scats if sc["dossier"] == item["dossier"] and sc["surface"] == item["surface"]
-                    and item["surface"] != ZONE_PLAN]:
+                    and item["surface"] != ZONE_PLAN and not item.get("zones")]:
             delete_elements(old.get("traces", []))             # meme plante au meme endroit : on remplace
             scats.remove(old)
         try:
@@ -3096,7 +3181,9 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         wf.grid(row=3, column=0, sticky="w", pady=(4, 10))
         names, _ = project_surfaces(state, key)
         grass = sorted(n for n in names if n != SOL_AUTOUR and any(w in n.lower() for w in ("grass", "gazon", "herbe", "pelouse", "lawn")))
-        r = 0
+        ttk.Radiobutton(wf, text="Sur les dalles que j'ai sélectionnées dans Archicad  (le plus rapide)", value=DALLES_SEL,
+                        variable=where).grid(row=0, column=0, sticky="w")
+        r = 1
         for n in grass:
             ttk.Radiobutton(wf, text=f"Sur la pelouse du projet  « {n} »", value=n, variable=where).grid(row=r, column=0, sticky="w")
             r += 1
@@ -3110,7 +3197,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         ttk.Radiobutton(of, text="Sur une autre surface :", value="__autre__", variable=where).grid(row=0, column=0)
         ttk.Combobox(of, textvariable=other, values=sorted(n for n in names if n not in grass and n != SOL_AUTOUR),
                      state="readonly", width=26).grid(row=0, column=1, padx=4)
-        where.set(grass[0] if grass else SOL_AUTOUR)
+        where.set(DALLES_SEL)
 
         ttk.Label(f, text="3.  Combien ?", font=big).grid(row=4, column=0, sticky="w")
         qty = tk.IntVar(value=1)
@@ -3132,6 +3219,16 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             _d, _u, var, gap, light = SCATTER_TYPES[kind]
             item = {"nom": e["nom"], "dossier": e["dossier"], "surface": target, "densite": QUANTITES[kind][qty.get()],
                     "variation": var, "echelle": 1.0, "rayon": 15.0, "espacement": gap, "leger": light, "type": kind}
+            if target == DALLES_SEL:
+                try:
+                    zones = selected_slab_zones()
+                except Exception as error:  # noqa: BLE001
+                    what.set(f"Lecture de la sélection impossible : {error}")
+                    return
+                if not zones:
+                    what.set("⚠ Rien de sélectionné : dans Archicad, sélectionne la ou les dalles de gazon, puis « Ajouter ».")
+                    return
+                item.update(zones=zones, surface=f"{len(zones)} dalle(s) sélectionnée(s)")
             if target == ZONE_PLAN:
                 win.withdraw()
                 pts, z = draw_zone()
@@ -3142,7 +3239,8 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 item.update(zone=pts, z=z)
             win.destroy()
             add_scatter(item)
-            lieu = {SOL_AUTOUR: "autour de la maison", ZONE_PLAN: "dans ta zone"}.get(target, f"sur « {target} »")
+            lieu = {SOL_AUTOUR: "autour de la maison", ZONE_PLAN: "dans ta zone",
+                    DALLES_SEL: f"sur {item['surface']}"}.get(target, f"sur « {target} »")
             msg.set(f"✔ C'est prêt : « {e['nom']} » ({('clairsemé', 'normal', 'dense')[qty.get()]}) {lieu}. "
                     f"{'Les touffes sont dessinées dans le plan (petits ronds). ' if item.get('traces') else ''}"
                     "Lance un rendu (onglet Rendu, Brouillon) pour la voir.")
