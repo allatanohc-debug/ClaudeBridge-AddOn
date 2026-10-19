@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0h (matériaux Cosmos)"
+VERSION = "19/10 - v2.0i (matériaux Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -574,26 +574,34 @@ def virtual_surface(folder: str) -> str:
 
 
 def write_materials(path: Path, mats: dict, library: dict, assigned: dict, report=print) -> list[str]:
-    """Un materiau par surface : materiau Cosmos s'il est associe, sinon couleur Archicad + reglages devines."""
+    """Un materiau par surface : materiau Cosmos s'il est associe, sinon couleur Archicad + reglages devines.
+    Ecrit aussi materiaux_sans_scan.vrscene (materiaux scannes .vrscan remplaces) : secours si V-Ray plante."""
     used = []
-    with path.open("w", encoding="utf-8") as out:
+    plain = path.with_name("materiaux_sans_scan.vrscene")
+    with path.open("w", encoding="utf-8") as out, plain.open("w", encoding="utf-8") as out2:
         out.write("// Materiaux (V-Ray Link)\n")
+        out2.write("// Materiaux sans scans (secours V-Ray Link)\n")
         for name, info in mats.items():
             mid = mat_id(name)
+            m = guess_material(name, info, library)
+            simple = f"// surface : {name}\n" + _brdf(mid, m) + f"MtlSingleBRDF {mid} {{\n  brdf={mid}_brdf;\n}}\n"
             a = assigned.get(name)
             if a and a.get("dossier"):
                 try:
                     folder = Path(a["dossier"])
                     vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
                     fixed, top = vrmat_for_render(vrmat)
-                    out.write(f"// {name} <- Cosmos : {folder.name}\nMtlVRmat {mid} {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n"
-                              f"  mtlname=\"{top}\";\n}}\n")
-                    used.append(f"{name} → {virtual_surface(str(folder))[9:]}")
+                    block = (f"// {name} <- Cosmos : {folder.name}\nMtlVRmat {mid} {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n"
+                             f"  mtlname=\"{top}\";\n}}\n")
+                    out.write(block)
+                    scan = ".vrscan" in fixed.read_text("utf-8", "replace").lower()
+                    out2.write(simple if scan else block)
+                    used.append(f"{name} → {virtual_surface(str(folder))[9:]}" + (" (scanné)" if scan else ""))
                     continue
                 except Exception as error:  # noqa: BLE001
                     report(f"Matériau Cosmos indisponible pour {name} : {error}")
-            m = guess_material(name, info, library)
-            out.write(f"// surface : {name}\n" + _brdf(mid, m) + f"MtlSingleBRDF {mid} {{\n  brdf={mid}_brdf;\n}}\n")
+            out.write(simple)
+            out2.write(simple)
     return used
 
 
@@ -704,7 +712,11 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
               f"Vector(0,0,{ground_z - 0.005:.4f})); geometry=sol_geo; material=sol_mtl; }}"]
     s.append('#include "materiaux.vrscene"')
     s.append(f'#include "{geometry.name}"')
-    path.write_text("\n".join(s) + "\n", encoding="utf-8")
+    text = "\n".join(s) + "\n"
+    path.write_text(text, encoding="utf-8")
+    secours = path.with_name(path.stem + "_sans_scan.vrscene")      # secours si un materiau scanne fait planter V-Ray
+    secours.write_text(text.replace('#include "materiaux.vrscene"', '#include "materiaux_sans_scan.vrscene"'),
+                       encoding="utf-8")
 
 
 # ------------------------------------------------------------------ Cosmos ---
@@ -1234,18 +1246,29 @@ def _run_bat(bat: Path, lines: list, env_vars: dict, cwd: Path | None = None) ->
 
 
 def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
-    """Lance V-Ray (relance jusqu'a 3 fois s'il se ferme sans image ; sinon la fenetre reste ouverte)."""
+    """Lance V-Ray. S'il se ferme sans image : relance ; s'il plante encore, rendu de secours sans
+    materiaux scannes (.vrscan) ; en dernier recours la fenetre reste ouverte avec le code d'erreur."""
+    secours = scene.with_name(scene.stem + "_sans_scan.vrscene")
+    opts = f"-display={1 if show else 0} -autoClose=0 -verboseLevel=3"
     _run_bat(scene.parent / "rendre_cette_vue.bat", [
-        "@echo off", "title V-Ray Link - rendu", "set ESSAI=0",
+        "@echo off", "title V-Ray Link - rendu",
         'if exist "%VRL_IMAGE%" del "%VRL_IMAGE%"',
-        ":relance", "set /a ESSAI+=1",
-        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" -display={1 if show else 0} -autoClose=0 -verboseLevel=3',
-        "set CODE=%errorlevel%",
+        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts}',
         'if exist "%VRL_IMAGE%" goto fin',
-        "if %ESSAI% LSS 3 (", "  echo.", "  echo V-Ray s'est ferme sans image ^(code %CODE%^) : nouvel essai...",
-        "  timeout /t 3 >nul", "  goto relance", ")",
-        "echo.", "echo *** V-Ray n'a pas pu rendre l'image apres 3 essais ^(code %CODE%^) : fais une capture de cette fenetre. ***",
-        "pause", ":fin"], {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image}, scene.parent)
+        "echo.", "echo V-Ray s'est ferme sans image : nouvel essai...", "timeout /t 3 >nul",
+        f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts}',
+        'if exist "%VRL_IMAGE%" goto fin',
+        'if not exist "%VRL_SECOURS%" goto echec',
+        "echo.", "echo ============================================================",
+        "echo  V-Ray plante sur un materiau SCANNE ^(Chaos Scans^).",
+        "echo  Rendu de secours : ces materiaux sont remplaces par la couleur Archicad.",
+        "echo ============================================================", "timeout /t 3 >nul",
+        f'"%VRL_VRAY%" -sceneFile="%VRL_SECOURS%" -imgFile="%VRL_IMAGE%" {opts}',
+        'if exist "%VRL_IMAGE%" goto fin',
+        ":echec", "set CODE=%errorlevel%", "echo.",
+        "echo *** V-Ray n'a pas pu rendre l'image ^(code %CODE%^) : fais une capture de cette fenetre. ***",
+        "pause", ":fin"], {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image,
+                           "VRL_SECOURS": secours if secours.exists() else ""}, scene.parent)
 
 
 def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path) -> Path:
@@ -1257,6 +1280,8 @@ def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path) -> Path
         lines.append(f"echo Vue {k}/{len(jobs)}")
         lines.append(f'"%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
         lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_S{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
+        env[f"VRL_B{k}"] = scene.with_name(scene.stem + "_sans_scan.vrscene")
+        lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_B{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
         lines.append(f'if not exist "%VRL_I{k}%" (echo *** Erreur V-Ray sur cette vue : fais une capture. *** & pause)')
     lines += ['explorer "%VRL_DOSSIER%"', "echo Termine.", "timeout /t 5"]
     _run_bat(bat, lines, env, bat.parent)
