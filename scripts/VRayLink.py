@@ -1237,7 +1237,7 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
         f'if exist "{image}" del "{image}"',
         ":relance", "set /a ESSAI+=1", run, "set CODE=%errorlevel%",
         f'if exist "{image}" goto fin',
-        "if %ESSAI% LSS 3 (", "  echo.", "  echo V-Ray s'est ferme sans image (code %CODE%) : nouvel essai %ESSAI%/3...",
+        "if %ESSAI% LSS 3 (", "  echo.", "  echo V-Ray s'est ferme sans image ^(code %CODE%^) : nouvel essai...",
         "  timeout /t 3 >nul", "  goto relance", ")",
         "echo.", "echo *** V-Ray n'a pas pu rendre l'image apres 3 essais (code %CODE%) : fais une capture de cette fenetre. ***",
         "pause", ":fin"]) + "\r\n", encoding=BAT_ENC, errors="replace", newline="")
