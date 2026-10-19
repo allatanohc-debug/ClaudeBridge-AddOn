@@ -51,7 +51,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1.2 (étape 1)"
+VERSION = "19/10 - v1.3 (étape 1)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -177,10 +177,10 @@ def story_level() -> float:
     return next((float(s.get("level", 0.0)) for s in info.get("stories", []) if s.get("index") == act), 0.0)
 
 
-def archicad_bbox():
-    """Boite du modele dans Archicad (murs, dalles, toits, poteaux) : sert a recaler l'IFC et aux vues auto."""
+def archicad_bbox(kinds=("Wall", "Slab", "Roof", "Column")):
+    """Boite du modele dans Archicad : sert a recaler l'IFC (tout) et a cadrer les vues auto (le bati seul)."""
     ids_ = []
-    for kind in ("Wall", "Slab", "Roof", "Column"):
+    for kind in kinds:
         try:
             ids_ += tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
         except Exception:  # noqa: BLE001
@@ -444,7 +444,7 @@ def auto_cameras(bbox, north: float) -> list[dict]:
     diag = math.hypot(w, d)
     zt = lo[2] + h * 0.4
     cams = [{"nom": "Vue aérienne", "auto": True, "focale": 35,
-             "eye": [cx - 0.75 * diag, cy - 1.05 * diag, lo[2] + h + 0.75 * diag], "target": [cx, cy, zt]}]
+             "eye": [cx - 0.55 * diag, cy - 0.8 * diag, lo[2] + h + 0.55 * diag], "target": [cx, cy, zt]}]
     for vx, vy, span in ((0, -1, w), (0, 1, w), (-1, 0, d), (1, 0, d)):
         other = d if span == w else w
         dist = max(span * 1.15, 8.0) + other / 2
@@ -543,7 +543,9 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     import json
     meta.write_text(json.dumps({"sol": ground, "surfaces": sorted(meshes), "triangles": tris}), encoding="utf-8")
     state.setdefault("surfaces", sorted(meshes))
-    return geo, ground, f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
+    listing = ", ".join(f"{n} ({'/'.join(str(int(c * 255)) for c in mats.get(n, {}).get('rgb', (0, 0, 0)))})"
+                        for n in sorted(meshes)[:25])
+    return geo, ground, (f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ") + "\nSurfaces : " + listing)
 
 
 def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
@@ -618,7 +620,7 @@ def window(state: dict) -> None:
     def compute_autos():
         nonlocal autos
         try:
-            autos = auto_cameras(archicad_bbox(), proj["north"])
+            autos = auto_cameras(archicad_bbox(("Wall", "Roof", "Column")) or archicad_bbox(), proj["north"])
         except Exception as error:  # noqa: BLE001
             autos = []
             status.set(f"Vues automatiques indisponibles : {error}")
