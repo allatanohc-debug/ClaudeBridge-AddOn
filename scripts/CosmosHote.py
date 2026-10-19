@@ -18,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 4b (etat page)"
+VERSION = "19/10 - test hote 5 (toutes les instances)"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -309,16 +309,22 @@ class Native:
 
 
 def find_native():
+    """Toutes les instances Cosmos (il peut y en avoir plusieurs) : un acces par instance."""
+    apis, deja = [], set()
     for port in cbservice_ports():
+        if port in deja:
+            continue
         for tls in (False, True):
             api = Native(port, tls)
             try:
                 res = decode(api.unary("ImportAPI/ListImporters", b"", timeout=4))
-                log("ImportAPI OK sur", api.nom, "- hotes :", show(res))
-                return api
+                log("ImportAPI OK sur", api.nom, "- hotes deja la :", len(res.get(1, [])))
+                apis.append(api)
+                deja.update({port, port + 1})       # http/https d'une meme instance
+                break
             except Exception as e:  # noqa: BLE001
-                log("   ", api.nom, ":", str(e)[:160])
-    return None
+                log("   ", api.nom, ":", str(e)[:120])
+    return apis
 
 
 # ---------------------------------------------------------------- messages
@@ -440,13 +446,16 @@ def main():
             except Exception as e:  # noqa: BLE001
                 log("API web sur", b, ":", e)
         base = base or BASES[0]
-        native = find_native()
-        if not native:
+        natives = find_native()
+        if not natives:
             log("ECHEC : ImportAPI introuvable. Envoie ce journal.")
             return
+        log(len(natives), "instance(s) Cosmos -> connexion a chacune")
         stop = threading.Event()
-        threading.Thread(target=listen, args=(base, native, stop), daemon=True).start()
-        threading.Thread(target=listen_cancel, args=(native, stop), daemon=True).start()
+        for nat in natives:
+            threading.Thread(target=listen, args=(base, nat, stop), daemon=True).start()
+            threading.Thread(target=listen_cancel, args=(nat, stop), daemon=True).start()
+        native = natives[0]
         time.sleep(2)
         try:
             log("hotes connectes maintenant :", show(decode(native.unary("ImportAPI/ListImporters", b""))))
@@ -454,15 +463,14 @@ def main():
             log("ListImporters :", e)
 
         def etat():
-            for i in range(6):
-                for nom, f in (("natif", lambda: native.unary("ApplicationStateAPI/GetApplicationState", b"")),
-                               ("web", lambda: call(base, "ApplicationStateAPI/GetApplicationState", b""))):
+            for i in range(3):
+                for nom, f in [(n.nom, (lambda n=n: n.unary("ApplicationStateAPI/GetApplicationState", b""))) for n in natives]:
                     try:
                         st = decode(f())
                         cur = (st.get(1) or [{}])[0]
                         imps = (cur.get(10) or [{}])[0] if isinstance(cur, dict) else {}
-                        log(f"etat Cosmos ({nom}) : hotes vus par la page =", show(imps)[:1500],
-                            "| autres champs :", sorted(cur.keys()) if isinstance(cur, dict) else cur)
+                        noms = [((h.get(1) or [{}])[0].get(1) or ["?"])[0] for h in imps.get(1, [])] if isinstance(imps, dict) else []
+                        log(f"etat Cosmos ({nom}) : hotes = {noms}")
                     except Exception as e:  # noqa: BLE001
                         log(f"etat Cosmos ({nom}) :", str(e)[:200])
                 time.sleep(5)
