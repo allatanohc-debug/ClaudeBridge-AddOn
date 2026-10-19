@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["ifcopenshell>=0.8"]
+# dependencies = []
 # ///
 """
 V-Ray Link - rendre un projet Archicad avec V-Ray, sans SketchUp - script Tapir (Archicad 28)
@@ -51,7 +51,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1 (étape 1)"
+VERSION = "19/10 - v1.1 (étape 1)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 
@@ -222,6 +222,35 @@ def _rgb(m) -> tuple:
             return tuple(float(x) for x in d)[:3]
         except Exception:  # noqa: BLE001
             return (0.7, 0.7, 0.7)
+
+
+def ensure_ifcopenshell(report=print) -> None:
+    """Installe le module IFC au premier rendu (une seule fois, environ 1 minute)."""
+    try:
+        import ifcopenshell  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    report("Premier rendu : installation du module IFC (ifcopenshell), une minute environ...")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for cmd in ([sys.executable, "-m", "pip", "install", "--user", "ifcopenshell"],
+                [sys.executable, "-m", "pip", "install", "ifcopenshell"],
+                ["uv", "pip", "install", "--python", sys.executable, "ifcopenshell"]):
+        try:
+            if subprocess.run(cmd, capture_output=True, creationflags=flags, timeout=900).returncode == 0:
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    import importlib
+    import site
+    importlib.invalidate_caches()
+    try:
+        user_site = site.getusersitepackages()
+        if user_site not in sys.path:
+            sys.path.append(user_site)
+    except Exception:  # noqa: BLE001
+        pass
+    import ifcopenshell  # noqa: F401  (ModuleNotFoundError si l'installation a echoue)
 
 
 def ifc_meshes(path: Path, report=print) -> tuple[dict, dict, tuple]:
@@ -475,6 +504,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         import json
         info = json.loads(meta.read_text(encoding="utf-8"))
         return geo, float(info.get("sol", 0.0)), "géométrie reprise de l'export précédent"
+    ensure_ifcopenshell(report)
     report("Export IFC depuis Archicad...")
     ifc = d / "modele.ifc"
     export_ifc(ifc)
@@ -743,7 +773,9 @@ def window(state: dict) -> None:
                   f"Qualité {opts['qualite']}, {opts['taille']}, {opts['ambiance']}, soleil {opts['jour']}/{opts['mois']} "
                   f"à {int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}."])
         except ModuleNotFoundError:
-            show(["Le module ifcopenshell manque. Dans une invite de commandes : py -m pip install ifcopenshell"])
+            show(["Le module IFC (ifcopenshell) n'a pas pu s'installer tout seul.",
+                  f"Dans une invite de commandes, tape :  \"{sys.executable}\" -m pip install ifcopenshell",
+                  "puis relance le rendu."])
             say("Module manquant.")
         except Exception as error:  # noqa: BLE001
             show([f"Erreur : {error}"])
