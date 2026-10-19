@@ -7,6 +7,9 @@ Journal : "cosmos_hote.txt" sur le Bureau (a m'envoyer).
 import http.client
 import json
 import os
+import re
+import subprocess
+import sys
 import ssl
 import struct
 import threading
@@ -15,7 +18,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-VERSION = "19/10 - test hote 1"
+VERSION = "19/10 - test hote 2 (gRPC natif)"
 HOME = Path.home()
 DESK = next((p for p in (HOME / "OneDrive" / "Desktop", HOME / "OneDrive" / "Bureau", HOME / "Desktop") if p.exists()), HOME)
 LOG = DESK / "cosmos_hote.txt"
@@ -161,6 +164,100 @@ def call(base, method, msg: bytes, timeout=15, stream=False):
     return msgs[0] if msgs else b""
 
 
+
+# ---------------------------------------------------------------- gRPC natif (ImportAPI n'est pas sur le gRPC-Web)
+def ensure_grpc():
+    try:
+        import grpc  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    log("installation du module grpcio (une seule fois, ~1 min)...")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    for cmd in ([sys.executable, "-m", "pip", "install", "--user", "grpcio"],
+                [sys.executable, "-m", "pip", "install", "grpcio"],
+                ["uv", "pip", "install", "--python", sys.executable, "grpcio"]):
+        try:
+            if subprocess.run(cmd, capture_output=True, creationflags=flags, timeout=900).returncode == 0:
+                break
+        except Exception:  # noqa: BLE001
+            continue
+    import importlib
+    import site
+    importlib.invalidate_caches()
+    try:
+        us = site.getusersitepackages()
+        if us not in sys.path:
+            sys.path.append(us)
+    except Exception:  # noqa: BLE001
+        pass
+    import grpc  # noqa: F401
+
+
+def cbservice_ports():
+    """Ports TCP sur lesquels ecoute cbservice.exe (+ ceux de runtime.json)."""
+    ports = []
+    rt = Path(os.environ.get("LOCALAPPDATA", HOME)) / "Chaos" / "Cosmos" / "runtime.json"
+    if rt.exists():
+        t = rt.read_text("utf-8", "replace")
+        log("runtime.json :", t.replace("\n", " ")[:600])
+        ports += [int(p) for p in re.findall(r"(?:port\D{1,4}|:)(\d{4,5})", t)]
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        tl = subprocess.run(["tasklist", "/FI", "IMAGENAME eq cbservice.exe", "/FO", "CSV", "/NH"],
+                            capture_output=True, text=True, creationflags=flags, timeout=20).stdout
+        pids = set(re.findall(r'"cbservice\.exe","(\d+)"', tl, re.I))
+        ns = subprocess.run(["netstat", "-ano", "-p", "TCP"], capture_output=True, text=True,
+                            creationflags=flags, timeout=20).stdout
+        for line in ns.splitlines():
+            m = re.search(r"TCP\s+(127\.0\.0\.1|0\.0\.0\.0|\[::1?\]):(\d+)\s+\S+\s+LISTENING\s+(\d+)", line)
+            if m and m.group(3) in pids:
+                ports.append(int(m.group(2)))
+        log("cbservice pid", sorted(pids), "ecoute sur", sorted(set(ports)))
+    except Exception as e:  # noqa: BLE001
+        log("netstat :", e)
+    ports += [30305, 30306]
+    return list(dict.fromkeys(ports))
+
+
+class Native:
+    def __init__(self, ch, nom):
+        self.ch, self.nom = ch, nom
+
+    def unary(self, method, msg, timeout=10):
+        f = self.ch.unary_unary(SVC + method, request_serializer=None, response_deserializer=None)
+        return f(msg, timeout=timeout)
+
+    def stream(self, method, msg):
+        f = self.ch.unary_stream(SVC + method, request_serializer=None, response_deserializer=None)
+        return f(msg)
+
+
+def find_native():
+    import grpc
+    for port in cbservice_ports():
+        target = f"127.0.0.1:{port}"
+        essais = [("non chiffre", lambda: grpc.insecure_channel(target))]
+        try:
+            pem = ssl.get_server_certificate(("127.0.0.1", port), timeout=3).encode()
+            for nom in ("localhost", "127.0.0.1"):
+                essais.append((f"TLS ({nom})", lambda n=nom: grpc.secure_channel(
+                    target, grpc.ssl_channel_credentials(root_certificates=pem),
+                    options=[("grpc.ssl_target_name_override", n)])))
+        except Exception:  # noqa: BLE001
+            pass
+        for nom, mk in essais:
+            ch = mk()
+            api = Native(ch, f"{target} {nom}")
+            try:
+                res = decode(api.unary("ImportAPI/ListImporters", b"", timeout=4))
+                log("ImportAPI OK en gRPC natif sur", api.nom, "- hotes :", show(res))
+                return api
+            except Exception as e:  # noqa: BLE001
+                log("   ", target, nom, ":", str(e).replace("\n", " ")[:160])
+                ch.close()
+    return None
+
 # ---------------------------------------------------------------- messages
 def importer_info():
     return pb((1, "V-Ray Link (Archicad)"), (2, IMPORTER_ID), (3, os.getpid()))
@@ -180,7 +277,16 @@ def show(obj, ind="   "):
     return json.dumps(obj, ensure_ascii=False, default=str, indent=1)[:6000].replace("\n", "\n" + ind)
 
 
-def handle_import(base, ev):
+def any_unary(base, native, meth, msg):
+    try:
+        return call(base, meth, msg)
+    except Exception:  # noqa: BLE001
+        if native is None:
+            raise
+        return native.unary(meth, msg)
+
+
+def handle_import(base, ev, native=None):
     pid = (ev.get(2) or [""])[0]
     rev = (ev.get(3) or [0])[0]
     var = (ev.get(6) or [""])[0]
@@ -193,7 +299,7 @@ def handle_import(base, ev):
         ("ResolveFilePaths", "PathAPI/ResolveFilePaths", pb((1, pid), (2, rev), (4, var))),
     ]:
         try:
-            log(f"   {nom} ->", show(decode(call(base, meth, msg))))
+            log(f"   {nom} ->", show(decode(any_unary(base, native, meth, msg))))
         except Exception as e:  # noqa: BLE001
             log(f"   {nom} ERREUR", e)
     pk = HOME / "OneDrive" / "Documents" / "Chaos Cosmos" / "Packages"
@@ -206,31 +312,28 @@ def handle_import(base, ev):
             log("     ", f, f.stat().st_size)
 
 
-def listen(base, stop):
+def listen(base, native, stop):
     while not stop.is_set():
         try:
-            r = call(base, "ImportAPI/WaitForImport", wait_for_import_request(), stream=True)
-            log("CONNECTE comme hote Cosmos sur", base, "- id", IMPORTER_ID)
-            for flag, body in _frames(r):
-                if flag & 0x80:
-                    log("fin du flux :", body.decode("utf-8", "replace"))
-                    break
+            it = native.stream("ImportAPI/WaitForImport", wait_for_import_request())
+            log("CONNECTE comme hote Cosmos sur", native.nom, "- id", IMPORTER_ID)
+            for body in it:
                 if body:
-                    threading.Thread(target=handle_import, args=(base, decode(body)), daemon=True).start()
+                    threading.Thread(target=handle_import, args=(base, decode(body), native), daemon=True).start()
+            log("fin du flux")
         except Exception as e:  # noqa: BLE001
-            log("flux interrompu :", e)
+            log("flux interrompu :", str(e).replace("\n", " ")[:300])
         if not stop.is_set():
             time.sleep(3)
 
 
-def listen_cancel(base, stop):
+def listen_cancel(native, stop):
     try:
-        r = call(base, "ImportAPI/WaitForCancel", pb((1, importer_info())), stream=True)
-        for flag, body in _frames(r):
-            if not flag & 0x80 and body:
+        for body in native.stream("ImportAPI/WaitForCancel", pb((1, importer_info()))):
+            if body:
                 log("annulation demandee :", show(decode(body)))
     except Exception as e:  # noqa: BLE001
-        log("flux annulation :", e)
+        log("flux annulation :", str(e).replace("\n", " ")[:200])
 
 
 def port_ok(port):
@@ -267,21 +370,28 @@ def main():
         base = None
         for b in BASES:
             try:
-                res = decode(call(b, "ImportAPI/ListImporters", b""))
-                log("API Cosmos OK sur", b, "- hotes deja connectes :", show(res))
+                call(b, "SystemAPI/GetSystemInfo", b"")
+                log("API web Cosmos OK sur", b)
                 base = b
                 break
             except Exception as e:  # noqa: BLE001
-                log("API sur", b, ":", e)
-        if not base:
-            log("ECHEC : impossible de parler a l'API Cosmos. Envoie ce journal.")
+                log("API web sur", b, ":", e)
+        base = base or BASES[0]
+        try:
+            ensure_grpc()
+        except Exception as e:  # noqa: BLE001
+            log("ECHEC installation grpcio :", e)
+            return
+        native = find_native()
+        if not native:
+            log("ECHEC : ImportAPI introuvable. Envoie ce journal.")
             return
         stop = threading.Event()
-        threading.Thread(target=listen, args=(base, stop), daemon=True).start()
-        threading.Thread(target=listen_cancel, args=(base, stop), daemon=True).start()
+        threading.Thread(target=listen, args=(base, native, stop), daemon=True).start()
+        threading.Thread(target=listen_cancel, args=(native, stop), daemon=True).start()
         time.sleep(2)
         try:
-            log("hotes connectes maintenant :", show(decode(call(base, "ImportAPI/ListImporters", b""))))
+            log("hotes connectes maintenant :", show(decode(native.unary("ImportAPI/ListImporters", b""))))
         except Exception as e:  # noqa: BLE001
             log("ListImporters :", e)
         scheme, port = base
