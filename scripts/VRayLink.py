@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.7c (réglages avancés)"
+VERSION = "19/10 - v2.7d (réglages avancés)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -886,8 +886,11 @@ class ViewerServer:
 
             def do_GET(self):
                 try:
-                    if self.path.startswith("/modele.bin"):
-                        self._send(viewer_mesh(key), "application/octet-stream")
+                    if self.path.startswith("/api/geometrie"):
+                        # en JSON (base64) : les gestionnaires de telechargement (IDM...) capturent les .bin
+                        import base64
+                        body = b'{"d":"' + base64.b64encode(viewer_mesh(key)) + b'"}'
+                        self._send(body, "application/json")
                     elif self.path.startswith("/infos"):
                         self._send(json.dumps(infos() if callable(infos) else infos).encode("utf-8"), "application/json")
                     else:
@@ -1023,8 +1026,10 @@ function goTo(c){cam.position.set(...c.eye); controls.target.set(...c.target); $
 info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;o.textContent=c.nom;$("cams").appendChild(o)});
 $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
 // modele
-const r1=await fetch("/modele.bin"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
-const buf=await r1.arrayBuffer();
+const r1=await fetch("/api/geometrie"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
+const b64=(await r1.json()).d; const raw=atob(b64); const u8=new Uint8Array(raw.length);
+for(let i=0;i<raw.length;i++)u8[i]=raw.charCodeAt(i);
+const buf=u8.buffer;
 if(buf.byteLength<8) throw new Error("modèle reçu vide ("+buf.byteLength+" octets)");
 const dv=new DataView(buf); const nv=dv.getUint32(0,true), ni=dv.getUint32(4,true);
 if(buf.byteLength!==8+nv*16+ni*4) throw new Error(`modèle incomplet (${buf.byteLength} octets reçus, ${8+nv*16+ni*4} attendus)`);
