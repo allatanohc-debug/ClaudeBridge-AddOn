@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.7b (réglages avancés)"
+VERSION = "19/10 - v2.7c (réglages avancés)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -827,7 +827,9 @@ def viewer_mesh(key: str) -> bytes:
     d = data_dir() / key
     cache, out = d / "geometrie.pkl", d / "visionneuse.bin"
     if out.exists() and out.stat().st_mtime >= cache.stat().st_mtime:
-        return out.read_bytes()
+        data = out.read_bytes()
+        if _mesh_ok(data):
+            return data
     meshes, mats, offset, _ground = pickle.loads(cache.read_bytes())
     import array
     pos, col, idx = array.array("f"), array.array("B"), array.array("I")
@@ -845,8 +847,19 @@ def viewer_mesh(key: str) -> bytes:
         pos.byteswap()
         idx.byteswap()
     data = struct.pack("<II", len(pos) // 3, len(idx)) + pos.tobytes() + col.tobytes() + idx.tobytes()
-    out.write_bytes(data)
+    if not _mesh_ok(data):
+        raise RuntimeError("modèle 3D vide ou incohérent (refais un rendu pour réexporter)")
+    tmp = out.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, out)
     return data
+
+
+def _mesh_ok(data: bytes) -> bool:
+    if len(data) < 8:
+        return False
+    nv, ni = struct.unpack("<II", data[:8])
+    return nv > 0 and ni > 0 and len(data) == 8 + nv * 16 + ni * 4
 
 
 class ViewerServer:
@@ -866,7 +879,10 @@ class ViewerServer:
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(body)
+                view = memoryview(body)
+                for i in range(0, len(view), 1 << 20):
+                    self.wfile.write(view[i:i + (1 << 20)])
+                self.wfile.flush()
 
             def do_GET(self):
                 try:
@@ -1009,7 +1025,9 @@ $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
 // modele
 const r1=await fetch("/modele.bin"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
 const buf=await r1.arrayBuffer();
+if(buf.byteLength<8) throw new Error("modèle reçu vide ("+buf.byteLength+" octets)");
 const dv=new DataView(buf); const nv=dv.getUint32(0,true), ni=dv.getUint32(4,true);
+if(buf.byteLength!==8+nv*16+ni*4) throw new Error(`modèle incomplet (${buf.byteLength} octets reçus, ${8+nv*16+ni*4} attendus)`);
 let o=8; const pos=new Float32Array(buf,o,nv*3); o+=nv*12; const col=new Uint8Array(buf,o,nv*4); o+=nv*4;
 const idx=new Uint32Array(buf.slice(o,o+ni*4));
 let g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttribute(pos,3));
