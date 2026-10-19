@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.0i (matériaux Cosmos)"
+VERSION = "19/10 - v2.1 (caméras)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -669,6 +669,143 @@ def auto_cameras(bbox, north: float) -> list[dict]:
     return cams
 
 
+
+# --------------------------------------------------------------- cameras ---
+CALQUE_CAMERAS = "V-Ray Link - Caméras"
+
+
+def camera_cone(cam: dict, length: float | None = None) -> tuple:
+    """(oeil, bord gauche, bord droit, cible) en plan, pour dessiner l'angle de vue."""
+    ex, ey = cam["eye"][0], cam["eye"][1]
+    tx, ty = cam["target"][0], cam["target"][1]
+    d = math.hypot(tx - ex, ty - ey) or 1.0
+    ux, uy = (tx - ex) / d, (ty - ey) / d
+    half = math.atan(18.0 / float(cam.get("focale", 24)))          # demi-angle horizontal (capteur 36 mm)
+    L = length or max(d, 4.0)
+    edge = L / math.cos(half)
+    left = (ex + edge * (ux * math.cos(half) - uy * math.sin(half)), ey + edge * (ux * math.sin(half) + uy * math.cos(half)))
+    right = (ex + edge * (ux * math.cos(-half) - uy * math.sin(-half)), ey + edge * (ux * math.sin(-half) + uy * math.cos(-half)))
+    return (ex, ey), left, right, (tx, ty)
+
+
+def plan_footprint(key: str, cells: int = 140):
+    """Plan du modele vu de dessus, d'apres le dernier export : {"x0","y0","pas","sols":[[i,j]], "murs":[[i,j]]}."""
+    d = data_dir() / key
+    cache, out = d / "geometrie.pkl", d / "plan_apercu.json"
+    try:
+        stamp = cache.stat().st_mtime
+    except OSError:
+        return None
+    try:
+        saved = json.loads(out.read_text(encoding="utf-8"))
+        if saved.get("stamp") == stamp:
+            return saved
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        meshes, _mats, offset, _ground = pickle.loads(cache.read_bytes())
+    except Exception:  # noqa: BLE001
+        return None
+    ox, oy = offset[0], offset[1]
+    xs = [v[0] for verts, _f in meshes.values() for v in verts]
+    ys = [v[1] for verts, _f in meshes.values() for v in verts]
+    if not xs:
+        return None
+    x0, y0 = min(xs), min(ys)
+    step = max(max(xs) - x0, max(ys) - y0) / cells or 1.0
+    sols, murs = set(), set()
+
+    def line(a, b, into):
+        n = int(max(abs(b[0] - a[0]), abs(b[1] - a[1])) / step) + 1
+        for t in range(n + 1):
+            f = t / n
+            into.add((int((a[0] + (b[0] - a[0]) * f - x0) / step), int((a[1] + (b[1] - a[1]) * f - y0) / step)))
+
+    for verts, faces in meshes.values():
+        for t in range(0, len(faces), 3):
+            p = [verts[faces[t]], verts[faces[t + 1]], verts[faces[t + 2]]]
+            area = (p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[2][0] - p[0][0]) * (p[1][1] - p[0][1])
+            if abs(area) < step * step * 0.05:                      # face verticale (mur) : un trait
+                line(p[0], p[1], murs)
+                line(p[1], p[2], murs)
+                continue
+            i0, i1 = int((min(q[0] for q in p) - x0) / step), int((max(q[0] for q in p) - x0) / step)
+            j0, j1 = int((min(q[1] for q in p) - y0) / step), int((max(q[1] for q in p) - y0) / step)
+            for i in range(i0, i1 + 1):
+                for j in range(j0, j1 + 1):
+                    cx, cy = x0 + (i + .5) * step, y0 + (j + .5) * step
+                    s1 = (p[1][0] - p[0][0]) * (cy - p[0][1]) - (p[1][1] - p[0][1]) * (cx - p[0][0])
+                    s2 = (p[2][0] - p[1][0]) * (cy - p[1][1]) - (p[2][1] - p[1][1]) * (cx - p[1][0])
+                    s3 = (p[0][0] - p[2][0]) * (cy - p[2][1]) - (p[0][1] - p[2][1]) * (cx - p[2][0])
+                    if (s1 >= 0 and s2 >= 0 and s3 >= 0) or (s1 <= 0 and s2 <= 0 and s3 <= 0):
+                        sols.add((i, j))
+    res = {"stamp": stamp, "x0": x0 + ox, "y0": y0 + oy, "pas": step,
+           "sols": sorted(sols - murs), "murs": sorted(murs)}
+    try:
+        out.write_text(json.dumps(res), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return res
+
+
+def _layer_index(name: str) -> int:
+    rows = tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+    found = next((r for r in rows if r.get("name") == name), None)
+    if not found:
+        tapir("CreateLayers", {"layerDataArray": [{"name": name}]})
+        rows = tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+        found = next((r for r in rows if r.get("name") == name), None)
+    return int(found["index"]) if found else 0
+
+
+def erase_cameras_in_plan(state: dict, key: str) -> None:
+    guids = (state.get("traces") or {}).pop(key, [])
+    for i in range(0, len(guids), 300):
+        try:
+            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids[i:i + 300]]})
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def draw_cameras_in_plan(cams: list, state: dict, key: str, current: str = "") -> int:
+    """Dessine chaque camera dans le plan (calque « V-Ray Link - Caméras ») : appareil, cone de vision, nom."""
+    erase_cameras_in_plan(state, key)
+    story = tapir("GetStories").get("actStory", 0)
+    layer = _layer_index(CALQUE_CAMERAS)
+    created = []
+    for cam in cams:
+        (ex, ey), left, right, (tx, ty) = camera_cone(cam)
+        pen = 20 if cam["nom"] == current else 3
+        dx, dy = tx - ex, ty - ey
+        d = math.hypot(dx, dy) or 1.0
+        ux, uy, s = dx / d, dy / d, 0.35
+        body = [(ex - ux * s - uy * s, ey - uy * s + ux * s), (ex - ux * s + uy * s, ey - uy * s - ux * s),
+                (ex + uy * s, ey - ux * s), (ex - uy * s, ey + ux * s), (ex - ux * s - uy * s, ey - uy * s + ux * s)]
+        polys = [[(ex, ey), left, right, (ex, ey)], body, [(ex, ey), (tx, ty)]]
+        data = [{"floorInd": story, "layerIndex": layer, "linePenIndex": pen,
+                 "coordinates": [{"x": x, "y": y} for x, y in pl]} for pl in polys]
+        try:
+            res = tapir("CreatePolylines", {"polylinesData": data}).get("elements", [])
+            mine = [r["elementId"]["guid"] for r in res if "elementId" in r]
+            txt = tapir("CreateTexts", {"textsData": [{
+                "coordinate": {"x": ex - ux * 0.9, "y": ey - uy * 0.9, "z": 0.0}, "text": cam["nom"],
+                "floorIndex": story, "style": {"height": 2.5, "bold": True, "penIndex": pen,
+                                               "anchor": "MiddleMiddle", "justification": "Center"}}]}).get("elements", [])
+            mine += [r["elementId"]["guid"] for r in txt if "elementId" in r]
+        except Exception:  # noqa: BLE001
+            continue
+        if mine:
+            try:
+                tapir("SetDetailsOfElements", {"elementsWithDetails": [
+                    {"elementId": {"guid": g}, "details": {"layerIndex": layer}} for g in mine]})
+                tapir("CreateGroups", {"elementGroups": [{"elements": [{"elementId": {"guid": g}} for g in mine]}]})
+            except Exception:  # noqa: BLE001
+                pass
+        created += mine
+    state.setdefault("traces", {})[key] = created
+    return len(cams)
+
+
 # ----------------------------------------------------------------- scene ---
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
     W, H = TAILLES.get(opts["taille"], (1920, 1080))
@@ -1145,11 +1282,12 @@ def load_settings() -> dict:
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
-            "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {}}
+            "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
+            "traces": saved.get("traces") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -1325,7 +1463,9 @@ def window(state: dict) -> None:
     autos: list = []
 
     def all_cams() -> list[dict]:
-        return autos + state["cameras"].get(key, [])
+        placed = state["cameras"].get(key, [])
+        names = {c["nom"] for c in placed}
+        return [a for a in autos if a["nom"] not in names] + placed
 
     def refresh():
         for w in listf.winfo_children():
@@ -1342,6 +1482,7 @@ def window(state: dict) -> None:
         names = [c["nom"] for c in all_cams()]
         if current.get() not in names and names:
             current.set(names[0])
+        draw_plan()
 
     def compute_autos():
         nonlocal autos
@@ -1351,6 +1492,126 @@ def window(state: dict) -> None:
             autos = []
             status.set(f"Vues automatiques indisponibles : {error}")
         refresh()
+
+
+    # --- plan de reperage : toutes les cameras vues de dessus, deplacables a la souris
+    plan = tk.Canvas(box, width=340, height=230, background="#fbfaf7", highlightthickness=1, highlightbackground="#ccc")
+    plan.grid(row=0, column=4, rowspan=3, padx=(12, 0), sticky="n")
+    foot = {"cells": None, "step": 0.0}
+    view = {"k": 1.0, "ox": 0.0, "oy": 0.0}
+    drag = {"cam": None, "part": None}
+
+    def to_px(x, y):
+        return view["ox"] + x * view["k"], view["oy"] - y * view["k"]
+
+    def to_world(px, py):
+        return (px - view["ox"]) / view["k"], (view["oy"] - py) / view["k"]
+
+    def draw_plan(*_):
+        if foot["cells"] is None:
+            foot["cells"] = plan_footprint(key) or {}
+        f = foot["cells"]
+        plan.delete("all")
+        cams = all_cams()
+        cur = next((c for c in cams if c["nom"] == current.get()), None)
+        xs, ys = [], []
+        if f:
+            n = max([c[0] for c in f["murs"] + f["sols"]] + [0]) + 1
+            m_ = max([c[1] for c in f["murs"] + f["sols"]] + [0]) + 1
+            xs += [f["x0"], f["x0"] + n * f["pas"]]
+            ys += [f["y0"], f["y0"] + m_ * f["pas"]]
+        for c in ([cur] if (cur and f) else cams):          # cadre sur le bati + la vue choisie
+            xs += [c["eye"][0], c["target"][0]]
+            ys += [c["eye"][1], c["target"][1]]
+        if not xs:
+            plan.create_text(170, 115, text="Le plan apparaîtra après le premier rendu", fill="#888")
+            return
+        W, H, m = 340, 230, 22
+        k = min((W - 2 * m) / max(max(xs) - min(xs), 1.0), (H - 2 * m) / max(max(ys) - min(ys), 1.0))
+        view.update(k=k, ox=m - min(xs) * k + ((W - 2 * m) - (max(xs) - min(xs)) * k) / 2,
+                    oy=H - m + min(ys) * k - ((H - 2 * m) - (max(ys) - min(ys)) * k) / 2)
+        if f:
+            for cells, col in ((f["sols"], "#dedad0"), (f["murs"], "#4a4a4a")):
+                for i, j in cells:
+                    a, b = to_px(f["x0"] + i * f["pas"], f["y0"] + j * f["pas"])
+                    c, d = to_px(f["x0"] + (i + 1) * f["pas"], f["y0"] + (j + 1) * f["pas"])
+                    plan.create_rectangle(a, d, c, b, fill=col, outline="")
+        for cam in sorted(cams, key=lambda c: c["nom"] == current.get()):
+            on = cam["nom"] == current.get()
+            col = "#e0702a" if on else "#7d8590"
+            (ex, ey), left, right, (tx, ty) = camera_cone(cam, None if on else 18 / k)
+            pts = [to_px(ex, ey), to_px(*left), to_px(*right)]
+            plan.create_polygon(*[v for p in pts for v in p], fill="#e0702a" if on else "#e7e9ec", outline=col,
+                                stipple="gray25" if on else "", width=2 if on else 1)
+            a, b = to_px(ex, ey)
+            plan.create_oval(a - 6, b - 6, a + 6, b + 6, fill=col, outline="white", width=2)
+            if on:
+                c, d = to_px(tx, ty)
+                plan.create_line(a, b, c, d, fill=col, dash=(3, 2))
+                plan.create_oval(c - 5, d - 5, c + 5, d + 5, outline=col, width=2)
+            plan.create_text(a, b + 14, text=cam["nom"], fill=col, font=("Segoe UI", 8, "bold" if on else "normal"))
+        plan.create_text(6, 6, anchor="nw", fill="#888", font=("Segoe UI", 8),
+                         text="Glisse le point (caméra) ou le rond (point visé)")
+
+    def editable(cam: dict) -> dict:
+        """Une vue automatique deplacee devient une camera placee (meme nom)."""
+        cams = state["cameras"].setdefault(key, [])
+        mine = next((c for c in cams if c["nom"] == cam["nom"]), None)
+        if mine is None:
+            mine = {k2: (list(v) if isinstance(v, list) else v) for k2, v in cam.items() if k2 != "auto"}
+            cams.append(mine)
+        return mine
+
+    def on_press(ev):
+        best = None
+        for cam in all_cams():
+            for part, pt in (("eye", cam["eye"]), ("target", cam["target"])):
+                if part == "target" and cam["nom"] != current.get():
+                    continue
+                a, b = to_px(pt[0], pt[1])
+                d = math.hypot(ev.x - a, ev.y - b)
+                if d < 12 and (best is None or d < best[0]):
+                    best = (d, cam, part)
+        if best:
+            current.set(best[1]["nom"])
+            drag.update(cam=editable(best[1]), part=best[2])
+        draw_plan()
+
+    def on_move(ev):
+        if not drag["cam"]:
+            return
+        x, y = to_world(ev.x, ev.y)
+        drag["cam"][drag["part"]][0], drag["cam"][drag["part"]][1] = x, y
+        draw_plan()
+
+    def on_release(_ev):
+        if drag["cam"]:
+            save_settings(state)
+            name = drag["cam"]["nom"]
+            drag.update(cam=None, part=None)
+            refresh()
+            current.set(name)
+            if state.get("traces", {}).get(key):
+                to_plan(quiet=True)
+
+    plan.bind("<ButtonPress-1>", on_press)
+    plan.bind("<B1-Motion>", on_move)
+    plan.bind("<ButtonRelease-1>", on_release)
+    current.trace_add("write", lambda *_: draw_plan())
+
+    def to_plan(quiet=False):
+        try:
+            n = draw_cameras_in_plan(all_cams(), state, key, current.get())
+            save_settings(state)
+            if not quiet:
+                say(f"{n} caméras dessinées dans le plan (calque « {CALQUE_CAMERAS} », la vue choisie en orange).")
+        except Exception as error:  # noqa: BLE001
+            say(f"Dessin dans le plan impossible : {error}")
+
+    def off_plan():
+        erase_cameras_in_plan(state, key)
+        save_settings(state)
+        say("Caméras retirées du plan.")
 
     row = ttk.Frame(box)
     row.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -1362,12 +1623,29 @@ def window(state: dict) -> None:
     ttk.Spinbox(row, from_=0, to=200, increment=0.1, textvariable=tgt_var, width=5).grid(row=0, column=3, padx=(2, 8))
     ttk.Label(row, text="Focale").grid(row=0, column=4)
     foc_var = tk.IntVar(value=opts["focale"])
-    ttk.Combobox(row, values=FOCALES, textvariable=foc_var, width=4, state="readonly").grid(row=0, column=5, padx=(2, 8))
+    foc_box = ttk.Combobox(row, values=FOCALES, textvariable=foc_var, width=4, state="readonly")
+    foc_box.grid(row=0, column=5, padx=(2, 8))
     ttk.Button(row, text="Placer une caméra (2 clics)...", command=lambda: place()).grid(row=0, column=6)
     ttk.Button(row, text="Supprimer", command=lambda: remove()).grid(row=0, column=7, padx=4)
     vert_var = tk.BooleanVar(value=opts["verticales"])
     ttk.Checkbutton(box, text="Verticales droites (caméra horizontale)", variable=vert_var).grid(row=2, column=0, sticky="w",
                                                                                               pady=(4, 0))
+    pr = ttk.Frame(box)
+    pr.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
+    ttk.Button(pr, text="📐 Montrer les caméras dans le plan Archicad", command=lambda: to_plan()).grid(row=0, column=0)
+    ttk.Button(pr, text="Les retirer du plan", command=lambda: off_plan()).grid(row=0, column=1, padx=4)
+
+    def focal_changed(_ev=None):
+        cam = next((c for c in all_cams() if c["nom"] == current.get()), None)
+        if cam:
+            try:
+                editable(cam)["focale"] = int(foc_var.get())
+            except (ValueError, tk.TclError):
+                return
+            save_settings(state)
+            refresh()
+
+    foc_box.bind("<<ComboboxSelected>>", focal_changed)
 
     # --- qualite
     q = ttk.LabelFrame(outer, text="Qualité", padding=8)
@@ -1481,7 +1759,9 @@ def window(state: dict) -> None:
         save_settings(state)
         refresh()
         current.set(cam["nom"])
-        show([f"Caméra « {cam['nom']} » placée."])
+        to_plan(quiet=True)
+        show([f"Caméra « {cam['nom']} » placée et dessinée dans le plan (calque « {CALQUE_CAMERAS} »).",
+              "Ajuste-la en glissant ses points dans le petit plan à droite des vues."])
 
     def remove():
         name = current.get()
