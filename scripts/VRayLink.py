@@ -51,9 +51,17 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1.1 (étape 1)"
+VERSION = "19/10 - v1.2 (étape 1)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
+VILLES = {                                 # (latitude, longitude, fuseau horaire)
+    "Abidjan": (5.36, -4.01, 0.0), "Grand-Bassam": (5.21, -3.74, 0.0), "Assinie": (5.13, -3.28, 0.0),
+    "Yamoussoukro": (6.82, -5.28, 0.0), "Bouaké": (7.69, -5.03, 0.0), "San-Pédro": (4.75, -6.64, 0.0),
+    "Korhogo": (9.46, -5.63, 0.0), "Daloa": (6.88, -6.45, 0.0), "Dakar": (14.69, -17.44, 0.0),
+    "Lomé": (6.13, 1.22, 0.0), "Accra": (5.60, -0.19, 0.0), "Ouagadougou": (12.37, -1.52, 0.0),
+    "Paris": (48.86, 2.35, 1.0),
+}
+LIEU_ARCHICAD = "Lieu du projet Archicad"
 
 QUALITES = {                               # minutes max, seuil de bruit
     "Brouillon": (1.0, 0.05), "Moyenne": (3.0, 0.02), "Haute": (8.0, 0.01), "Finale": (20.0, 0.005),
@@ -142,13 +150,25 @@ def project_info() -> dict:
     try:
         g = tapir("GetGeoLocation").get("projectLocation", {})
         lat, lon = float(g.get("latitude", 0.0)), float(g.get("longitude", 0.0))
-        if abs(lat) > 1e-6 or abs(lon) > 1e-6:
+        budapest = abs(lat - 47.5) < 0.3 and abs(lon - 19.05) < 0.3     # lieu par defaut d'Archicad, jamais regle
+        info["archicad"] = None if budapest or (abs(lat) < 1e-6 and abs(lon) < 1e-6) else (lat, lon)
+        if info["archicad"]:
             info.update(lat=lat, lon=lon, lieu=f"{abs(lat):.2f}° {'N' if lat >= 0 else 'S'}, "
                                                 f"{abs(lon):.2f}° {'E' if lon >= 0 else 'O'}")
         info["north"] = float(g.get("north", math.pi / 2))
     except Exception:  # noqa: BLE001
         pass
     return info
+
+
+def apply_place(proj: dict, place: str) -> None:
+    """Le lieu choisi dans la fenetre : une ville, ou le lieu regle dans Archicad."""
+    if place == LIEU_ARCHICAD and proj.get("archicad"):
+        proj["lat"], proj["lon"] = proj["archicad"]
+        proj["fuseau"] = round(proj["lon"] / 15.0)
+    else:
+        lat, lon, tz = VILLES.get(place, VILLES["Abidjan"])
+        proj.update(lat=lat, lon=lon, fuseau=tz)
 
 
 def story_level() -> float:
@@ -445,7 +465,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     x, y, z = frame([t - e for t, e in zip(target, eye)])
     hfov = 2 * math.atan(18.0 / float(cam.get("focale", 24)))
     day = dt.date(dt.date.today().year, int(opts["mois"]), int(opts["jour"]))
-    az, alt = sun_position(proj["lat"], proj["lon"], day, float(opts["heure"]), float(opts.get("fuseau", 0.0)))
+    az, alt = sun_position(proj["lat"], proj["lon"], day, float(opts["heure"]), float(proj.get("fuseau", 0.0)))
     sd = sun_vector(az, alt, proj["north"])
     sx, sy, sz = frame([-c for c in sd])
     s = [f"// V-Ray Link - {cam['nom']} - {proj['name']}",
@@ -485,7 +505,7 @@ def load_settings() -> dict:
     today = dt.date.today()
     opts = {"qualite": "Haute", "taille": "1920 × 1080 (16:9)", "ambiance": "Extérieur jour", "sol": "Gazon",
             "jour": today.day, "mois": today.month, "heure": 16.5, "fuseau": 0.0, "verticales": True,
-            "trouble": 3.0, "taille_soleil": 3.0, "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
+            "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {}}
@@ -635,7 +655,14 @@ def window(state: dict) -> None:
     # --- soleil
     so = ttk.LabelFrame(outer, text="Soleil et ciel", padding=8)
     so.grid(row=3, column=0, sticky="ew", pady=(8, 0))
-    ttk.Label(so, text=f"Lieu : {proj['lieu']}", foreground="#555").grid(row=0, column=0, columnspan=4, sticky="w")
+    places = list(VILLES) + ([LIEU_ARCHICAD] if proj.get("archicad") else [])
+    place_var = tk.StringVar(value=opts.get("lieu") if opts.get("lieu") in places else "Abidjan")
+    ttk.Label(so, text="Lieu").grid(row=0, column=0, sticky="w")
+    place_box = ttk.Combobox(so, values=places, textvariable=place_var, state="readonly", width=24)
+    place_box.grid(row=0, column=1, columnspan=3, sticky="w")
+    if proj.get("archicad"):
+        ttk.Label(so, text=f"(Archicad : {proj['lieu']})", foreground="#777").grid(row=0, column=4, sticky="w", padx=6)
+    apply_place(proj, place_var.get())
     ttk.Label(so, text="Date (jour / mois)").grid(row=1, column=0, sticky="w", pady=(4, 0))
     day_var, month_var = tk.IntVar(value=opts["jour"]), tk.IntVar(value=opts["mois"])
     ttk.Spinbox(so, from_=1, to=31, textvariable=day_var, width=4).grid(row=1, column=1, sticky="w", pady=(4, 0))
@@ -644,9 +671,11 @@ def window(state: dict) -> None:
     hour_lbl = tk.StringVar()
 
     def show_hour(*_):
+        apply_place(proj, place_var.get())
         h = float(hour_var.get())
         az, alt = sun_position(proj["lat"], proj["lon"], dt.date(2026, max(1, min(12, int(month_var.get() or 1))),
-                                                                   max(1, min(28, int(day_var.get() or 1)))), h)
+                                                                   max(1, min(28, int(day_var.get() or 1)))), h,
+                               proj.get("fuseau", 0.0))
         hour_lbl.set(f"{int(h):02d}:{int(round((h % 1) * 60)) % 60:02d}  ·  soleil à {math.degrees(alt):.0f}° "
                      f"{'(nuit)' if alt < 0 else ''}")
 
@@ -655,6 +684,7 @@ def window(state: dict) -> None:
               ).grid(row=2, column=1, columnspan=3, sticky="w", pady=(4, 0))
     ttk.Label(so, textvariable=hour_lbl).grid(row=3, column=1, columnspan=3, sticky="w")
     show_hour()
+    place_box.bind("<<ComboboxSelected>>", show_hour)
 
     # --- ambiance
     am = ttk.LabelFrame(outer, text="Ambiance", padding=8)
@@ -688,10 +718,11 @@ def window(state: dict) -> None:
         try:
             opts.update(qualite=qual_var.get(), taille=size_var.get(), ambiance=amb_var.get(), sol=sol_var.get(),
                         jour=int(day_var.get()), mois=int(month_var.get()), heure=round(float(hour_var.get()), 2),
-                        verticales=bool(vert_var.get()), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()),
+                        verticales=bool(vert_var.get()), lieu=place_var.get(), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()),
                         cible=float(tgt_var.get()), focale=int(foc_var.get()))
         except (ValueError, tk.TclError):
             pass
+        apply_place(proj, opts.get("lieu", "Abidjan"))
         state["coches"][key] = [n for n, v in cam_vars.items() if v.get()]
         save_settings(state)
 
