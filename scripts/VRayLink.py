@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.2 (visionneuse 3D)"
+VERSION = "19/10 - v2.3 (ombres)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -925,6 +925,12 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div class="row"><div><label>Focale</label><select id="foc"></select></div>
 <div><label>Hauteur yeux (m)</label><input id="eyeh" type="number" step="0.1" value="1.6"></div></div>
 <button id="eyeBtn">Se mettre à hauteur d'yeux</button>
+<div><label>Soleil : <span id="sunTxt"></span></label>
+<input id="hour" type="range" min="5.5" max="19.5" step="0.05" style="padding:0">
+<div class="row" style="margin-top:6px"><div><label>Jour</label><input id="day" type="number" min="1" max="31"></div>
+<div><label>Mois</label><input id="month" type="number" min="1" max="12"></div></div>
+<div class="row" style="margin-top:6px"><button id="play">▶ Course du soleil</button></div>
+<button id="useSun" style="width:100%;margin-top:6px">Utiliser cette heure pour les rendus</button></div>
 <div><label>Nom de la vue</label><input id="name" value="Vue 3D"></div>
 <button id="save">Enregistrer la vue</button>
 <button id="render" class="main">Rendre cette vue</button>
@@ -944,14 +950,16 @@ const aspect=info.largeur/info.hauteur;
 const frame=$("frame"), stage=$("stage");
 const renderer=new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
 frame.appendChild(renderer.domElement);
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0xbcd3e6);
 scene.fog=new THREE.Fog(0xbcd3e6,400,2000);
 const cam=new THREE.PerspectiveCamera(50,aspect,0.05,5000); cam.up.set(0,0,1);
-scene.add(new THREE.HemisphereLight(0xffffff,0x8a8f7a,1.1));
-const sun=new THREE.DirectionalLight(0xffffff,1.6); sun.position.set(info.soleil[0],info.soleil[1],info.soleil[2]); scene.add(sun);
+const hemi=new THREE.HemisphereLight(0xffffff,0x8a8f7a,0.75); scene.add(hemi);
+const sun=new THREE.DirectionalLight(0xfff4e0,2.2); sun.castShadow=true; sun.shadow.mapSize.set(4096,4096);
+sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.03; scene.add(sun); scene.add(sun.target);
 const ground=new THREE.Mesh(new THREE.PlaneGeometry(4000,4000),new THREE.MeshLambertMaterial({color:0x7d9a5c}));
-ground.position.z=info.sol-0.01; scene.add(ground);
+ground.position.z=info.sol-0.01; ground.receiveShadow=true; scene.add(ground);
 const controls=new OrbitControls(cam,renderer.domElement); controls.enableDamping=true; controls.dampingFactor=0.12;
 function fit(){const W=stage.clientWidth-24,H=stage.clientHeight-24;let w=W,h=W/aspect;if(h>H){h=H;w=H*aspect}
  renderer.setSize(Math.floor(w),Math.floor(h)); cam.aspect=aspect; cam.updateProjectionMatrix();}
@@ -971,7 +979,34 @@ const idx=new Uint32Array(buf.slice(o,o+ni*4));
 let g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttribute(pos,3));
 g.setAttribute("color",new THREE.BufferAttribute(col,4,true)); g.setIndex(new THREE.BufferAttribute(idx,1));
 g=g.toNonIndexed(); g.computeVertexNormals();
-scene.add(new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide})));
+const model=new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
+model.castShadow=true; model.receiveShadow=true; scene.add(model);
+g.computeBoundingBox(); const bb=g.boundingBox, mid=bb.getCenter(new THREE.Vector3()), rad=bb.getSize(new THREE.Vector3()).length()/2+5;
+// soleil (formules NOAA, comme pour le rendu V-Ray)
+function sunDir(h,day,month){const n=Math.floor((Date.UTC(2026,month-1,day)-Date.UTC(2026,0,0))/864e5);
+ const g=2*Math.PI/365*(n-1+(h-12)/24);
+ const eqt=229.18*(0.000075+0.001868*Math.cos(g)-0.032077*Math.sin(g)-0.014615*Math.cos(2*g)-0.040849*Math.sin(2*g));
+ const decl=0.006918-0.399912*Math.cos(g)+0.070257*Math.sin(g)-0.006758*Math.cos(2*g)+0.000907*Math.sin(2*g)-0.002697*Math.cos(3*g)+0.00148*Math.sin(3*g);
+ const tst=h*60+eqt+4*info.lon-60*info.fuseau, ha=(tst/4-180)*Math.PI/180, la=info.lat*Math.PI/180;
+ const cz=Math.sin(la)*Math.sin(decl)+Math.cos(la)*Math.cos(decl)*Math.cos(ha), zen=Math.acos(Math.max(-1,Math.min(1,cz)));
+ const az=(Math.atan2(Math.sin(ha),Math.cos(ha)*Math.sin(la)-Math.tan(decl)*Math.cos(la))+Math.PI)%(2*Math.PI), alt=Math.PI/2-zen;
+ const a=info.north-az; return {alt,az,v:new THREE.Vector3(Math.cos(alt)*Math.cos(a),Math.cos(alt)*Math.sin(a),Math.sin(alt))}}
+const sc=sun.shadow.camera; sc.left=-rad; sc.right=rad; sc.top=rad; sc.bottom=-rad; sc.near=1; sc.far=rad*4; sc.updateProjectionMatrix();
+const COMPASS=["N","NE","E","SE","S","SO","O","NO"];
+function updateSun(){const h=+$("hour").value, d=Math.max(1,Math.min(31,+$("day").value||1)), m=Math.max(1,Math.min(12,+$("month").value||1));
+ const s=sunDir(h,d,m); const up=Math.max(s.alt,0.0);
+ sun.position.copy(mid).addScaledVector(s.v,rad*2); sun.target.position.copy(mid);
+ sun.intensity=s.alt>0?2.2*Math.min(1,s.alt*4+0.15):0; hemi.intensity=s.alt>0?0.75:0.25;
+ const hh=Math.floor(h), mm=Math.round((h%1)*60)%60;
+ $("sunTxt").textContent=`${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")} · hauteur ${(s.alt*180/Math.PI).toFixed(0)}° · ${COMPASS[Math.round(s.az/(Math.PI/4))%8]}${s.alt<=0?" (nuit)":""}`;}
+$("hour").value=info.heure; $("day").value=info.jour; $("month").value=info.mois;
+for(const id of ["hour","day","month"]) $(id).addEventListener("input",updateSun);
+updateSun();
+let playing=null; $("play").onclick=()=>{if(playing){clearInterval(playing);playing=null;$("play").textContent="▶ Course du soleil";return}
+ $("play").textContent="■ Arrêter"; playing=setInterval(()=>{let h=+$("hour").value+0.05; if(h>19.5)h=5.5; $("hour").value=h; updateSun()},40)};
+$("useSun").onclick=async()=>{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},
+ body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value})});
+ $("msg").textContent="Heure et date envoyées à V-Ray Link : les rendus utiliseront ce soleil."};
 const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
 scene.add(edges);
 $("load").remove();
@@ -1005,7 +1040,8 @@ loop();
 $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;
  if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
 async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
- eye:cam.position.toArray(),target:controls.target.toArray()};
+ eye:cam.position.toArray(),target:controls.target.toArray(),
+ heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value};
  $("msg").textContent=action==="rendre"?"Rendu demandé : la fenêtre V-Ray va s'ouvrir…":"Vue enregistrée dans V-Ray Link.";
  try{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
  catch(e){$("msg").textContent="V-Ray Link est fermé : relance-le."}}
@@ -2061,7 +2097,10 @@ def window(state: dict) -> None:
             sv = [c * 100 for c in sun_vector(az, max(alt, 0.2), proj["north"])]
         except Exception:  # noqa: BLE001
             sv = [50, -50, 80]
+        apply_place(proj, opts.get("lieu", "Abidjan"))
         return {"largeur": W, "hauteur": H, "sol": ground, "focales": list(FOCALES), "soleil": sv,
+                "lat": proj["lat"], "lon": proj["lon"], "fuseau": float(proj.get("fuseau", 0.0)), "north": proj["north"],
+                "heure": float(opts["heure"]), "jour": int(opts["jour"]), "mois": int(opts["mois"]),
                 "courante": current.get(),
                 "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
                              "auto": bool(c.get("auto"))} for c in all_cams()]}
@@ -2070,6 +2109,16 @@ def window(state: dict) -> None:
         try:
             while True:
                 msg = inbox.get_nowait()
+                if "heure" in msg:                                   # soleil choisi dans la visionneuse
+                    hour_var.set(round(float(msg["heure"]), 2))
+                    day_var.set(int(msg["jour"]))
+                    month_var.set(int(msg["mois"]))
+                    show_hour()
+                    collect()
+                if msg.get("action") == "soleil":
+                    say(f"Soleil réglé depuis la visionneuse : {opts['jour']}/{opts['mois']} à "
+                        f"{int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.")
+                    continue
                 name = str(msg.get("nom") or "Vue 3D")[:60]
                 cam = {"nom": name, "focale": int(msg.get("focale", 24)),
                        "eye": [float(v) for v in msg["eye"]][:3], "target": [float(v) for v in msg["target"]][:3]}
