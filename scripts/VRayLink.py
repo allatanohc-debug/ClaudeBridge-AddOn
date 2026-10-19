@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.7d (réglages avancés)"
+VERSION = "19/10 - v2.7e"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1804,6 +1804,18 @@ def window(state: dict) -> None:
     state["vray"] = find_vray(state.get("vray", ""))
     root = tk.Tk()
     root.title(f"V-Ray Link - version {VERSION}")
+
+    def tk_error(exc, val, tb):                 # erreur dans un bouton : message lisible ici, detail dans un fichier
+        import traceback
+        text = "".join(traceback.format_exception(exc, val, tb))
+        try:
+            (data_dir() / "erreurs.txt").open("a", encoding="utf-8").write(time.strftime("%H:%M:%S ") + text + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        messagebox.showerror("V-Ray Link", f"{val}\n\n(Si Archicad a une fenêtre de réglages ouverte, ferme-la et recommence.)\n"
+                             f"Détail : {data_dir() / 'erreurs.txt'}", parent=root)
+
+    root.report_callback_exception = tk_error
     root.attributes("-topmost", True)
     nb = ttk.Notebook(root)
     nb.grid(sticky="nsew")
@@ -2896,7 +2908,10 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                     if p is None:
                         break
                     pts.append([p["x"], p["y"]])
-                item["z"] = story_level()
+                try:
+                    item["z"] = story_level()
+                except Exception:  # noqa: BLE001
+                    item["z"] = 0.0
             finally:
                 root.deiconify()
             if len(pts) < 3:
