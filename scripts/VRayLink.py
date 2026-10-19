@@ -51,7 +51,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v1.4 (étape 1)"
+VERSION = "19/10 - v1.5 (étape 1)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -270,11 +270,12 @@ def element_surfaces(surf: dict, report=print) -> dict:
                 if not gid or "error" in d:
                     continue
                 dd = d.get("details", {}) or {}
-                info = None
+                info, forced = None, False
                 for key in ("topMaterial", "referenceMaterial", "surfaceId"):
                     ov = dd.get(key)
                     if isinstance(ov, dict) and ov.get("overridden"):
                         info = surf["guid"].get((ov.get("attributeId") or {}).get("guid"))
+                        forced = bool(info)
                     elif isinstance(ov, dict) and "guid" in ov:
                         info = surf["guid"].get(ov["guid"])
                     if info:
@@ -283,7 +284,7 @@ def element_surfaces(surf: dict, report=print) -> dict:
                     info = comp_surface.get((dd.get("compositeId") or {}).get("guid")) or \
                         bm_surface.get((dd.get("buildingMaterialId") or {}).get("guid"))
                 if info:
-                    out[gid] = info["name"]
+                    out[gid] = (info["name"], forced)
     report(f"Surfaces Archicad : {len(surf['name'])}, éléments reliés : {len(out)}")
     return out
 
@@ -378,6 +379,7 @@ def ifc_meshes(path: Path, report=print, surf: dict | None = None, by_element: d
         s.set(s.USE_WORLD_COORDS, True)
     it = ifcopenshell.geom.iterator(s, f, max(1, multiprocessing.cpu_count() - 1))
     meshes, mats = {}, {}
+    diag: dict = {}
     lo, hi = [1e30] * 3, [-1e30] * 3
     skip = {"IfcSpace", "IfcOpeningElement", "IfcAnnotation", "IfcGrid", "IfcVirtualElement"}
     count = 0
@@ -395,10 +397,15 @@ def ifc_meshes(path: Path, report=print, surf: dict | None = None, by_element: d
             v, fc, mids = g.verts, g.faces, list(g.material_ids)
             names = [material_name(f, m) for m in g.materials]
             known = (surf or {}).get("name", {})
-            fallback = (by_element or {}).get(getattr(ent, "GlobalId", None) if cls else None)
-            for k, nm in enumerate(names):          # pas de style IFC : la surface Archicad de l'element
-                if nm not in known and (nm.startswith("Ifc") or nm in ("Sans nom", "")) and fallback:
-                    names[k] = fallback
+            fb = (by_element or {}).get(getattr(ent, "GlobalId", None) if cls else None)
+            for k, nm in enumerate(names):
+                # surface forcee dans Archicad (dessus de dalle, face de mur) : elle prime ;
+                # sinon la surface Archicad de l'element remplace un style IFC inconnu ou absent
+                if fb and (fb[1] or (nm not in known and (nm.startswith("Ifc") or nm in ("Sans nom", "")))):
+                    names[k] = fb[0]
+            styles = diag.setdefault(cls or "?", {})
+            for nm in names:
+                styles[nm] = styles.get(nm, 0) + 1
             for m, nm in zip(g.materials, names):
                 if nm not in mats:
                     if nm in known:
@@ -429,6 +436,12 @@ def ifc_meshes(path: Path, report=print, surf: dict | None = None, by_element: d
                 report(f"Conversion de la géométrie : {count} éléments...")
         if not it.next():
             break
+    try:                                     # diagnostic : quelle surface pour quel type d'element
+        lines = [f"{c} : " + ", ".join(f"{n} x{k}" for n, k in sorted(v.items(), key=lambda x: -x[1])[:8])
+                 for c, v in sorted(diag.items())]
+        (path.parent / "surfaces_diagnostic.txt").write_text("\n".join(lines), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
     if "Sans nom" in meshes and "Sans nom" not in mats:
         mats["Sans nom"] = {"rgb": (0.75, 0.75, 0.75), "transparence": 0.0}
     return meshes, mats, (lo, hi)
@@ -657,6 +670,13 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     return geo, ground, (f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ") + "\nSurfaces : " + listing)
 
 
+def diagnostic(folder: Path) -> list[str]:
+    try:
+        return (folder / "surfaces_diagnostic.txt").read_text(encoding="utf-8").splitlines()
+    except Exception:  # noqa: BLE001
+        return ["(pas de diagnostic : géométrie reprise de l'export précédent)"]
+
+
 def launch(vray: str, scene: Path, image: Path, show: bool = True) -> None:
     args = [vray, f"-sceneFile={scene}", f"-imgFile={image}", f"-display={1 if show else 0}", "-autoClose=0"]
     flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
@@ -810,7 +830,7 @@ def window(state: dict) -> None:
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-    report = tk.Text(outer, width=78, height=5, wrap="word", state="disabled", background="#f6f6f6",
+    report = tk.Text(outer, width=78, height=12, wrap="word", state="disabled", background="#f6f6f6",
                      font=("Segoe UI", 9))
     report.grid(row=5, column=0, pady=(8, 0))
     ttk.Label(outer, textvariable=status, foreground="#555", wraplength=560).grid(row=6, column=0, sticky="w")
@@ -913,7 +933,8 @@ def window(state: dict) -> None:
                 say(f"{len(jobs)} rendus lancés l'un après l'autre.")
             show([f"Géométrie : {info}.", f"Images enregistrées dans : {folder}",
                   f"Qualité {opts['qualite']}, {opts['taille']}, {opts['ambiance']}, soleil {opts['jour']}/{opts['mois']} "
-                  f"à {int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}."])
+                  f"à {int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.", "",
+                  "Surfaces par type d'élément :"] + diagnostic(geo.parent))
         except ModuleNotFoundError:
             show(["Le module IFC (ifcopenshell) n'a pas pu s'installer tout seul.",
                   f"Dans une invite de commandes, tape :  \"{sys.executable}\" -m pip install ifcopenshell",
