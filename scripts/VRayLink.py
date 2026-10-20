@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.9 (HDRI Cosmos)"
+VERSION = "20/10 - v4.9b (HDRI Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1693,7 +1693,7 @@ def interieur(opts: dict) -> bool:
 def zones_claires(opts: dict) -> float:
     """0..1 : protection des zones trop claires (fenetres, ciel). Auto : 60 % en interieur, 0 % dehors."""
     v = opts.get("zones_claires")
-    return (0.6 if interieur(opts) else 0.0) if v in (None, "", "auto") else max(0.0, min(1.0, float(v) / 100.0))
+    return (0.6 if interieur(opts) or opts.get("hdri") else 0.0) if v in (None, "", "auto") else max(0.0, min(1.0, float(v) / 100.0))
 
 
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
@@ -1741,7 +1741,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n"
          + (f"  clipping=1;\n  clipping_near={clip:.3f};\n  clipping_far=100000;\n" if clip > 0 else "") + "}",
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
-         f"ISO={iso}; exposure={0 if (opts.get('hdri') and not opts.get('hdri_soleil', True)) else 1}; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
+         f"ISO={iso}; exposure=1; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
          f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
          f"specify_focus=1; focus_distance={dist:.3f}; lens_shift=0; vertical_offset={-shift * H / W:.4f}; }}",   # unite = largeur image, + = cadre vers le bas (mesure sur V-Ray)
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
@@ -1752,7 +1752,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
         s = [l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
         s.append(f"SettingsCamera {{ type={vr}; fov=6.283185; height=180; }}")   # height = champ vertical (degres) du panorama
         s = [l_.replace(f"fov={hfov:.6f};", "fov=6.283185;") if l_.startswith("RenderView view") else l_ for l_ in s]
-    auto_expo = bool(vr) or mode == "ortho" or opts.get("ambiance") == "Nuit"
+    auto_expo = bool(vr) or mode == "ortho" or opts.get("ambiance") == "Nuit" or (
+        bool(opts.get("hdri")) and not opts.get("hdri_soleil", True))      # HDRI seule : luminosite inconnue -> expo auto
     if mode == "ortho" and not vr:           # vue orthogonale : pas d'appareil photo physique -> exposition automatique
         width = max(1.0, float(cam.get("ortho_largeur", 20.0)))
         s = [l_.replace("  fov=", f"  orthographic=1;\n  orthographicWidth={width:.3f};\n  ortho_adjust_to_scene=0;\n  fov=")
