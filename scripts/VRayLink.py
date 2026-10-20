@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.0 (nouvelle interface)"
+VERSION = "20/10 - v6.1 (interface variante 3)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2584,7 +2584,8 @@ def apply_theme(root, mode: str) -> dict:
     st.configure("TLabel", background=c["panel"], foreground=c["text"])
     st.configure("Mute.TLabel", background=c["panel"], foreground=c["mute"])
     st.configure("Title.TLabel", background=c["panel"], foreground=c["text"], font=("Segoe UI", 13, "bold"))
-    st.configure("TLabelframe", background=c["panel"], bordercolor=c["border"], relief="flat")
+    st.configure("TLabelframe", background=c["panel"], bordercolor=c["panel"], lightcolor=c["panel"], darkcolor=c["panel"],
+                 relief="flat", borderwidth=0)
     st.configure("TLabelframe.Label", background=c["panel"], foreground=c["text"], font=("Segoe UI", 10, "bold"))
     st.configure("TButton", background=c["field"], foreground=c["text"], bordercolor=c["border"], padding=(10, 5),
                  relief="solid", borderwidth=1, lightcolor=c["field"], darkcolor=c["field"], focusthickness=0)
@@ -2592,9 +2593,23 @@ def apply_theme(root, mode: str) -> dict:
     st.configure("Accent.TButton", background=c["accent"], foreground=c["accent_fg"], bordercolor=c["accent"],
                  padding=(14, 9), font=("Segoe UI", 10, "bold"))
     st.map("Accent.TButton", background=[("active", c["accent_hover"])], foreground=[("active", c["accent_fg"])])
-    st.configure("Side.TButton", background=c["side"], foreground=c["mute"], bordercolor=c["side"], padding=(6, 8),
-                 font=("Segoe UI", 8), anchor="center", justify="center")
-    st.map("Side.TButton", background=[("active", c["side_on"])], foreground=[("active", c["text"])])
+    st.configure("Side.TButton", background=c["side"], foreground=c["mute"], bordercolor=c["side"], lightcolor=c["side"],
+                 darkcolor=c["side"], padding=(6, 9), font=("Segoe UI", 8), anchor="center", justify="center")
+    st.map("Side.TButton", background=[("active", c["side_on"])], foreground=[("active", c["text"])],
+           bordercolor=[("active", c["side_on"])])
+    st.configure("SideOn.TButton", background=c["side_on"], foreground=c["sel"], bordercolor=c["border"],
+                 lightcolor=c["side_on"], darkcolor=c["side_on"], padding=(6, 9), font=("Segoe UI", 8, "bold"),
+                 anchor="center", justify="center")
+    st.configure("Head.TFrame", background=c["panel"])
+    st.configure("Logo.TLabel", background=c["panel"], foreground=c["sel"], font=("Segoe UI", 18, "bold italic"))
+    st.configure("Outline.TButton", background=c["panel"], foreground=c["sel"], bordercolor=c["sel"],
+                 lightcolor=c["panel"], darkcolor=c["panel"], padding=(10, 5))
+    st.map("Outline.TButton", background=[("active", c["side"])])
+    st.configure("Link.TButton", background=c["panel"], foreground=c["mute"], bordercolor=c["panel"],
+                 lightcolor=c["panel"], darkcolor=c["panel"], padding=(6, 5), relief="flat")
+    st.map("Link.TButton", foreground=[("active", c["text"])], background=[("active", c["panel"])])
+    st.layout("Clean.TNotebook.Tab", [])                    # onglets caches : la barre de gauche les remplace
+    st.configure("Clean.TNotebook", background=c["panel"], borderwidth=0, tabmargins=0)
     for w in ("TCheckbutton", "TRadiobutton"):
         st.configure(w, background=c["panel"], foreground=c["text"], indicatorbackground=c["field"],
                      indicatorforeground=c["sel"])
@@ -2710,42 +2725,45 @@ def window(state: dict) -> None:
 
     root.report_callback_exception = tk_error
     root.attributes("-topmost", True)
-    nb = ttk.Notebook(root)
-    nb.grid(sticky="nsew")
-    root.columnconfigure(0, weight=1)
-    root.rowconfigure(0, weight=1)
     couleurs = apply_theme(root, opts.get("theme", "clair"))
-    rendu_tab = ttk.Frame(nb)
-    nb.add(rendu_tab, text="  🎬 Rendu  ")
-    rendu_tab.rowconfigure(0, weight=1)
-    rendu_tab.columnconfigure(1, weight=1)
-    side = ttk.Frame(rendu_tab, style="Side.TFrame", padding=(4, 10))
-    side.grid(row=0, column=0, rowspan=2, sticky="ns")
-    rendu_box, outer = scroll_area(rendu_tab, padding=(14, 10))
-    rendu_box.grid(row=0, column=1, sticky="nsew")
-    action_bar = ttk.Frame(rendu_tab, style="Bar.TFrame", padding=(14, 8))
-    action_bar.grid(row=1, column=1, sticky="ew")
-    status = tk.StringVar(value="Choisis la vue, le soleil et la qualité, puis « Rendre cette vue ».")
-    head = ttk.Frame(outer)
-    head.grid(row=0, column=0, sticky="ew")
-    ttk.Label(head, text="V-Ray Link", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+    # --- en-tete de fenetre : logo, titre, etat de V-Ray, clair / sombre
+    head = ttk.Frame(root, style="Head.TFrame", padding=(16, 10))
+    head.grid(row=0, column=0, columnspan=2, sticky="ew")
     head.columnconfigure(2, weight=1)
+    ttk.Label(head, text="V", style="Logo.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 8))
+    ttk.Label(head, text="V-Ray Link", style="Title.TLabel").grid(row=0, column=1, sticky="w")
+    side = ttk.Frame(root, style="Side.TFrame", padding=(6, 12))
+    side.grid(row=1, column=0, sticky="ns")
+    nb = ttk.Notebook(root, style="Clean.TNotebook")
+    nb.grid(row=1, column=1, sticky="nsew")
+    root.columnconfigure(1, weight=1)
+    root.rowconfigure(1, weight=1)
+    rendu_tab = ttk.Frame(nb)
+    nb.add(rendu_tab, text="Rendu")
+    rendu_tab.rowconfigure(0, weight=1)
+    rendu_tab.columnconfigure(0, weight=1)
+    rendu_box, outer = scroll_area(rendu_tab, padding=(18, 12))
+    rendu_box.grid(row=0, column=0, sticky="nsew")
+    action_bar = ttk.Frame(rendu_tab, style="Bar.TFrame", padding=(18, 10))
+    action_bar.grid(row=1, column=0, sticky="ew")
+    status = tk.StringVar(value="Choisis la vue, le soleil et la qualité, puis « Lancer le rendu ».")
 
     def bascule_theme():
         opts["theme"] = "sombre" if opts.get("theme", "clair") == "clair" else "clair"
         save_settings(state)
         apply_theme(root, opts["theme"])
         theme_btn.configure(text="☀ Clair" if opts["theme"] == "sombre" else "🌙 Sombre")
-    theme_btn = ttk.Button(head, text="☀ Clair" if opts.get("theme") == "sombre" else "🌙 Sombre", command=bascule_theme)
-    theme_btn.grid(row=0, column=3, sticky="e")
+    theme_btn = ttk.Button(head, text="☀ Clair" if opts.get("theme") == "sombre" else "🌙 Sombre", command=bascule_theme,
+                           style="Link.TButton")
+    theme_btn.grid(row=0, column=4, sticky="e")
     ok = bool(state["vray"])
-    ttk.Label(head, text=("● V-Ray trouvé" if ok else "● V-Ray introuvable"),
-              foreground="#2f7a3e" if ok else "#a33").grid(row=0, column=1, sticky="w", padx=10)
-    ttk.Label(head, text=f"Projet : {proj['name']}", foreground="#555").grid(row=1, column=0, columnspan=2, sticky="w")
+    ttk.Label(head, text=("V-RAY TROUVÉ  ●" if ok else "V-RAY INTROUVABLE  ●"), style="Mute.TLabel",
+              foreground="#22a05a" if ok else "#c0392b", font=("Segoe UI", 8, "bold")).grid(row=0, column=3, sticky="e", padx=12)
+    ttk.Label(outer, text=f"Projet : {proj['name']}", style="Mute.TLabel").grid(row=0, column=0, sticky="w")
 
     # --- vues
-    box = ttk.LabelFrame(outer, text="Vues (coche celles à rendre en série)", padding=8)
-    box.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+    box = ttk.LabelFrame(outer, text="📷  Vues   (coche celles à rendre en série)", padding=(4, 8))
+    box.grid(row=1, column=0, sticky="ew", pady=(14, 0))
     listf = ttk.Frame(box)
     listf.grid(row=0, column=0, columnspan=4, sticky="ew")
     cam_vars: dict = {}
@@ -2916,8 +2934,8 @@ def window(state: dict) -> None:
     foc_var = tk.IntVar(value=opts["focale"])
     foc_box = ttk.Combobox(row, values=FOCALES, textvariable=foc_var, width=4, state="readonly")
     foc_box.grid(row=0, column=5, padx=(2, 8))
-    ttk.Button(row, text="📷 Placer une caméra", command=lambda: place()).grid(row=0, column=6)
-    ttk.Button(row, text="🗑 Supprimer", command=lambda: remove()).grid(row=0, column=7, padx=4)
+    ttk.Button(row, text="📷 Placer une caméra", style="Outline.TButton", command=lambda: place()).grid(row=0, column=6, padx=(6, 0))
+    ttk.Button(row, text="🗑 Supprimer", style="Link.TButton", command=lambda: remove()).grid(row=0, column=7, padx=4)
 
     def conseil_vue():
         if interieur(opts) or amb_var.get().startswith("Intérieur"):
@@ -2930,7 +2948,7 @@ def window(state: dict) -> None:
             tgt_var.set(1.4)
             foc_var.set(24)
             say("💡 Extérieur conseillé : yeux 1,6 m (hauteur d'homme), cible 1,4 m, focale 24 mm (façade entière, verticales droites).")
-    ttk.Button(row, text="💡 Conseillé", command=conseil_vue).grid(row=0, column=8, padx=4)
+    ttk.Button(row, text="💡 Conseillé", style="Link.TButton", command=conseil_vue).grid(row=0, column=8, padx=4)
     vert_var = tk.BooleanVar(value=opts["verticales"])
     ttk.Checkbutton(box, text="Verticales droites (caméra horizontale)", variable=vert_var).grid(row=2, column=0, sticky="w",
                                                                                               pady=(4, 0))
@@ -2953,8 +2971,8 @@ def window(state: dict) -> None:
     foc_box.bind("<<ComboboxSelected>>", focal_changed)
 
     # --- qualite
-    q = ttk.LabelFrame(outer, text="Qualité", padding=8)
-    q.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+    q = ttk.LabelFrame(outer, text="📶  Qualité", padding=(4, 8))
+    q.grid(row=2, column=0, sticky="ew", pady=(14, 0))
     qual_var = tk.StringVar(value=opts["qualite"])
     for k, name in enumerate(QUALITES):
         ttk.Radiobutton(q, text=name, value=name, variable=qual_var).grid(row=0, column=k, sticky="w", padx=(0, 10))
@@ -2964,8 +2982,8 @@ def window(state: dict) -> None:
                  ).grid(row=1, column=1, columnspan=3, sticky="w", pady=(6, 0))
 
     # --- soleil
-    so = ttk.LabelFrame(outer, text="Soleil et ciel", padding=8)
-    so.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+    so = ttk.LabelFrame(outer, text="☀  Soleil et ciel", padding=(4, 8))
+    so.grid(row=3, column=0, sticky="ew", pady=(14, 0))
     places = list(VILLES) + ([LIEU_ARCHICAD] if proj.get("archicad") else [])
     place_var = tk.StringVar(value=opts.get("lieu") if opts.get("lieu") in places else "Abidjan")
     ttk.Label(so, text="Lieu").grid(row=0, column=0, sticky="w")
@@ -3004,8 +3022,8 @@ def window(state: dict) -> None:
     place_box.bind("<<ComboboxSelected>>", show_hour)
 
     # --- ambiance
-    am = ttk.LabelFrame(outer, text="Ambiance", padding=8)
-    am.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+    am = ttk.LabelFrame(outer, text="🎨  Ambiance", padding=(4, 8))
+    am.grid(row=4, column=0, sticky="ew", pady=(14, 0))
     amb_var = tk.StringVar(value=opts["ambiance"])
     ttk.Label(am, text="Exposition").grid(row=0, column=0, sticky="w")
     ttk.Combobox(am, values=list(AMBIANCES), textvariable=amb_var, state="readonly", width=20).grid(row=0, column=1, padx=6)
@@ -3469,10 +3487,31 @@ def window(state: dict) -> None:
             rendu_box.cv.yview_moveto(max(0.0, (frame.winfo_y() - 6) / tot))
         except Exception:  # noqa: BLE001
             pass
-    for i_, (ico, lab, fr) in enumerate((("📷", "Vues", box), ("📶", "Qualité", q), ("☀", "Soleil\n& ciel", so),
-                                          ("🎨", "Ambiance", am), ("▶", "Rendu", report))):
-        ttk.Button(side, text=f"{ico}\n{lab}", style="Side.TButton", width=8,
-                   command=lambda fr=fr: aller(fr)).grid(row=i_, column=0, pady=2)
+    side_btns: list = []
+
+    def montre(btn, cible):
+        for b_ in side_btns:
+            b_.configure(style="Side.TButton")
+        btn.configure(style="SideOn.TButton")
+        if isinstance(cible, str):                         # onglet Materiaux / Objets
+            for t_ in nb.tabs():
+                if cible in nb.tab(t_, "text"):
+                    nb.select(t_)
+        else:
+            nb.select(rendu_tab)
+            aller(cible)
+    items = (("📷", "Vues", box), ("📶", "Qualité", q), ("☀", "Soleil\n& ciel", so), ("🎨", "Ambiance", am),
+             ("▶", "Rendu", report), None, ("🧱", "Matériaux", "Matériaux"), ("🌴", "Objets", "Objets"))
+    for i_, it in enumerate(items):
+        if it is None:
+            ttk.Separator(side, orient="horizontal").grid(row=i_, column=0, sticky="ew", pady=8)
+            continue
+        ico, lab, cible = it
+        b_ = ttk.Button(side, text=f"{ico}\n{lab}", style="Side.TButton", width=9)
+        b_.configure(command=lambda b_=b_, cible=cible: montre(b_, cible))
+        b_.grid(row=i_, column=0, pady=2)
+        side_btns.append(b_)
+    side_btns[0].configure(style="SideOn.TButton")
 
     # --- visionneuse 3D (page web locale)
     import queue
