@@ -1715,7 +1715,8 @@ def vrmat_for_render(vrmat: Path) -> tuple[Path, str]:
         re.findall(r'<Asset\s+[^>]*?type="material"[^>]*?url="([^"]+)"', fixed)
     urls = list(dict.fromkeys(urls))
     top = next((u for u in urls if fixed.count(u) == 1), urls[0] if urls else "")
-    out = data_dir() / "cosmos" / f"{safe(vrmat.parent.name)}.vrmat"
+    lod = re.search(r"_(3dh|3dm|3dl|3d)_", vrmat.name)
+    out = data_dir() / "cosmos" / f"{safe(vrmat.parent.name)}{'_' + lod.group(1) if lod else ''}.vrmat"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(fixed, encoding="utf-8")
     return out, top.lstrip("/")
