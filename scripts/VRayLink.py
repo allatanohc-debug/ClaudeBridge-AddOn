@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.1 (ciel généré : nuages, lune, étoiles)"
+VERSION = "20/10 - v5.1 (ciel généré : nuages)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1724,7 +1724,7 @@ def ciel_params(opts: dict, proj: dict, alt: float) -> str:
     if dens > 0:
         out.append(f"  clouds_on=1;\n  clouds_ground_shadows=1;\n  clouds_density={dens:.2f};\n  clouds_variety=0.4;\n"
                    f"  clouds_cirrus_amount=0.2;\n  clouds_seed={int(opts.get('ciel_graine', 7))};\n")
-    if math.degrees(alt) < 2.0 or opts.get("ambiance") == "Nuit":    # nuit : lune + etoiles + voie lactee placees selon lieu / date / heure
+    if opts.get("ciel_nuit_etoilee") and (math.degrees(alt) < 2.0 or opts.get("ambiance") == "Nuit"):    # (desactive : ciel blanc dans vray.exe) nuit : lune + etoiles + voie lactee placees selon lieu / date / heure
         h = float(opts.get("heure", 20.0))
         nth = float(proj.get("north", math.pi / 2))
         out.append(f"  moon_on=1;\n  stars_on=1;\n  stars_latitude={float(proj.get('lat', 5.36)):.4f};\n"
@@ -2869,7 +2869,7 @@ def window(state: dict) -> None:
     ciel_var = tk.StringVar(value=opts.get("ciel", "Dégagé"))
     ttk.Combobox(so, values=list(CIELS), textvariable=ciel_var, state="readonly", width=16).grid(
         row=4, column=1, columnspan=2, sticky="w", pady=(4, 0))
-    ttk.Label(so, foreground="#777", text="nuages générés par V-Ray ; la nuit : lune + étoiles").grid(
+    ttk.Label(so, foreground="#777", text="nuages générés par V-Ray (avec leurs ombres)").grid(
         row=4, column=3, columnspan=2, sticky="w", padx=6, pady=(4, 0))
     show_hour()
     place_box.bind("<<ComboboxSelected>>", show_hour)
