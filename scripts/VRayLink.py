@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.3 (onglets élastiques, zoom vignettes)"
+VERSION = "20/10 - v6.4 (gazon : couverture totale)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4025,12 +4025,15 @@ SCATTER_TYPES = {  # densite affichee, unite (m2 par unite), variation %, espace
 SCATTER_MAX = 30000
 
 
-def grass_density(folder: str, default: float) -> float:
+COUVERTURES = {"Normale": 1.0, "Dense": 1.6, "Totale (toute la surface)": 2.6}
+
+
+def grass_density(folder: str, default: float, facteur: float = 1.0) -> float:
     """Touffes par m2 pour un gazon couvrant (~95 %) : depend de la taille reelle de la touffe Cosmos."""
     try:
         mesh = sorted(Path(folder).glob("*.vrmesh"), key=_lod)[0]
         w, d_ = vrmesh_size(mesh)[:2]
-        return max(default, min(60.0, 7.0 / max(0.01, w * d_)))
+        return max(default, min(150.0, 7.0 * facteur / max(0.01, w * d_)))
     except Exception:  # noqa: BLE001
         return default
 
@@ -4041,7 +4044,7 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
     rnd = random.Random(f"{sc.get('dossier')}|{sc.get('surface')}")
     dens = max(0.01, float(sc.get("densite", 4.0)))
     if sc.get("type") == "Herbe / gazon" and sc.get("zones") and not sc.get("densite_manuelle"):
-        dens = grass_density(sc.get("dossier", ""), dens)
+        dens = grass_density(sc.get("dossier", ""), dens, COUVERTURES.get(sc.get("couverture", "Dense"), 1.6))
     ox, oy, oz = offset
     pts = []
     if sc.get("zones"):                                   # dalles selectionnees dans Archicad
@@ -4640,6 +4643,22 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 + "Lance un rendu pour la voir.")
 
     ttk.Button(simple, text="🌿 Gazon sur la sélection", command=quick_lawn).grid(row=0, column=2, padx=3, ipady=4)
+    ttk.Label(simple, text="Couverture du gazon").grid(row=1, column=0, sticky="e", padx=3, pady=(6, 0))
+    gz = [sc for sc in (state.get("scatter") or {}).get(key, []) if sc.get("type") == "Herbe / gazon"]
+    couv_var = tk.StringVar(value=(gz[0].get("couverture", "Dense") if gz else "Dense"))
+    couv_box = ttk.Combobox(simple, values=list(COUVERTURES), textvariable=couv_var, state="readonly", width=24)
+    couv_box.grid(row=1, column=1, sticky="w", padx=3, pady=(6, 0))
+
+    def couverture(_e=None):
+        n_ = 0
+        for sc in (state.get("scatter") or {}).get(key, []):
+            if sc.get("type") == "Herbe / gazon":
+                sc["couverture"] = couv_var.get()
+                n_ += 1
+        save_settings(state)
+        msg.set(f"Couverture « {couv_var.get()} » appliquée à {n_} gazon(s) : plus de trous au prochain rendu "
+                "(« Totale » = rendu un peu plus long).")
+    couv_box.bind("<<ComboboxSelected>>", couverture)
     adv_on = tk.BooleanVar(value=False)
     ttk.Checkbutton(simple, text="Réglages experts", variable=adv_on,
                     command=lambda: acts.grid() if adv_on.get() else acts.grid_remove()).grid(row=0, column=4, padx=8)
