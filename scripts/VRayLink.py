@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.8b (intérieurs + herbe)"
+VERSION = "20/10 - v4.9 (HDRI Cosmos)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2068,7 +2068,7 @@ class CosmosHost:
         feats = pb((1, True), (2, True), (4, True), (6, True), (7, True), (8, True), (9, True), (11, True),
                    (12, pb((1, True), (2, True), (3, True))), (14, True), (15, True), (16, True), (18, True))
         return pb((1, info), (2, pb((1, "V-Ray"), (2, "7.20.00"))), (3, pb((1, COSMOS_HOTE[0]), (2, COSMOS_HOTE[1]))),
-                  (4, pb((3, [1, 2]))), (5, feats))
+                  (4, pb((3, [1, 2, 3, 4, 5, 6]))), (5, feats))
 
     def start(self) -> None:
         if self.running:
@@ -5218,6 +5218,10 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             host["h"] = CosmosHost(on_import, on_status)
         cosmos_state.set("○ Connexion à Cosmos...")
         threading.Thread(target=host["h"].start, daemon=True).start()
+
+    # Connexion a Cosmos des le lancement (si Cosmos tourne) : sinon un telechargement fait depuis le navigateur
+    # echoue avec « The selected importer was not found » (aucun logiciel hote a l'ecoute).
+    root.after(2500, lambda: threading.Thread(target=lambda: _port_open(30305) and root.after(0, connect), daemon=True).start())
 
     def open_cosmos():
         connect()
