@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.9b (HDRI Cosmos)"
+VERSION = "20/10 - v5.0 (préréglages, fenêtres compactes)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -87,6 +87,24 @@ CANAUX = {
     "Masque par matériau (Material ID)": 'RenderChannelMtlID ch_mid { name="MaterialID"; }',
     "Cryptomatte (masques Photoshop/Nuke)": 'RenderChannelCryptomatte ch_crypto { name="Cryptomatte"; id_type=1; }',
     "Normales": 'RenderChannelNormals ch_n { name="Normals"; }',
+}
+# Prereglages (d'apres les reglages conseilles pour V-Ray : soleil + ciel physique ou HDRI, Brute force + Light cache,
+# debruiteur, exposition auto pour la nuit / HDRI seule, protection des hautes lumieres en interieur et au couchant).
+PREREGLAGES = {
+    "☀ Extérieur plein jour (net, lumineux)": dict(ambiance="Extérieur jour", heure=10.5, hdri="", hdri_soleil=True,
+                                                  zones_claires=0, balance=0.0, vignettage=0.2, contraste=1.0),
+    "🌤 Extérieur fin d'après-midi (ombres longues)": dict(ambiance="Extérieur jour", heure=16.5, hdri="", hdri_soleil=True,
+                                                          zones_claires=25, balance=0.15, vignettage=0.3, contraste=1.1),
+    "🌇 Coucher de soleil (HDRI, ambiance chaude)": dict(ambiance="Extérieur jour", heure=18.0, hdri="@couchant", hdri_soleil=False,
+                                                       hdri_mult=1.0, zones_claires=75, balance=0.3, vignettage=0.35, contraste=1.1),
+    "🛋 Intérieur de jour (pièce lumineuse)": dict(ambiance="Intérieur lumineux", heure=11.0, hdri="", hdri_soleil=True,
+                                                   zones_claires=60, balance=0.0, vignettage=0.2, contraste=1.0),
+    "🕯 Intérieur cosy (fin de journée)": dict(ambiance="Intérieur sombre", heure=17.5, hdri="", hdri_soleil=True,
+                                              zones_claires=60, balance=0.35, vignettage=0.35, contraste=1.1),
+    "🌙 Nuit (lumières allumées)": dict(ambiance="Nuit", heure=20.5, hdri="", hdri_soleil=True, zones_claires=50,
+                                       balance=0.2, vignettage=0.3, contraste=1.0),
+    "⚡ Test rapide (brouillon, 1280 px)": dict(qualite="Brouillon", taille="1280 × 720 (16:9)"),
+    "🏆 Image finale pour le client (4K)": dict(qualite="Finale", taille="3840 × 2160 (4K)"),
 }
 AMBIANCES = {                              # f/, 1/vitesse, ISO
     "Extérieur jour": (8.0, 250.0, 100.0),
@@ -2494,6 +2512,61 @@ def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine:
     return bat
 
 
+def scroll_area(parent, padding=10):
+    """Cadre qui defile (molette / barres) : la fenetre peut etre aussi petite qu'on veut, rien n'est coupe.
+    Retourne (boite a placer, cadre interieur a remplir)."""
+    import tkinter as tk
+    from tkinter import ttk
+    box = ttk.Frame(parent)
+    cv = tk.Canvas(box, highlightthickness=0, borderwidth=0)
+    vs = ttk.Scrollbar(box, orient="vertical", command=cv.yview)
+    hs = ttk.Scrollbar(box, orient="horizontal", command=cv.xview)
+    cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+    inner = ttk.Frame(cv, padding=padding)
+    win_id = cv.create_window(0, 0, window=inner, anchor="nw")
+    cv.grid(row=0, column=0, sticky="nsew")
+    box.rowconfigure(0, weight=1)
+    box.columnconfigure(0, weight=1)
+
+    def fit(_e=None):
+        rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
+        cw, ch = cv.winfo_width(), cv.winfo_height()
+        cv.itemconfigure(win_id, width=max(rw, cw), height=max(rh, ch))
+        cv.configure(scrollregion=(0, 0, max(rw, cw), max(rh, ch)))
+        for bar, need, kw in ((vs, rh > ch + 1, dict(row=0, column=1, sticky="ns")),
+                              (hs, rw > cw + 1, dict(row=1, column=0, sticky="ew"))):
+            if need and cw > 1:
+                bar.grid(**kw)
+            else:
+                bar.grid_remove()
+    inner.bind("<Configure>", fit)
+    cv.bind("<Configure>", fit)
+
+    def wheel(e):
+        if inner.winfo_reqheight() > cv.winfo_height():
+            cv.yview_scroll(int(-e.delta / 120) or (-1 if e.delta > 0 else 1), "units")
+    box.bind("<Enter>", lambda _e: box.bind_all("<MouseWheel>", wheel))
+    box.bind("<Leave>", lambda _e: box.unbind_all("<MouseWheel>"))
+    box.cv, box.inner = cv, inner
+    return box, inner
+
+
+def fit_window(win, max_w=0.9, max_h=0.85) -> None:
+    """Taille de depart raisonnable (jamais plus grande que l'ecran) ; la fenetre reste redimensionnable."""
+    def go():
+        try:
+            win.update_idletasks()
+            sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
+            w = min(win.winfo_reqwidth() + 24, int(sw * max_w))
+            h = min(win.winfo_reqheight() + 24, int(sh * max_h))
+            win.geometry(f"{w}x{h}")
+            win.minsize(320, 240)
+            win.resizable(True, True)
+        except Exception:  # noqa: BLE001
+            pass
+    win.after(60, go)
+
+
 # ---------------------------------------------------------------- fenetre ---
 def window(state: dict) -> None:
     import tkinter as tk
@@ -2521,8 +2594,8 @@ def window(state: dict) -> None:
     nb.grid(sticky="nsew")
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
-    outer = ttk.Frame(nb, padding=12)
-    nb.add(outer, text="  Rendu  ")
+    rendu_box, outer = scroll_area(nb, padding=12)
+    nb.add(rendu_box, text="  🎬 Rendu  ")
     status = tk.StringVar(value="Choisis la vue, le soleil et la qualité, puis « Rendre cette vue ».")
     head = ttk.Frame(outer)
     head.grid(row=0, column=0, sticky="ew")
@@ -2705,15 +2778,15 @@ def window(state: dict) -> None:
     foc_var = tk.IntVar(value=opts["focale"])
     foc_box = ttk.Combobox(row, values=FOCALES, textvariable=foc_var, width=4, state="readonly")
     foc_box.grid(row=0, column=5, padx=(2, 8))
-    ttk.Button(row, text="Placer une caméra (2 clics)...", command=lambda: place()).grid(row=0, column=6)
-    ttk.Button(row, text="Supprimer", command=lambda: remove()).grid(row=0, column=7, padx=4)
+    ttk.Button(row, text="📷 Placer une caméra", command=lambda: place()).grid(row=0, column=6)
+    ttk.Button(row, text="🗑 Supprimer", command=lambda: remove()).grid(row=0, column=7, padx=4)
     vert_var = tk.BooleanVar(value=opts["verticales"])
     ttk.Checkbutton(box, text="Verticales droites (caméra horizontale)", variable=vert_var).grid(row=2, column=0, sticky="w",
                                                                                               pady=(4, 0))
     pr = ttk.Frame(box)
     pr.grid(row=3, column=0, columnspan=5, sticky="w", pady=(4, 0))
     ttk.Button(pr, text="📐 Montrer les caméras dans le plan Archicad", command=lambda: to_plan()).grid(row=0, column=0)
-    ttk.Button(pr, text="Les retirer du plan", command=lambda: off_plan()).grid(row=0, column=1, padx=4)
+    ttk.Button(pr, text="✖ Les retirer du plan", command=lambda: off_plan()).grid(row=0, column=1, padx=4)
     ttk.Button(pr, text="🧭 Visionneuse 3D : se déplacer et rendre", command=lambda: open_viewer()).grid(row=0, column=2, padx=4)
 
     def focal_changed(_ev=None):
@@ -2822,6 +2895,33 @@ def window(state: dict) -> None:
         state["coches"][key] = [n for n, v in cam_vars.items() if v.get()]
         save_settings(state)
 
+    ttk.Label(am, text="🎛 Préréglage").grid(row=4, column=0, sticky="w", pady=(8, 0))
+    pre_var = tk.StringVar(value="")
+    pre_box = ttk.Combobox(am, values=list(PREREGLAGES), textvariable=pre_var, state="readonly", width=44)
+    pre_box.grid(row=4, column=1, columnspan=3, sticky="w", pady=(8, 0))
+
+    def apply_preset(_e=None):
+        p = dict(PREREGLAGES.get(pre_var.get(), {}))
+        if p.get("hdri") == "@couchant":                   # HDRI Cosmos du soir si tu en as une, sinon la plus recente
+            hd = cosmos_hdris()
+            soir = [e for e in hd if re.search(r"even|sunset|dusk|soir", e["categorie"] + e["nom"], re.I)]
+            p["hdri"] = (soir or hd or [{"fichier": ""}])[0]["fichier"]
+            if not p["hdri"]:
+                p["hdri_soleil"] = True
+                say("Aucune HDRI Cosmos : ciel V-Ray au coucher du soleil à la place (télécharge « Sunset » dans Cosmos pour mieux).")
+        for k_, var_ in (("qualite", qual_var), ("taille", size_var), ("ambiance", amb_var)):
+            if k_ in p:
+                var_.set(p[k_])
+        if "heure" in p:
+            hour_var.set(p["heure"])
+            show_hour()
+        if "zones_claires" in p:
+            zc_var.set(str(int(p["zones_claires"])))
+        opts.update({k_: v_ for k_, v_ in p.items() if k_ not in ("qualite", "taille", "ambiance", "heure", "zones_claires")})
+        collect()
+        say(f"Préréglage « {pre_var.get()} » appliqué (tu peux encore tout modifier).")
+    pre_box.bind("<<ComboboxSelected>>", apply_preset)
+
     def place():
         collect()
         root.withdraw()
@@ -2925,8 +3025,11 @@ def window(state: dict) -> None:
         win.title("Réglages V-Ray avancés")
         win.attributes("-topmost", True)
         win.transient(root)
-        f = ttk.Frame(win, padding=12)
-        f.grid(sticky="nsew")
+        fbox, f = scroll_area(win, padding=12)
+        fbox.grid(sticky="nsew")
+        win.rowconfigure(0, weight=1)
+        win.columnconfigure(0, weight=1)
+        fit_window(win)
         v = {}
         live["adv"] = v
         win.bind("<Destroy>", lambda e: live.pop("adv", None) if e.widget is win else None)
@@ -3070,10 +3173,10 @@ def window(state: dict) -> None:
     buttons = ttk.Frame(outer)
     buttons.grid(row=5, column=0, sticky="e", pady=(8, 0))
     ttk.Button(buttons, text="⚙ Réglages V-Ray avancés…", command=lambda: advanced()).grid(row=0, column=0, padx=(0, 12))
-    ttk.Button(buttons, text="Ouvrir le dossier des rendus", command=open_folder).grid(row=0, column=4, padx=3)
-    ttk.Button(buttons, text="Rendre les vues cochées", command=lambda: render(
+    ttk.Button(buttons, text="📂 Dossier des rendus", command=open_folder).grid(row=0, column=4, padx=3)
+    ttk.Button(buttons, text="⏩ Rendre les vues cochées", command=lambda: render(
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
-    ttk.Button(buttons, text="Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
+    ttk.Button(buttons, text="▶ Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
                ).grid(row=0, column=2, padx=3)
 
     # --- visionneuse 3D (page web locale)
@@ -3382,6 +3485,17 @@ def window(state: dict) -> None:
     objects_tab(root, nb, state, proj, key)
     root.protocol("WM_DELETE_WINDOW", lambda: (collect(), root.destroy()))
     root.after(100, compute_autos)
+    def _taille_depart():
+        try:
+            root.update_idletasks()
+            sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+            w = min(outer.winfo_reqwidth() + 30, int(sw * 0.9))
+            h = min(outer.winfo_reqheight() + 60, int(sh * 0.8))
+            root.geometry(f"{w}x{h}")
+            root.minsize(360, 260)
+        except Exception:  # noqa: BLE001
+            pass
+    root.after(80, _taille_depart)
     root.mainloop()
 
 
@@ -3789,8 +3903,8 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     import tkinter as tk
     from tkinter import ttk
 
-    tab = ttk.Frame(nb, padding=10)
-    nb.add(tab, text="  Objets  ")
+    tab_box, tab = scroll_area(nb, padding=10)
+    nb.add(tab_box, text="  🌴 Objets  ")
     tab.columnconfigure(0, weight=2)
     tab.columnconfigure(1, weight=3)
     tab.rowconfigure(0, weight=1)
@@ -3822,7 +3936,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     size_var = tk.DoubleVar(value=1.0)
     ttk.Spinbox(left, from_=0.1, to=50, increment=0.1, textvariable=size_var, width=5).grid(row=1, column=3, padx=(8, 2))
     ttk.Button(left, text="Taille", command=lambda: resize()).grid(row=1, column=4)
-    ttk.Button(left, text="Supprimer", command=lambda: remove()).grid(row=1, column=5, padx=4)
+    ttk.Button(left, text="🗑 Supprimer", command=lambda: remove()).grid(row=1, column=5, padx=4)
     ttk.Label(left, foreground="#777", wraplength=360, justify="left",
               text="Taille 1 = taille réelle de l'objet Cosmos. Si un objet sort 100 fois trop grand ou trop petit, "
                    "mets 0.01 ou 100 et dis-le-moi : je corrigerai l'unité par défaut.").grid(
@@ -4175,8 +4289,11 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         win.title("Ajouter de la végétation")
         win.attributes("-topmost", True)
         win.transient(root)
-        f = ttk.Frame(win, padding=14)
-        f.grid(sticky="nsew")
+        fbox, f = scroll_area(win, padding=14)
+        fbox.grid(sticky="nsew")
+        win.rowconfigure(0, weight=1)
+        win.columnconfigure(0, weight=1)
+        fit_window(win)
         big = ("Segoe UI", 11, "bold")
         plants = [e for e in lib if kind_of(e) != "Fleurs / buissons" or
                   any(w in (e["nom"] + e["categorie"]).lower() for w in ("plant", "flower", "fleur", "bush", "shrub", "buisson"))]
@@ -4302,7 +4419,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     loaded = {"v": False}
 
     def on_tab(_e=None):
-        if str(nb.select()) == str(tab) and not loaded["v"]:
+        if str(nb.select()) == str(tab_box) and not loaded["v"]:
             loaded["v"] = True
             resync(quiet=True)
             refresh_tree()
@@ -4695,8 +4812,11 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
     win.title("Modifier le matériau" + (f" — {first}" if len(names) == 1 else f" — {len(names)} surfaces"))
     win.attributes("-topmost", True)
     win.transient(root)
-    f = ttk.Frame(win, padding=12)
-    f.grid(sticky="nsew")
+    fbox, f = scroll_area(win, padding=12)
+    fbox.grid(sticky="nsew")
+    win.rowconfigure(0, weight=1)
+    win.columnconfigure(0, weight=1)
+    fit_window(win)
     v: dict = {}
 
     def num(name, default):
@@ -4889,8 +5009,8 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     import tkinter as tk
     from tkinter import ttk
 
-    tab = ttk.Frame(nb, padding=10)
-    nb.add(tab, text="  Matériaux  ")
+    tab_box, tab = scroll_area(nb, padding=10)
+    nb.add(tab_box, text="  🎨 Matériaux  ")
     tab.columnconfigure(0, weight=2)
     tab.columnconfigure(1, weight=3)
     tab.rowconfigure(1, weight=1)
@@ -4997,7 +5117,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     canvas.create_window((0, 0), window=grid, anchor="nw")
     grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
     canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
-                    if str(nb.select()) == str(tab) else None)
+                    if str(nb.select()) == str(tab_box) else None)
     empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
         "Aucun matériau Cosmos sur ce PC pour l'instant.\n\nClique « Ouvrir Chaos Cosmos », choisis un matériau "
         "(Materials, Chaos Scans, V-Ray Material Library…) et télécharge-le : il apparaît ici tout seul."))
@@ -5239,7 +5359,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 "il arrive ici automatiquement.")
 
     def on_tab(_e=None):
-        if str(nb.select()) == str(tab) and not surfaces:
+        if str(nb.select()) == str(tab_box) and not surfaces:
             load_surfaces()
             load_library()
             refresh_sel_info()
