@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v3.0 (visionneuse : HDRI + végétation)"
+VERSION = "19/10 - v3.0b"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1819,7 +1819,9 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
                     encoding="utf-8")
     state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
     n_obj = write_objects(d / "objets.vrscene", (state.get("objets") or {}).get(key, []), report)
-    n_sc = write_scatter(d / "objets.vrscene", (state.get("scatter") or {}).get(key, []), meshes, offset, ground, key, report)
+    sc_notes: list = []
+    n_sc = write_scatter(d / "objets.vrscene", (state.get("scatter") or {}).get(key, []), meshes, offset, ground, key,
+                         sc_notes.append)
     summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
     if note:
         summary += f" ({note})"
@@ -1827,8 +1829,9 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         summary += "\nMatériaux Cosmos : " + " ; ".join(used)
     if n_obj:
         summary += f"\nObjets Cosmos : {n_obj}"
-    if n_sc:
-        summary += f"\nScatter : {n_sc:,} exemplaires".replace(",", " ")
+    if n_sc or sc_notes:
+        summary += f"\nScatter : {n_sc:,} exemplaires".replace(",", " ") + "".join("\n  · " + t for t in sc_notes)
+        summary += f"\n  (sol V-Ray à {ground:.2f} m)"
     return geo, ground, summary
 
 
@@ -2725,7 +2728,12 @@ def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: st
         if area < 1e-6 or abs(nz) / (2 * area) < 0.7:          # seulement les faces horizontales
             continue
         (up if nz > 0 else flat).append((a, b, c, area))      # normale vers le haut = dessus de la dalle
-    chosen, tris, total = (up or flat), [], 0.0
+    def mean_z(group):
+        a_ = sum(t[3] for t in group) or 1.0
+        return sum(t[3] * (t[0][2] + t[1][2] + t[2][2]) / 3 for t in group) / a_
+    # le dessus de la dalle = le groupe de faces horizontales le plus haut (l'orientation IFC n'est pas fiable)
+    chosen = up if (up and (not flat or mean_z(up) >= mean_z(flat))) else (flat or up)
+    tris, total = [], 0.0
     for a, b, c, area in chosen:
         tris.append((total, a, b, c, area))
         total += area
@@ -2801,6 +2809,12 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
                 out.write(f"Node {sid}_{i} {{ transform=Transform(Matrix(Vector({c:.5f},{si:.5f},0),Vector({-si:.5f},{c:.5f},0),"
                           f"Vector(0,0,{sz:.5f})),Vector({x:.3f},{y:.3f},{z:.3f})); geometry={sid}_geo; material={sid}_mtl; }}\n")
             total += len(pts)
+            if pts:
+                zs = [p_[2] for p_ in pts]
+                report(f"Scatter « {sc.get('nom')} » : {len(pts)} exemplaires, posés entre {min(zs):.2f} et {max(zs):.2f} m "
+                       f"(fichier {mesh.name})")
+            else:
+                report(f"Scatter « {sc.get('nom')} » : 0 exemplaire (surface sans dessus horizontal ?)")
     return total
 
 
