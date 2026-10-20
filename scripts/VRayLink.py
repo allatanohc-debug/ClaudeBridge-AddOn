@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.8 (intérieurs + herbe)"
+VERSION = "20/10 - v4.8b (intérieurs + herbe)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4608,7 +4608,7 @@ def custom_material_block(mid: str, c: dict) -> str:
         out.append(f"UVWGenObject {mid}_nuvw {{ }}\n"   # coordonnees 3D de l'objet : taille du motif en metres, sans UV
                    f"TexNoiseMax {mid}_noise {{ color1=AColor({r:.4f},{g:.4f},{b:.4f},1); "
                    f"color2=AColor({r * (1 - var):.4f},{g * (1 - var):.4f},{b * (1 - var):.4f},1); "
-                   f"size={float(c.get('proc_taille', 0.3)):.3f}; type=1; uvwgen={mid}_nuvw; }}\n")
+                   f"size={float(c.get('proc_taille', 0.3)):.3f}; type=1; use_3d_mapping=1; uvwgen={mid}_nuvw; }}\n")
         dif = f"{mid}_noise"
     if c.get("procedural") == "Usure / saleté dans les angles":
         var = float(c.get("proc_variation", 0.3))
