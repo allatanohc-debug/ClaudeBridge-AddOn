@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.1 (ciel généré : nuages)"
+VERSION = "20/10 - v5.2 (Light Gen + réglages conseillés)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1103,6 +1103,8 @@ Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" 
 <div class="row">
 <div><label>Hauteur yeux (m)</label><input id="eyeh" type="number" step="0.1" value="1.6"></div></div>
 <button id="eyeBtn">Se mettre à hauteur d'yeux</button>
+<div class="row"><button id="cExt" title="2 points de fuite, yeux à 1,6 m, champ de vision 45° (≈ 24 mm) : verticales droites, comme une photo d'architecte">💡 Cadrage conseillé extérieur</button>
+<button id="cInt" title="2 points de fuite, yeux à 1,3 m, champ de vision 55° (≈ 18 mm) : on voit la pièce sans trop déformer les meubles">💡 Cadrage conseillé intérieur</button></div>
 <div><label>Soleil : <span id="sunTxt"></span></label>
 <input id="hour" type="range" min="5.5" max="19.5" step="0.05" style="padding:0">
 <div class="row" style="margin-top:6px"><div><label>Jour</label><input id="day" type="number" min="1" max="31"></div>
@@ -1525,6 +1527,8 @@ function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft|
  const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${(+$("foc").value).toFixed(0)} mm · ${Math.round(cam.fov)}°`;
  if(vmode==="ortho"){syncOrtho(); renderer.render(scene,ortho)} else renderer.render(scene,cam);requestAnimationFrame(loop)}
 loop();
+function conseil(h,fov){setMode("2pf"); $("eyeh").value=h; $("eyeBtn").click(); setFov(fov); $("shift").value=0; if($("shift").oninput)$("shift").oninput()}
+$("cExt").onclick=()=>conseil(1.6,45); $("cInt").onclick=()=>conseil(1.3,55);
 $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;
  if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
 async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
@@ -1654,7 +1658,7 @@ def render_size(opts: dict) -> tuple[int, int]:
     elif vr == 10:
         W, H = W, max(64, W // 6)             # cubemap 6x1
     if opts.get("_apercu"):                   # apercu rapide : petite image, meme cadrage
-        k = 640 / max(W, H)
+        k = float(opts.get("_apercu_px", 640)) / max(W, H)
         W, H = max(32, int(W * k)), max(32, int(H * k))
     return W, H
 
@@ -2802,6 +2806,19 @@ def window(state: dict) -> None:
     foc_box.grid(row=0, column=5, padx=(2, 8))
     ttk.Button(row, text="📷 Placer une caméra", command=lambda: place()).grid(row=0, column=6)
     ttk.Button(row, text="🗑 Supprimer", command=lambda: remove()).grid(row=0, column=7, padx=4)
+
+    def conseil_vue():
+        if interieur(opts) or amb_var.get().startswith("Intérieur"):
+            eye_var.set(1.3)
+            tgt_var.set(1.2)
+            foc_var.set(18)
+            say("💡 Intérieur conseillé : yeux 1,3 m, cible 1,2 m, focale 18 mm (la pièce entière sans déformer les meubles).")
+        else:
+            eye_var.set(1.6)
+            tgt_var.set(1.4)
+            foc_var.set(24)
+            say("💡 Extérieur conseillé : yeux 1,6 m (hauteur d'homme), cible 1,4 m, focale 24 mm (façade entière, verticales droites).")
+    ttk.Button(row, text="💡 Conseillé", command=conseil_vue).grid(row=0, column=8, padx=4)
     vert_var = tk.BooleanVar(value=opts["verticales"])
     ttk.Checkbutton(box, text="Verticales droites (caméra horizontale)", variable=vert_var).grid(row=2, column=0, sticky="w",
                                                                                               pady=(4, 0))
@@ -3047,6 +3064,103 @@ def window(state: dict) -> None:
             show([f"Erreur : {error}"])
             say("Erreur.")
 
+    def light_gen():
+        """Comme « Light Gen » de V-Ray pour SketchUp : rend plusieurs eclairages (soleil, nuages, HDRI Cosmos)
+        de la vue choisie en petites images ; un clic sur une image applique cet eclairage."""
+        collect()
+        if not check_vray():
+            return
+        name = current.get()
+        cam = next((c for c in all_cams() if c["nom"] == name), None)
+        if not cam:
+            show(["Choisis d'abord une vue (rond à gauche du nom)."])
+            return
+        dedans = interieur(opts)
+        sc = [("🌅 Matin clair", dict(heure=8.5, ciel="Quelques nuages", hdri="")),
+              ("☀ Midi ensoleillé", dict(heure=12.0, ciel="Dégagé", hdri="")),
+              ("⛅ Après-midi nuageux", dict(heure=15.0, ciel="Nuageux", hdri="")),
+              ("🌤 Fin de journée", dict(heure=17.0, ciel="Quelques nuages", hdri="", balance=0.25)),
+              ("☁ Ciel couvert doux", dict(heure=13.0, ciel="Très nuageux", hdri=""))]
+        for e in cosmos_hdris()[:3]:
+            for rot in (0, 180):
+                sc.append((f"🖼 {e['nom']} ({rot}°)", dict(hdri=e["fichier"], hdri_rot=float(rot), hdri_soleil=False,
+                                                          hdri_mult=1.0, ciel="Dégagé")))
+        try:
+            geo, ground, _i = prepare_geometry(dict(state, options=dict(opts, reutiliser=True)), proj, lambda *_: None)
+        except Exception as error:  # noqa: BLE001
+            show([f"Light Gen impossible : {error}"])
+            return
+        win = tk.Toplevel(root)
+        win.title(f"💡 Light Gen — {name}")
+        win.attributes("-topmost", True)
+        box, f = scroll_area(win, padding=10)
+        box.grid(sticky="nsew")
+        win.rowconfigure(0, weight=1)
+        win.columnconfigure(0, weight=1)
+        ttk.Label(f, text=f"V-Ray essaie {len(sc)} éclairages sur « {name} »" + (" (intérieur)" if dedans else "") +
+                  ". Clique sur celui que tu préfères.", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        etat = tk.StringVar(value="Calcul…")
+        ttk.Label(f, textvariable=etat, foreground="#777").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
+        imgs: list = []
+        win.geometry("1180x720")
+
+        def choisir(ov, label):
+            for k_, var_ in (("ciel", ciel_var),):
+                if k_ in ov:
+                    var_.set(ov[k_])
+            if "heure" in ov:
+                hour_var.set(ov["heure"])
+                show_hour()
+            opts.update({k_: v_ for k_, v_ in ov.items() if k_ not in ("heure", "ciel")})
+            if not ov.get("hdri"):
+                opts["hdri"] = ""
+            collect()
+            say(f"Éclairage « {label} » appliqué. Lance « ▶ Rendre cette vue » pour l'image en grand.")
+            win.destroy()
+
+        def ajoute(k, label, ov, img_path):
+            try:
+                ph = tk.PhotoImage(file=str(img_path))
+                fac = max(1, ph.width() // 360)
+                ph = ph.subsample(fac, fac) if fac > 1 else ph
+            except Exception:  # noqa: BLE001
+                ph = None
+            imgs.append(ph)
+            cell = ttk.Frame(f, padding=4)
+            cell.grid(row=2 + k // 3, column=k % 3, sticky="n")
+            b = tk.Button(cell, image=ph, text="" if ph else "(échec)", relief="flat", cursor="hand2",
+                          command=lambda: choisir(ov, label))
+            b.grid(row=0, column=0)
+            ttk.Label(cell, text=label).grid(row=1, column=0)
+
+        def run():
+            for k, (label, ov) in enumerate(sc):
+                o = dict(opts, _apercu=True, _apercu_px=360, reutiliser=True, **ov)
+                scene = geo.parent / f"lightgen_{k}.vrscene"
+                image = geo.parent / f"lightgen_{k}.png"
+                try:
+                    write_scene(scene, geo, cam, o, proj, ground)
+                    scene.write_text(re.sub(r"progressive_maxTime=[0-9.]+", "progressive_maxTime=0.25",
+                                            scene.read_text(encoding="utf-8")), encoding="utf-8")
+                    if image.exists():
+                        image.unlink()
+                    root.after(0, lambda k=k: etat.set(f"Calcul {k + 1} / {len(sc)}…"))
+                    subprocess.run([state["vray"], f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1",
+                                    "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
+                                   cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=300)
+                    fx = _fx(image)
+                    out_ = fx if fx.exists() else image
+                except Exception:  # noqa: BLE001
+                    out_ = image
+                try:
+                    if not win.winfo_exists():
+                        return
+                except Exception:  # noqa: BLE001
+                    return
+                root.after(0, lambda k=k, label=label, ov=ov, out_=out_: ajoute(k, label, ov, out_))
+            root.after(0, lambda: etat.set("Terminé : clique sur une image pour appliquer cet éclairage."))
+        threading.Thread(target=run, daemon=True).start()
+
     def advanced():
         from tkinter import filedialog
         win = tk.Toplevel(root)
@@ -3188,8 +3302,19 @@ def window(state: dict) -> None:
             win.destroy()
         bar = ttk.Frame(f)
         bar.grid(row=5, column=0, sticky="e")
-        ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=0, padx=4)
-        ttk.Button(bar, text="OK", command=ok).grid(row=0, column=1)
+
+        def conseils():
+            for k_, val_ in (("contraste", 1.05), ("vignettage", 0.25), ("balance", 0.0), ("dof_f", 2.8),
+                             ("soleil_intensite", 1.0), ("hdri_mult", 1.0)):
+                try:
+                    v[k_].set(val_)
+                except Exception:  # noqa: BLE001
+                    pass
+            messagebox.showinfo("Valeurs conseillées", "Contraste 1,05 · vignettage 0,25 · balance des blancs neutre · "
+                                "flou f/2.8 · soleil ×1 · HDRI ×1.\nClique OK pour les garder.", parent=win)
+        ttk.Button(bar, text="💡 Valeurs conseillées", command=conseils).grid(row=0, column=0, padx=(0, 16))
+        ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=1, padx=4)
+        ttk.Button(bar, text="OK", command=ok).grid(row=0, column=2)
 
     def open_folder():
         folder = renders_dir(proj["name"])
@@ -3201,6 +3326,8 @@ def window(state: dict) -> None:
     buttons = ttk.Frame(outer)
     buttons.grid(row=5, column=0, sticky="e", pady=(8, 0))
     ttk.Button(buttons, text="⚙ Réglages V-Ray avancés…", command=lambda: advanced()).grid(row=0, column=0, padx=(0, 12))
+    ttk.Button(buttons, text="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen()).grid(
+        row=1, column=0, columnspan=5, sticky="w", pady=(6, 0))
     ttk.Button(buttons, text="📂 Dossier des rendus", command=open_folder).grid(row=0, column=4, padx=3)
     ttk.Button(buttons, text="⏩ Rendre les vues cochées", command=lambda: render(
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
