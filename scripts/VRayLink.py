@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.2 (aperçu V-Ray)"
+VERSION = "20/10 - v4.3"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1043,7 +1043,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <button id="bLum" class="mini" title="Ajouter une lumière (L)">💡</button>
 <button id="bMove" class="mini" title="Déplacer / tourner un objet ou une lumière (G)">✋</button></div>
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
-<span id="selName" style="padding:0 6px;color:var(--mute)">Clique un objet orange ou une lumière</span>
+<span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
 <button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eDrop">⤓ Poser</button>
 <button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
@@ -1446,6 +1446,22 @@ $("eDrop").onclick=()=>{if(!sel)return; ray.set(sel.position.clone().add(new THR
 $("eDup").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){sel.position.x+=0.6; commit("dup"); sel.position.x-=0.6} else commit("dup")};
 $("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("delete"); tc.detach(); sel=null} else commit("delete");
  $("selName").textContent="Supprimé"};
+// glisser directement l'objet a la souris (il suit les surfaces : sol, terrasse, table…) ; Ctrl + glisser = tourner
+let dragO=null;
+renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||(tc&&tc.axis))return;
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0]; if(!hit)return;
+ sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind==="lum"?"💡 ":"📦 ")+sel.userData.nom;
+ dragO={x:e.clientX,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
+ renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation()},{capture:true});
+renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; dragO.moved=true;
+ if(dragO.ctrl){sel.rotation.z=dragO.rot0+(e.clientX-dragO.x)*0.01; return}
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const hit=ray.intersectObjects([model,ground],false).find(h=>!h.face||Math.abs(h.face.normal.z)>0.6);
+ if(hit){sel.position.x=hit.point.x; sel.position.y=hit.point.y; if(sel.userData.kind==="obj")sel.position.z=hit.object===ground?info.sol:hit.point.z}
+ else{const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}}},{capture:true});
+renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const moved=dragO.moved; dragO=null; tcDrag=false; controls.enabled=mode==="orbit";
+ if(moved)commit()},{capture:true});
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
