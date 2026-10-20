@@ -1451,7 +1451,7 @@ def write_lights(path: Path, lights: list, report=print) -> int:
             tm = f"Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(pos)})"
             r, g, b = (srgb_to_linear(float(c)) for c in (l.get("couleur") or (1.0, 0.92, 0.8)))
             col = f"Color({r:.4f},{g:.4f},{b:.4f})"
-            it = float(l.get("intensite", 30.0))
+            it = float(l.get("intensite", TYPES_LUMIERE.get(t, {}).get("intensite", 30.0)))
             lid = f"lum{k}"
             if t == "Spot":
                 out.write(f"LightSpot {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; "
@@ -1459,13 +1459,13 @@ def write_lights(path: Path, lights: list, report=print) -> int:
                           f"decay=2; shadowRadius={float(l.get('rayon_ombre', 0.02)):.3f}; }}\n")
             elif t == "IES":
                 ies = str(l.get("ies") or "")
-                if not Path(ies).exists():
+                if not (ies and Path(ies).is_file()):
                     report(f"Lumière « {l.get('nom')} » : fichier IES introuvable, remplacée par un spot")
                     out.write(f"LightSpot {lid} {{ transform={tm}; color={col}; intensity={1000 * it:.3f}; coneAngle=1.4; "
                               "penumbraAngle=0.5; decay=2; }\n")
                 else:
-                    out.write(f'LightIES {lid} {{ transform={tm}; color={col}; ies_file="{ies.replace(chr(92), "/")}"; '
-                              f"intensity_multiplier={it:.3f}; soft_shadows=1; }}\n")
+                    out.write(f'LightIES {lid} {{ transform={tm}; ies_file="{ies.replace(chr(92), "/")}"; '
+                              f"filter_color=Color({r * it:.4f},{g * it:.4f},{b * it:.4f}); soft_shadows=1; }}\n")
             elif t == "Rectangle":
                 out.write(f"LightRectangle {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; units=0; "
                           f"u_size={float(l.get('largeur', 1.0)) / 2:.4f}; v_size={float(l.get('hauteur', 0.5)) / 2:.4f}; "
