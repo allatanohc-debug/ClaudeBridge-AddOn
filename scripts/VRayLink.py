@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.3"
+VERSION = "20/10 - v4.4 (lumières)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1233,7 +1233,7 @@ async function tex(path,size,rot,srgb,du=0,dv=0){if(!path)return null; const k=p
  const s=1/Math.max(0.01,size||1); t.repeat.set(s,s); t.rotation=(rot||0)*Math.PI/180; t.offset.set(-du*s,-dv*s); return t}
 async function applyMat(nom,c){const i=PAR[nom]; if(i===undefined)return; const m=MATS[i];
  if(!c){m.color.copy(m.userData.base);m.map=m.roughnessMap=m.alphaMap=m.bumpMap=m.normalMap=null;m.roughness=.85;m.metalness=0;
-  m.opacity=1;m.transparent=false;m.transmission=0;m.emissive.set(0);m.needsUpdate=true;return}
+  m.opacity=1;m.transparent=false;m.transmission=0;if(!m.userData.lumMesh)m.emissive.set(0);m.needsUpdate=true;return}
  const sz=c.taille_tex||1, rot=c.rotation_tex||0;
  if(c.couleur)m.color.setRGB(c.couleur[0],c.couleur[1],c.couleur[2],THREE.SRGBColorSpace);
  const du=c.decalage_u||0, dv=c.decalage_v||0;
@@ -1245,7 +1245,7 @@ async function applyMat(nom,c){const i=PAR[nom]; if(i===undefined)return; const 
  m.transmission=c.refraction||0; m.thickness=0.02; if(m.transmission>0)m.roughness=Math.max(m.roughness,(c.flou_refraction||0)*0.6);
  const rel=await tex(c.tex_relief,sz,rot,false); const normal=c.type_relief==="Normal map";
  m.normalMap=normal?rel:null; m.bumpMap=normal?null:rel; m.bumpScale=(c.relief||0.5)*0.05; if(normal)m.normalScale.set(c.relief||0.5,c.relief||0.5);
- const em=c.emission||0; m.emissive.setRGB(1,0.9,0.7); m.emissiveIntensity=em*0.4; if(!em)m.emissive.set(0);
+ const em=c.emission||0; if(!m.userData.lumMesh){m.emissive.setRGB(1,0.9,0.7); m.emissiveIntensity=em*0.4; if(!em)m.emissive.set(0)}
  m.needsUpdate=true}
 let matRev=-1;
 async function pollMat(){try{const L=await (await fetch("/api/mat")).json();
@@ -1381,25 +1381,32 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!mesureOn||!downAt||Math
 let sel=null, tc=null, tcDrag=false;
 const lumGroup=new THREE.Group(); scene.add(lumGroup); let LUM=[], lumRev=-1, poseType=null;
 const LTYPES={"Spot":{intensite:1000,cone:45,penombre:25,rayon_ombre:.02},"IES":{intensite:1,ies:""},"Rectangle":{intensite:30,largeur:1,hauteur:.5,invisible:true},
- "Sphère":{intensite:30,rayon:.08,invisible:false},"Omni":{intensite:1000,rayon_ombre:.05},"Dôme":{intensite:1}};
+ "Sphère":{intensite:30,rayon:.08,invisible:false},"Omni":{intensite:1000,rayon_ombre:.05},"Dôme":{intensite:1},
+ "Maillage":{intensite:10,surface:"",invisible:false}};
 for(const t of Object.keys(LTYPES)){const b=document.createElement("button"); b.textContent=t; b.onclick=()=>{poseType=t; $("lumMenu").style.display="none";
   $("mesure").style.display=""; $("mesure").textContent=t==="Dôme"?"Dôme ajouté (lumière d'ambiance tout autour)":"Clique sur une surface (plafond, mur…) pour poser : "+t+"  — Échap pour annuler";
   renderer.domElement.style.cursor="crosshair"; if(t==="Dôme"){addLight(new THREE.Vector3(0,0,info.sol+5),new THREE.Vector3(0,0,-1)); poseType=null}}; $("lumMenu").appendChild(b)}
 $("bLum").onclick=()=>{const m=$("lumMenu"); m.style.display=m.style.display==="flex"?"none":"flex"};
 addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyL")$("bLum").click();
  if(e.code==="Escape"&&poseType){poseType=null;$("mesure").style.display="none";renderer.domElement.style.cursor=""}});
-function addLight(p,n){const t=poseType||"Dôme", off=t==="Spot"||t==="IES"?0.12:t==="Rectangle"?0.02:0.1;
+function addLight(p,n,surf){const t=poseType||"Dôme", off=t==="Spot"||t==="IES"?0.12:t==="Rectangle"?0.02:0.1;
  const pos=p.clone().addScaledVector(n,off), tgt=pos.clone().add(n);
  const l=Object.assign({type:t,nom:t+" "+(LUM.filter(x=>x.type===t).length+1),pos:pos.toArray().map(v=>+v.toFixed(3)),cible:tgt.toArray().map(v=>+v.toFixed(3)),
   couleur:[1,.92,.8],actif:true},JSON.parse(JSON.stringify(LTYPES[t])));
+ if(t==="Maillage"){l.surface=surf||""; l.nom="Surface lumineuse "+(surf||"")}
  LUM.push(l); drawLights(); fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lum_save",liste:LUM})});
  $("mesure").textContent=`✔ ${l.nom} posée. Règle-la dans l'Éditeur V-Ray › Lumières (couleur, intensité, angle…).`; setTimeout(()=>{if(!mesureOn)$("mesure").style.display="none"},4000)}
 renderer.domElement.addEventListener("pointerup",e=>{if(!poseType||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),vmode==="ortho"?ortho:cam);
  const hit=ray.intersectObjects([model,ground],false)[0]; if(!hit)return; const n=(hit.face?hit.face.normal.clone():new THREE.Vector3(0,0,1));
  if(n.dot(new THREE.Vector3().subVectors((vmode==="ortho"?ortho:cam).position,hit.point))<0)n.negate();
- addLight(hit.point,n.normalize()); poseType=null; renderer.domElement.style.cursor=""});
+ let surf=""; if(hit.object===model&&hit.face){const gi=g.groups.find(G=>hit.faceIndex*3>=G.start&&hit.faceIndex*3<G.start+G.count); if(gi)surf=GROUPES[gi.materialIndex][0]}
+ if(poseType==="Maillage"&&!surf){$("mesure").textContent="Clique sur une surface du bâtiment (pas le sol V-Ray)"; return}
+ addLight(hit.point,n.normalize(),surf); poseType=null; renderer.domElement.style.cursor=""});
 function drawLights(){lumGroup.clear();
+ for(const m of (window.__mats||[])){if(m.userData.lumMesh){m.emissive.set(0);m.emissiveIntensity=0;m.userData.lumMesh=false;m.needsUpdate=true}}
+ for(const l of LUM){if(l.type!=="Maillage"||l.actif===false)continue; const i=PAR[l.surface]; if(i===undefined)continue; const m=MATS[i];
+  m.emissive.setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace); m.emissiveIntensity=Math.min(4,l.intensite*0.15); m.userData.lumMesh=true; m.needsUpdate=true}
  for(const l of LUM){if(l.actif===false)continue; const c=new THREE.Color().setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace);
   const p=new THREE.Vector3(...l.pos), tg=new THREE.Vector3(...(l.cible||[l.pos[0],l.pos[1],l.pos[2]-1])); let L, giz;
   const gm=new THREE.MeshBasicMaterial({color:c}); 
@@ -1409,6 +1416,7 @@ function drawLights(){lumGroup.clear();
   else if(l.type==="Rectangle"){L=new THREE.PointLight(c,l.intensite*(l.largeur||1)*(l.hauteur||.5)*1.2,0,2);
    giz=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); giz.position.copy(p); giz.lookAt(tg)}
   else if(l.type==="Dôme"){L=new THREE.HemisphereLight(c,0x444444,l.intensite*0.8)}
+  else if(l.type==="Maillage"){continue}
   else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),gm); giz.position.copy(p)}
   L.position.copy(p); L.castShadow=false; lumGroup.add(L);
   if(giz){giz.userData={kind:"lum",i:LUM.indexOf(l),nom:l.nom,light:L}; lumGroup.add(giz);
@@ -1511,6 +1519,7 @@ TYPES_LUMIERE = {   # type : reglages par defaut (comme V-Ray pour SketchUp)
     "Sphère": {"intensite": 30.0, "rayon": 0.08, "invisible": False},
     "Omni": {"intensite": 1000.0, "rayon_ombre": 0.05},
     "Dôme": {"intensite": 1.0},
+    "Maillage": {"intensite": 10.0, "surface": "", "invisible": False},   # Mesh Light : une surface du modele eclaire
 }
 LIGHTS: dict = {"rev": 0, "liste": []}
 APERCU: dict = {"rev": 0, "etat": "", "fichier": ""}  # apercu V-Ray rapide demande depuis la visionneuse
@@ -1529,7 +1538,7 @@ def _light_frame(l: dict):
     return pos, x, y, z
 
 
-def write_lights(path: Path, lights: list, report=print) -> int:
+def write_lights(path: Path, lights: list, report=print, gids: dict | None = None) -> int:
     n = 0
     with path.open("w", encoding="utf-8") as out:
         out.write("// Lumieres (V-Ray Link)\n")
@@ -1563,6 +1572,14 @@ def write_lights(path: Path, lights: list, report=print) -> int:
             elif t == "Omni":
                 out.write(f"LightOmni {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; decay=2; "
                           f"shadowRadius={float(l.get('rayon_ombre', 0.05)):.3f}; }}\n")
+            elif t == "Maillage":
+                gid = (gids or {}).get(l.get("surface", ""))
+                if not gid:
+                    report(f"Lumière « {l.get('nom')} » : surface « {l.get('surface')} » absente du modèle")
+                    continue
+                out.write(f"LightMesh {lid} {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),Vector(0,0,0)); "
+                          f"geometry={gid}; color={col}; intensity={it:.3f}; units=0; doubleSided=1; "
+                          f"invisible={1 if l.get('invisible') else 0}; }}\n")
             elif t == "Dôme":
                 out.write(f"LightDome {lid} {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),Vector(0,0,0)); "
                           f"color={col}; intensity={it:.3f}; invisible=0; }}\n")
@@ -2302,7 +2319,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
     n_obj = write_objects(d / "objets.vrscene", (state.get("objets") or {}).get(key, []), report)
     lights = (state.get("lumieres") or {}).get(key, [])
-    n_lum = write_lights(d / "lumieres.vrscene", lights, report)
+    n_lum = write_lights(d / "lumieres.vrscene", lights, report, {name: f"g{k}" for k, name in enumerate(meshes)})
     sc_notes: list = []
     n_sc = write_scatter(d / "objets.vrscene", (state.get("scatter") or {}).get(key, []), meshes, offset, ground, key,
                          sc_notes.append)
@@ -4361,11 +4378,26 @@ $("tMat").onclick=()=>setTab("mat"); $("tLum").onclick=()=>setTab("lum");
 $("lImport").onclick=async()=>{$("msg").textContent="Lecture des luminaires dans Archicad…"; await post({action:"lum_import"}); lastEdit=0};
 async function pollL(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev&&Date.now()-lastEdit>1500){lumRev=j.rev; LUM=j.liste||[];
   if(tab==="lum"){lumList(); if(curL>=LUM.length)curL=LUM.length-1; lumForm()}}}catch(_){} setTimeout(pollL,1000)}
+const ICON={"Spot":"🔦","IES":"🔦","Rectangle":"▭","Sphère":"●","Omni":"✳","Dôme":"◓","Maillage":"〰"};
+let SUN={intensite:1}, sunPrev=1;
+async function pollSun(){try{const e=await (await fetch("/api/etat")).json(); if(e.intensite!==undefined&&Date.now()-lastEdit>1500){SUN.intensite=e.intensite; if(tab==="lum")sunRow()}}catch(_){}
+ setTimeout(pollSun,1500)}
+function lrow(icon,name,val,on,click,setVal,setOn,selected){const d=document.createElement("div"); d.className="it"+(selected?" on":"");
+ d.innerHTML=`<span style="width:18px;text-align:center">${icon}</span><span class="nm"></span><input class="num" type="number" step="any" value="${val}" style="width:62px">
+ <input type="checkbox" ${on?"checked":""} style="width:auto;margin:0">`; d.querySelector(".nm").textContent=name; if(!on)d.style.opacity=.55;
+ const [n,c]=d.querySelectorAll("input"); n.onclick=c.onclick=e=>e.stopPropagation(); n.onchange=()=>setVal(+n.value); c.onchange=()=>setOn(c.checked);
+ d.onclick=click; return d}
+function sunRow(){const old=$("sunRow"); const d=lrow("☀","SunLight (soleil)",SUN.intensite,SUN.intensite>0,()=>{},
+  v=>{SUN.intensite=v; lastEdit=Date.now(); post({action:"reglage",intensite:v})},
+  on=>{if(on){SUN.intensite=sunPrev||1}else{sunPrev=SUN.intensite||1; SUN.intensite=0} lastEdit=Date.now(); post({action:"reglage",intensite:SUN.intensite}); sunRow()},false);
+ d.id="sunRow"; d.title="Soleil V-Ray : intensité (1 = normal, 0 = éteint, pour une vue de nuit)"; if(old)old.replaceWith(d); else $("items").appendChild(d)}
 function lumList(){const q=$("q").value.toLowerCase(); $("items").innerHTML="";
- LUM.forEach((l,i)=>{if(q&&!l.nom.toLowerCase().includes(q))return; const d=document.createElement("div"); d.className="it"+(i===curL?" on":"");
-  d.innerHTML=`<span class="dot" style="background:${hex(l.couleur||[1,.92,.8])}"></span><span class="nm"></span><span class="tag">${l.type}</span>`;
-  if(l.actif===false)d.style.opacity=.5; d.querySelector(".nm").textContent=l.nom; d.onclick=()=>{curL=i; lumList(); lumForm()}; $("items").appendChild(d)});
- if(!LUM.length)$("items").innerHTML='<div class="empty" style="padding:20px">Aucune lumière.<br>Visionneuse 3D › 💡, ou « Importer les luminaires Archicad ».</div>'}
+ const h=document.createElement("div"); h.style.cssText="padding:6px 12px;color:var(--mute);font-size:12px;font-weight:600"; h.textContent="Lights"; $("items").appendChild(h);
+ LUM.forEach((l,i)=>{if(q&&!l.nom.toLowerCase().includes(q))return;
+  $("items").appendChild(lrow(ICON[l.type]||"●",l.nom,l.intensite,l.actif!==false,()=>{curL=i; lumList(); lumForm()},
+   v=>{l.intensite=v; saveL(); if(i===curL)lumForm()}, on=>{l.actif=on; saveL(); lumList()}, i===curL))});
+ sunRow();
+ if(!LUM.length){const e=document.createElement("div"); e.className="empty"; e.style.padding="20px"; e.innerHTML="Aucune lumière.<br>Visionneuse 3D › 💡, ou « Importer les luminaires Archicad »."; $("items").appendChild(e)}}
 function saveL(){lastEdit=Date.now(); clearTimeout(saveL.t); saveL.t=setTimeout(()=>post({action:"lum_save",liste:LUM}),350); drawPrevL()}
 function lumForm(){const P=$("params"); P.innerHTML=""; const l=LUM[curL]; if(!l){P.innerHTML='<div class="empty">Choisis une lumière à gauche.</div>'; drawPrevL(); return}
  $("pinfo").textContent=l.nom+" · "+l.type;
@@ -4384,11 +4416,14 @@ function lumForm(){const P=$("params"); P.innerHTML=""; const l=LUM[curL]; if(!l
  for(const [k,lab,lo,hi,st] of nums){const v=l[k]??LTYPES[l.type][k]??0; r=row(lab,`<input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}"><input class="num" type="number" step="${st}" value="${v}">`);
   const [rg,nb]=r.querySelectorAll("input"); rg.oninput=()=>{nb.value=rg.value;l[k]=+rg.value;saveL()}; nb.onchange=()=>{rg.value=nb.value;l[k]=+nb.value;saveL()}}
  if(l.type==="Rectangle"||l.type==="Sphère"){r=row("Invisible à la caméra",`<input type="checkbox" ${l.invisible?"checked":""} style="width:auto"><span></span>`); r.querySelector("input").onchange=e=>{l.invisible=e.target.checked;saveL()}}
+ if(l.type==="Maillage"){r=row("Surface qui éclaire",`<select>${["",...SURF.map(x=>x.nom)].map(n=>`<option ${n===l.surface?"selected":""}>${n}</option>`).join("")}</select><span></span>`);
+  r.querySelector("select").onchange=e=>{l.surface=e.target.value; saveL()};
+  r=row("Invisible à la caméra",`<input type="checkbox" ${l.invisible?"checked":""} style="width:auto"><span></span>`); r.querySelector("input").onchange=e=>{l.invisible=e.target.checked;saveL()}}
  if(l.type==="IES"){r=row("Fichier IES",`<div class="file"><span class="fn"></span><button>…</button></div>`); r.style.gridTemplateColumns="150px 1fr";
   const fn=r.querySelector(".fn"); fn.textContent=l.ies?l.ies.split(/[\/]/).pop():"(aucun : ressemble à un spot)";
   r.querySelector("button").onclick=async()=>{const id=Math.random().toString(36).slice(2); await post({action:"choisir",id,filtre:"ies"});
    for(let i=0;i<600;i++){await new Promise(z=>setTimeout(z,500)); const j=await (await fetch("/api/choix?id="+id)).json(); if(j.fini){if(j.path){l.ies=j.path; fn.textContent=j.path.split(/[\/]/).pop(); saveL()} break}}}}
- if(l.type!=="Dôme"){for(const [k,lab] of [["pos","Position x / y / z (m)"],["cible","Vise vers x / y / z"]]){const v=l[k]||[0,0,0];
+ if(l.type!=="Dôme"&&l.type!=="Maillage"){for(const [k,lab] of [["pos","Position x / y / z (m)"],["cible","Vise vers x / y / z"]]){const v=l[k]||[0,0,0];
   r=row(lab,`<div class="xyz">${v.map(c=>`<input class="num" type="number" step="0.05" value="${(+c).toFixed(2)}">`).join("")}</div><span></span>`);
   r.querySelectorAll("input").forEach((inp,i)=>inp.onchange=()=>{l[k]=l[k]||[0,0,0]; l[k][i]=+inp.value; saveL()})}}
  const bar=document.createElement("div"); bar.style.cssText="display:flex;gap:6px;margin-top:10px";
@@ -4397,7 +4432,7 @@ function lumForm(){const P=$("params"); P.innerHTML=""; const l=LUM[curL]; if(!l
   LUM.push(c); curL=LUM.length-1; saveL(); lumList(); lumForm()};
  $("lDel").onclick=()=>{LUM.splice(curL,1); curL=Math.min(curL,LUM.length-1); saveL(); lumList(); lumForm()};
  const n=document.createElement("div"); n.style.cssText="color:var(--mute);font-size:12px;margin-top:8px";
- n.textContent="Intensités comme V-Ray pour SketchUp (Spot ≈ 1000, Rectangle / Sphère ≈ 30). Pour un intérieur, choisis l'exposition « Intérieur » ou monte l'exposition de la vue.";
+ n.textContent="Maillage = Mesh Light : toute une surface éclaire (ruban LED, abat-jour, plafond lumineux). Intensités comme V-Ray pour SketchUp (Spot ≈ 1000, Rectangle / Sphère ≈ 30). Pour un intérieur, choisis l'exposition « Intérieur » ou monte l'exposition de la vue.";
  B.appendChild(n); drawPrevL()}
 function drawPrevL(){lprev.clear(); const l=LUM[curL]; if(!l||l.actif===false)return; const c=new THREE.Color().setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace);
  let X; const top=new THREE.Vector3(0,2.2,0);
@@ -4406,11 +4441,13 @@ function drawPrevL(){lprev.clear(); const l=LUM[curL]; if(!l||l.actif===false)re
  else if(l.type==="Rectangle"){X=new THREE.PointLight(c,l.intensite*(l.largeur||1)*(l.hauteur||.5)*.5,0,2); X.position.copy(top);
   const g=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); g.rotation.x=Math.PI/2; g.position.copy(top); lprev.add(g)}
  else if(l.type==="Dôme"){X=new THREE.HemisphereLight(c,0x222222,l.intensite)}
+ else if(l.type==="Maillage"){X=new THREE.PointLight(c,l.intensite*0.6,0,2); X.position.set(0,1.2,-1.1);
+  const g=new THREE.Mesh(new THREE.BoxGeometry(1.6,0.06,0.06),new THREE.MeshBasicMaterial({color:c})); g.position.copy(X.position); lprev.add(g)}
  else{X=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.012:l.intensite*0.35,0,2); X.position.set(0,1.6,0);
   const g=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),new THREE.MeshBasicMaterial({color:c})); g.position.copy(X.position); lprev.add(g)}
  X.castShadow=true; lprev.add(X)}
 $("q").oninput=()=>tab==="lum"?lumList():list();
-shape("sphere"); load(); pollL();
+shape("sphere"); load(); pollL(); pollSun();
 </script></body></html>
 """.replace("__PRESETS__", json.dumps(MAT_PRESETS, ensure_ascii=False)).replace(
     "__LTYPES__", json.dumps(TYPES_LUMIERE, ensure_ascii=False))
