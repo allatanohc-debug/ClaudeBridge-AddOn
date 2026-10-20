@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.3"
+VERSION = "20/10 - v3.4 (éditeur de matériaux)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -585,7 +585,7 @@ def virtual_surface(folder: str) -> str:
     return "Cosmos · " + re.sub(r"_[0-9a-f]{8}$", "", Path(folder).name).replace("_", " ")
 
 
-def write_materials(path: Path, mats: dict, library: dict, assigned: dict, report=print) -> list[str]:
+def write_materials(path: Path, mats: dict, library: dict, assigned: dict, report=print, custom: dict | None = None) -> list[str]:
     """Un materiau par surface : materiau Cosmos s'il est associe, sinon couleur Archicad + reglages devines.
     Ecrit aussi materiaux_sans_scan.vrscene (materiaux scannes .vrscan remplaces) : secours si V-Ray plante."""
     used = []
@@ -595,6 +595,12 @@ def write_materials(path: Path, mats: dict, library: dict, assigned: dict, repor
         out2.write("// Materiaux sans scans (secours V-Ray Link)\n")
         for name, info in mats.items():
             mid = mat_id(name)
+            if (custom or {}).get(name):                      # materiau regle a la main : prioritaire
+                block = f"// {name} (matériau personnalisé)\n" + custom_material_block(mid, custom[name])
+                out.write(block)
+                out2.write(block)
+                used.append(f"{name} → réglé à la main")
+                continue
             m = guess_material(name, info, library)
             simple = f"// surface : {name}\n" + _brdf(mid, m) + f"MtlSingleBRDF {mid} {{\n  brdf={mid}_brdf;\n}}\n"
             a = assigned.get(name)
@@ -1764,11 +1770,11 @@ def load_settings() -> dict:
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
             "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
             "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {},
-            "scatter": saved.get("scatter") or {}}
+            "scatter": saved.get("scatter") or {}, "mat_perso": saved.get("mat_perso") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter", "mat_perso")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -1833,7 +1839,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     else:
         tris = int(info.get("triangles", 0))
     used = write_materials(d / "materiaux.vrscene", {n: mats.get(n, {}) for n in meshes}, state["bibliotheque"],
-                           assigned, report)
+                           assigned, report, (state.get("mat_perso") or {}).get(key, {}))
     sol = assigned.get(SOL_AUTOUR)                      # materiau Cosmos pour le sol autour (texture d'herbe...)
     if sol and sol.get("dossier"):
         try:
@@ -2719,8 +2725,8 @@ def selected_slab_zones() -> list:
         zones.append({"poly": poly, "trous": [h for h in holes if len(h) >= 3], "z": z})
     return zones
 SCATTER_TYPES = {  # densite affichee, unite (m2 par unite), variation %, espacement min (m), version legere
-    "Herbe / gazon": (6.0, 1.0, 30, 0.0, True),
-    "Fleurs / buissons": (1.0, 1.0, 25, 0.6, True),
+    "Herbe / gazon": (6.0, 1.0, 30, 0.0, False),        # version detaillee : les copies partagent la meme geometrie
+    "Fleurs / buissons": (1.0, 1.0, 25, 0.6, False),
     "Arbres": (2.0, 100.0, 20, 5.0, False),
 }
 SCATTER_MAX = 30000
@@ -2848,7 +2854,7 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
                 folder = Path(sc["dossier"])
                 meshes_ = sorted(folder.glob("*.vrmesh"), key=_lod)
                 lods = [m_ for m_ in meshes_ if _lod(m_) < 4] or meshes_     # jamais un fichier sans niveau de detail connu
-                mesh = lods[-1 if sc.get("leger", True) else 0]
+                mesh = lods[0]                                   # la plus detaillee (3dl = vue lointaine : touffes en « taches »)
                 mats_ = sorted(folder.glob("*.vrmat"), key=_lod)
                 vrmat = next((m_ for m_ in mats_ if _lod(m_) == _lod(mesh)), mats_[0])   # meme niveau de detail que le maillage
                 fixed, top = vrmat_for_render(vrmat)
@@ -3561,6 +3567,205 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     nb.bind("<<NotebookTabChanged>>", on_tab, add="+")
 
 
+
+# ---------------------------------------------------------- materiau perso ---
+MAT_PRESETS = {   # reflet, brillance, metal, refraction, ior
+    "Mat (enduit, béton)": dict(reflet=0.05, brillance=0.35, metal=0.0, refraction=0.0, ior=1.5),
+    "Satiné (peinture, bois verni)": dict(reflet=0.35, brillance=0.7, metal=0.0, refraction=0.0, ior=1.5),
+    "Brillant (laqué, carrelage)": dict(reflet=0.8, brillance=0.92, metal=0.0, refraction=0.0, ior=1.6),
+    "Métal brossé": dict(reflet=1.0, brillance=0.75, metal=1.0, refraction=0.0, ior=2.5),
+    "Métal poli / chrome": dict(reflet=1.0, brillance=0.98, metal=1.0, refraction=0.0, ior=3.0),
+    "Verre": dict(reflet=1.0, brillance=1.0, metal=0.0, refraction=0.95, ior=1.52),
+    "Verre dépoli": dict(reflet=1.0, brillance=0.75, metal=0.0, refraction=0.9, ior=1.52, flou_refraction=0.7),
+    "Eau": dict(reflet=1.0, brillance=0.98, metal=0.0, refraction=0.95, ior=1.33),
+    "Miroir": dict(reflet=1.0, brillance=1.0, metal=1.0, refraction=0.0, ior=20.0),
+}
+
+
+def _tex(name: str, path: str, size: float, rot: float, color: bool = True) -> str:
+    """TexBitmap avec la projection boite du modele (1 unite UV = 1 m) : taille reelle de l'image en metres."""
+    k = 1.0 / max(0.01, float(size or 1.0))
+    a = math.radians(float(rot or 0.0))
+    c, s = math.cos(a) * k, math.sin(a) * k
+    return (f'BitmapBuffer {name}_bmp {{ file="{str(path).replace(chr(92), "/")}"; '
+            f'{"color_space=2;" if color else "color_space=0; gamma=1;"} filter_type=1; }}\n'
+            f"UVWGenChannel {name}_uvw {{ uvw_channel=1; uvw_transform=Transform(Matrix(Vector({c:.6f},{s:.6f},0),"
+            f"Vector({-s:.6f},{c:.6f},0),Vector(0,0,1)),Vector(0,0,0)); wrap_u=1; wrap_v=1; }}\n"
+            f"TexBitmap {name} {{ bitmap={name}_bmp; uvwgen={name}_uvw; }}\n")
+
+
+def custom_material_block(mid: str, c: dict) -> str:
+    """Materiau V-Ray complet (BRDFVRayMtl) d'apres les reglages de l'editeur."""
+    out, p = [], []
+    r, g, b = (srgb_to_linear(v) for v in c.get("couleur", (0.75, 0.75, 0.75)))
+    size, rot = float(c.get("taille_tex", 1.0)), float(c.get("rotation_tex", 0.0))
+    if c.get("tex_couleur") and Path(c["tex_couleur"]).exists():
+        out.append(_tex(f"{mid}_dif", c["tex_couleur"], size, rot))
+        p.append(f"diffuse={mid}_dif;")
+    else:
+        p.append(f"diffuse=AColor({r:.4f},{g:.4f},{b:.4f},1);")
+    rf = float(c.get("reflet", 0.1))
+    p += [f"reflect=AColor({rf:.3f},{rf:.3f},{rf:.3f},1);", f"reflect_glossiness={float(c.get('brillance', 0.5)):.3f};",
+          "fresnel=1;", f"fresnel_ior={float(c.get('ior', 1.5)):.3f};", f"metalness={float(c.get('metal', 0.0)):.2f};"]
+    if c.get("tex_brillance") and Path(c["tex_brillance"]).exists():
+        out.append(_tex(f"{mid}_gl", c["tex_brillance"], size, rot, color=False))
+        p.append(f"reflect_glossiness_tex={mid}_gl::out_intensity;")
+    rr = float(c.get("refraction", 0.0))
+    if rr > 0:
+        p += [f"refract=AColor({rr:.3f},{rr:.3f},{rr:.3f},1);", f"refract_ior={float(c.get('ior', 1.5)):.3f};",
+              f"refract_glossiness={1.0 - float(c.get('flou_refraction', 0.0)):.3f};", "refract_affect_shadows=1;"]
+    op = float(c.get("opacite", 1.0))
+    if c.get("tex_opacite") and Path(c["tex_opacite"]).exists():
+        out.append(_tex(f"{mid}_op", c["tex_opacite"], size, rot, color=False))
+        p.append(f"opacity={mid}_op::out_intensity;")
+    elif op < 1.0:
+        p.append(f"opacity={op:.3f};")
+    em = float(c.get("emission", 0.0))
+    if em > 0:
+        er, eg, eb = (srgb_to_linear(v) for v in c.get("couleur_emission", (1.0, 0.9, 0.7)))
+        p += [f"self_illumination=Color({er * em:.4f},{eg * em:.4f},{eb * em:.4f});", "self_illumination_gi=1;"]
+    out.append(f"BRDFVRayMtl {mid}_brdf {{\n  " + "\n  ".join(p) + "\n}\n")
+    base = f"{mid}_brdf"
+    if c.get("tex_relief") and Path(c["tex_relief"]).exists():
+        normal = c.get("type_relief") == "Normal map"
+        out.append(_tex(f"{mid}_bump", c["tex_relief"], size, rot, color=False))
+        amt = float(c.get("relief", 0.5))
+        out.append(f"BRDFBump {mid}_brdfb {{ base_brdf={mid}_brdf; "
+                   + (f"map_type=1; bump_tex_color={mid}_bump; bump_tex_mult={amt:.3f}; " if normal
+                      else f"map_type=0; bump_tex_float={mid}_bump::out_intensity; bump_tex_mult={amt * 0.05:.4f}; ")
+                   + "}\n")
+        base = f"{mid}_brdfb"
+    out.append(f"MtlSingleBRDF {mid} {{ brdf={base}; double_sided=1; }}\n")
+    return "".join(out)
+
+
+def material_editor(root, state: dict, key: str, names: list, colors: dict, on_done) -> None:
+    """Fenetre « Modifier le materiau » (couleur, textures, reflets, brillance, opacite, relief, verre, lumiere)."""
+    import tkinter as tk
+    from tkinter import colorchooser, filedialog, ttk
+    store = state.setdefault("mat_perso", {}).setdefault(key, {})
+    first = names[0]
+    c0 = dict(store.get(first) or {})
+    c0.setdefault("couleur", tuple(colors.get(first, (0.75, 0.75, 0.75))))
+    win = tk.Toplevel(root)
+    win.title("Modifier le matériau" + (f" — {first}" if len(names) == 1 else f" — {len(names)} surfaces"))
+    win.attributes("-topmost", True)
+    win.transient(root)
+    f = ttk.Frame(win, padding=12)
+    f.grid(sticky="nsew")
+    v: dict = {}
+
+    def num(name, default):
+        v[name] = tk.DoubleVar(value=float(c0.get(name, default)))
+        return v[name]
+
+    def row_slider(parent, r, label, name, default, lo, hi, hint=""):
+        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w")
+        var = num(name, default)
+        ttk.Scale(parent, from_=lo, to=hi, variable=var, length=210).grid(row=r, column=1, sticky="w", padx=6)
+        lab = ttk.Label(parent, width=6)
+        lab.grid(row=r, column=2, sticky="w")
+        var.trace_add("write", lambda *_: lab.configure(text=f"{var.get():.2f}"))
+        lab.configure(text=f"{var.get():.2f}")
+        if hint:
+            ttk.Label(parent, text=hint, foreground="#888").grid(row=r, column=3, sticky="w")
+
+    def row_file(parent, r, label, name):
+        ttk.Label(parent, text=label).grid(row=r, column=0, sticky="w")
+        v[name] = tk.StringVar(value=c0.get(name, ""))
+        ttk.Entry(parent, textvariable=v[name], width=34).grid(row=r, column=1, columnspan=2, sticky="w", padx=6)
+
+        def pick():
+            p_ = filedialog.askopenfilename(parent=win, title=label, filetypes=[
+                ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
+            if p_:
+                v[name].set(p_)
+        ttk.Button(parent, text="…", width=3, command=pick).grid(row=r, column=3, sticky="w")
+        ttk.Button(parent, text="✕", width=3, command=lambda: v[name].set("")).grid(row=r, column=4, sticky="w")
+
+    # preset
+    pr = ttk.LabelFrame(f, text="Point de départ (préréglage)", padding=8)
+    pr.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    preset = tk.StringVar(value="")
+    pbox = ttk.Combobox(pr, values=list(MAT_PRESETS), textvariable=preset, state="readonly", width=32)
+    pbox.grid(row=0, column=0, sticky="w")
+
+    def apply_preset(_e=None):
+        for k_, val in MAT_PRESETS[preset.get()].items():
+            if k_ in v:
+                v[k_].set(val)
+    pbox.bind("<<ComboboxSelected>>", apply_preset)
+
+    # couleur
+    co = ttk.LabelFrame(f, text="Couleur / texture", padding=8)
+    co.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+    color = {"rgb": tuple(c0["couleur"])}
+    sw = tk.Label(co, width=6, background="#%02x%02x%02x" % tuple(int(x * 255) for x in color["rgb"]), relief="groove")
+    sw.grid(row=0, column=1, sticky="w", padx=6)
+
+    def choose_color():
+        res = colorchooser.askcolor(color=sw.cget("background"), parent=win, title="Couleur")
+        if res and res[0]:
+            color["rgb"] = tuple(x / 255 for x in res[0])
+            sw.configure(background=res[1])
+    ttk.Label(co, text="Couleur").grid(row=0, column=0, sticky="w")
+    ttk.Button(co, text="Choisir…", command=choose_color).grid(row=0, column=2, sticky="w")
+    row_file(co, 1, "Texture couleur", "tex_couleur")
+    ttk.Label(co, text="Taille de l'image (m)").grid(row=2, column=0, sticky="w")
+    ttk.Spinbox(co, from_=0.05, to=50, increment=0.1, textvariable=num("taille_tex", 1.0), width=6).grid(row=2, column=1, sticky="w", padx=6)
+    row_slider(co, 3, "Rotation de la texture", "rotation_tex", 0.0, 0, 180)
+
+    # reflets
+    rf = ttk.LabelFrame(f, text="Reflets", padding=8)
+    rf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+    row_slider(rf, 0, "Réflexion", "reflet", 0.1, 0, 1, "0 = aucun reflet")
+    row_slider(rf, 1, "Brillance", "brillance", 0.5, 0, 1, "1 = miroir net")
+    row_slider(rf, 2, "Métal", "metal", 0.0, 0, 1)
+    row_slider(rf, 3, "Indice (IOR)", "ior", 1.5, 1.0, 3.0)
+    row_file(rf, 4, "Texture de brillance", "tex_brillance")
+
+    # transparence
+    tr = ttk.LabelFrame(f, text="Transparence", padding=8)
+    tr.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+    row_slider(tr, 0, "Opacité", "opacite", 1.0, 0, 1, "0 = invisible")
+    row_file(tr, 1, "Texture d'opacité", "tex_opacite")
+    row_slider(tr, 2, "Réfraction (verre)", "refraction", 0.0, 0, 1)
+    row_slider(tr, 3, "Flou de réfraction", "flou_refraction", 0.0, 0, 1, "verre dépoli")
+
+    # relief + lumiere
+    re_ = ttk.LabelFrame(f, text="Relief et lumière", padding=8)
+    re_.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+    row_file(re_, 0, "Texture de relief", "tex_relief")
+    v["type_relief"] = tk.StringVar(value=c0.get("type_relief", "Bump (gris)"))
+    ttk.Combobox(re_, values=("Bump (gris)", "Normal map"), textvariable=v["type_relief"], state="readonly", width=14).grid(
+        row=1, column=1, sticky="w", padx=6)
+    row_slider(re_, 2, "Intensité du relief", "relief", 0.5, 0, 2)
+    row_slider(re_, 3, "Émission (lumineux)", "emission", 0.0, 0, 20, "lampe, écran, néon")
+
+    def ok():
+        c = {"couleur": color["rgb"]}
+        for k_, var in v.items():
+            try:
+                c[k_] = var.get()
+            except (ValueError, tk.TclError):
+                pass
+        for n in names:
+            store[n] = dict(c)
+        on_done(f"Matériau personnalisé appliqué à {len(names)} surface(s) : visible au prochain rendu.")
+        win.destroy()
+
+    def reset():
+        for n in names:
+            store.pop(n, None)
+        on_done("Matériau personnalisé retiré : la surface reprend sa couleur Archicad (ou son matériau Cosmos).")
+        win.destroy()
+    bar = ttk.Frame(f)
+    bar.grid(row=5, column=0, sticky="ew")
+    ttk.Button(bar, text="Revenir au matériau d'origine", command=reset).grid(row=0, column=0)
+    ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=1, padx=(80, 4))
+    ttk.Button(bar, text="OK", command=ok).grid(row=0, column=2)
+
+
 # ---------------------------------------------------------- onglet Materiaux ---
 def project_surfaces(state: dict, key: str) -> tuple[dict, bool]:
     """Surfaces du projet -> couleur. (vrai, si elles viennent du dernier rendu = seulement celles utilisees)"""
@@ -3782,6 +3987,24 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     scale_var = tk.DoubleVar(value=1.0)
     ttk.Spinbox(acts, from_=0.05, to=20, increment=0.25, textvariable=scale_var, width=5).grid(row=0, column=4)
     ttk.Button(acts, text="Appliquer l'échelle", command=lambda: set_scale()).grid(row=0, column=5, padx=3)
+
+    def edit_material():
+        names = [n for n in tree.selection()]
+        if not names:
+            msg.set("Choisis d'abord une ou plusieurs surfaces à gauche, puis « 🎨 Modifier le matériau ».")
+            return
+        cols, _ = project_surfaces(state, key)
+
+        def done(text):
+            save_settings(state)
+            msg.set(text)
+            try:
+                load_surfaces(True)
+            except Exception:  # noqa: BLE001
+                pass
+        material_editor(root, state, key, names, cols, done)
+
+    ttk.Button(acts, text="🎨 Modifier le matériau…", command=edit_material).grid(row=0, column=6, padx=(12, 3))
     sel_info = tk.StringVar()
     ttk.Label(tab, textvariable=sel_info, foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
     ttk.Button(tab, text="Effacer les matériaux posés sur des éléments", command=lambda: clear_selection()
