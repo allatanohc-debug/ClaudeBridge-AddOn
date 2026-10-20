@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.1 (déplacer dans la visionneuse)"
+VERSION = "20/10 - v4.2 (aperçu V-Ray)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -934,6 +934,11 @@ class ViewerServer:
                         from urllib.parse import parse_qs, urlparse
                         nom = parse_qs(urlparse(self.path).query).get("s", [""])[0]
                         self._send(json.dumps(owner.cosmos_tex(nom)).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/apercu_img"):
+                        import base64
+                        f_ = APERCU.get("fichier", "")
+                        body = b'{"d":"' + (base64.b64encode(Path(f_).read_bytes()) if f_ and Path(f_).exists() else b"") + b'"}'
+                        self._send(body, "application/json")
                     elif self.path.startswith("/api/objets"):
                         self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
@@ -1043,7 +1048,12 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
-<div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
+<div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
+<div id="cadre" style="position:absolute;left:50%;transform:translateX(-50%);top:10px;color:var(--mute);font-size:12px;background:rgba(0,0,0,.35);padding:3px 10px;border-radius:10px"></div>
+<button id="bApercu" style="position:absolute;right:120px;top:10px;z-index:5;background:var(--acc);border-color:var(--acc);color:#fff;padding:6px 12px">⚡ Aperçu V-Ray</button>
+<div id="apercu" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:7;background:rgba(10,11,13,.6)">
+<div style="position:relative"><img id="apImg" style="display:block;max-width:100%;max-height:100%;box-shadow:0 0 0 1px #555"><div id="apMsg" style="color:#fff;font-size:15px;padding:20px"></div>
+<button id="apClose" style="position:absolute;right:8px;top:8px">✕ Revenir à la 3D</button></div></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
@@ -1109,7 +1119,7 @@ import {EXRLoader} from "three/addons/loaders/EXRLoader.js";
 const $=id=>document.getElementById(id);
 const r0=await fetch("/infos"); if(!r0.ok) throw new Error("infos : "+r0.status+" "+(await r0.text()).slice(0,200));
 const info=await r0.json(); $("load").textContent="Chargement du modèle…";
-const aspect=info.largeur/info.hauteur;
+let aspect=info.largeur/info.hauteur;
 const frame=$("frame"), stage=$("stage");
 const renderer=new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
@@ -1311,7 +1321,10 @@ $("hdriRot").addEventListener("change",pushLive); $("sunInt").addEventListener("
 setInterval(async()=>{if(busy||Date.now()-lastSent<1500)return; busy=true;
  try{const e=await (await fetch("/api/etat")).json();
   if(Math.abs(e.hdri_rot-(+$("hdriRot").value))>0.4){$("hdriRot").value=e.hdri_rot; setRot()}
-  if(Math.abs(e.intensite-(+$("sunInt").value))>0.01){$("sunInt").value=e.intensite; updateSun()}}catch(_){}
+  if(Math.abs(e.intensite-(+$("sunInt").value))>0.01){$("sunInt").value=e.intensite; updateSun()}
+  if(e.taille){const a=e.taille[0]/e.taille[1]; if(Math.abs(a-aspect)>0.001){aspect=a; fit(); setFocal(+$("foc").value)}
+   $("cadre").textContent=`Cadre du rendu : ${e.taille[0]} × ${e.taille[1]} px · ${e.qualite}${e.type_camera&&e.type_camera!=="Standard"?" · "+e.type_camera:""}`}
+  if(e.apercu&&e.apercu.rev!==apRev){apRev=e.apercu.rev; showApercu(e.apercu)}}catch(_){}
  busy=false},1000);
 if(info.hdri&&info.hdri.on){$("hdriMsg").textContent="Chargement de la HDRI…";
  try{const r=await fetch("/api/hdri"); const b64=(await r.json()).d; const raw=atob(b64); const u=new Uint8Array(raw.length);
@@ -1434,6 +1447,19 @@ $("eDup").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){sel.positio
 $("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("delete"); tc.detach(); sel=null} else commit("delete");
  $("selName").textContent="Supprimé"};
 pollObjs();
+// ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
+let apRev=-1, apWait=false;
+function showApercu(a){const box=$("apercu"); if(!apWait&&a.etat!=="calcul")return;
+ box.style.display="flex"; const img=$("apImg"), m=$("apMsg");
+ if(a.etat==="calcul"){img.style.display="none"; m.style.display=""; m.textContent="⚡ Calcul de l'aperçu V-Ray (petite image, ~20 à 40 s)…"}
+ else if(a.etat==="pret"){fetch("/api/apercu_img").then(r=>r.json()).then(j=>{img.src="data:image/png;base64,"+j.d; img.style.display=""; m.style.display="none";
+  const st=$("stage"); img.style.width=Math.min(st.clientWidth-60,(st.clientHeight-60)*aspect)+"px"}); apWait=false}
+ else{img.style.display="none"; m.style.display=""; m.textContent="Aperçu impossible — "+a.etat; apWait=false}}
+$("apClose").onclick=()=>{$("apercu").style.display="none"};
+$("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apImg").style.display="none"; $("apMsg").style.display=""; $("apMsg").textContent="⚡ Préparation…";
+ fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apercu",eye:cam.position.toArray(),target:controls.target.toArray(),
+  focale:+$("foc").value,mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
+  heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})})};
 const clock=new THREE.Clock();
 function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
@@ -1471,6 +1497,7 @@ TYPES_LUMIERE = {   # type : reglages par defaut (comme V-Ray pour SketchUp)
     "Dôme": {"intensite": 1.0},
 }
 LIGHTS: dict = {"rev": 0, "liste": []}
+APERCU: dict = {"rev": 0, "etat": "", "fichier": ""}  # apercu V-Ray rapide demande depuis la visionneuse
 OBJS: dict = {"rev": 0, "liste": []}        # objets Cosmos places (visionneuse : deplacer / tourner)      # copie partagee avec les pages web (visionneuse / editeur)
 
 
@@ -1557,7 +1584,7 @@ def _read(p: Path) -> str:
         return ""
 
 
-def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
+def render_size(opts: dict) -> tuple[int, int]:
     W, H = TAILLES.get(opts["taille"], (1920, 1080))
     if opts.get("taille_perso"):
         W, H = max(64, int(opts.get("largeur", 3000))), max(64, int(opts.get("hauteur", 2000)))
@@ -1566,7 +1593,18 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
         W, H = W, W // 2                      # panorama 360 : image 2:1
     elif vr == 10:
         W, H = W, max(64, W // 6)             # cubemap 6x1
+    if opts.get("_apercu"):                   # apercu rapide : petite image, meme cadrage
+        k = 640 / max(W, H)
+        W, H = max(32, int(W * k)), max(32, int(H * k))
+    return W, H
+
+
+def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
+    W, H = render_size(opts)
+    vr = TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0)
     minutes, thr = QUALITES.get(opts["qualite"], QUALITES["Haute"])
+    if opts.get("_apercu"):
+        minutes, thr = 0.35, 0.08
     fnum, shutter, iso = AMBIANCES.get(opts["ambiance"], AMBIANCES["Extérieur jour"])
     eye, target = list(cam["eye"]), list(cam["target"])
     mode = cam.get("mode")                    # "2pf" (2 points de fuite) / "persp" (libre) ; sinon reglage general
@@ -2996,6 +3034,9 @@ def window(state: dict) -> None:
                             ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
                     CHOIX[str(msg.get("id"))] = path or ""
                     continue
+                if msg.get("action") == "apercu":
+                    start_preview(msg)
+                    continue
                 if msg.get("action") == "obj_edit":
                     lst = state.setdefault("objets", {}).setdefault(key, [])
                     i = int(msg.get("i", -1))
@@ -3104,6 +3145,49 @@ def window(state: dict) -> None:
 
     sizes: dict = {}
 
+    def start_preview(msg: dict):
+        """Apercu V-Ray rapide (640 px, ~20 s, sans fenetre) de la vue de la visionneuse, affiche dans la page."""
+        if APERCU.get("etat") == "calcul":
+            return
+        if not check_vray():
+            return
+        collect()
+        cam = {"nom": "Aperçu", "focale": int(msg.get("focale", 24)), "eye": [float(v) for v in msg["eye"]][:3],
+               "target": [float(v) for v in msg["target"]][:3], "mode": msg.get("mode") if msg.get("mode") in ("2pf", "ortho") else "persp",
+               "decentrement": float(msg.get("decentrement", 0.0)), "ortho_largeur": float(msg.get("ortho_largeur", 20.0)),
+               "coupe": float(msg.get("coupe", 0.0)), "ev": float(msg.get("ev", 0.0))}
+        o2 = dict(opts, _apercu=True, reutiliser=True)
+        if "heure" in msg:
+            o2.update(heure=float(msg["heure"]), jour=int(msg["jour"]), mois=int(msg["mois"]))
+        if "intensite" in msg:
+            o2["soleil_intensite"] = float(msg["intensite"])
+        if "hdri_rot" in msg:
+            o2["hdri_rot"] = float(msg["hdri_rot"])
+        APERCU.update(etat="calcul", rev=APERCU["rev"] + 1)
+        st2 = dict(state, options=o2)
+        try:
+            geo, ground, _info = prepare_geometry(st2, proj, lambda *_: None)
+            scene = geo.parent / "scene_apercu.vrscene"
+            write_scene(scene, geo, cam, o2, proj, ground)
+        except Exception as error:  # noqa: BLE001
+            APERCU.update(etat=f"erreur : {error}", rev=APERCU["rev"] + 1)
+            return
+        image = geo.parent / "apercu.png"
+
+        def run():
+            try:
+                if image.exists():
+                    image.unlink()
+                subprocess.run([state["vray"], f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1",
+                                "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
+                               cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=600)
+                ok_ = image.exists()
+                APERCU.update(etat="pret" if ok_ else "erreur : V-Ray n'a pas produit d'image", fichier=str(image) if ok_ else "",
+                              rev=APERCU["rev"] + 1)
+            except Exception as error:  # noqa: BLE001
+                APERCU.update(etat=f"erreur : {error}", rev=APERCU["rev"] + 1)
+        threading.Thread(target=run, daemon=True).start()
+
     def objs_payload() -> list:
         out = []
         for i, o in enumerate((state.get("objets") or {}).get(key, [])):
@@ -3140,7 +3224,9 @@ def window(state: dict) -> None:
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
-                                          "intensite": float(opts.get("soleil_intensite", 1.0))}
+                                          "intensite": float(opts.get("soleil_intensite", 1.0)),
+                                          "taille": list(render_size(opts)), "qualite": opts.get("qualite"),
+                                          "type_camera": opts.get("type_camera", "Standard"), "apercu": dict(APERCU)}
             viewer["srv"].surfaces = lambda: snap.get("_surfaces", [])
             viewer["srv"].cosmos_tex = lambda nom: cosmos_textures(((state.get("cosmos") or {}).get(nom) or {}).get("dossier", ""))
         viewer["srv"].open(page)
