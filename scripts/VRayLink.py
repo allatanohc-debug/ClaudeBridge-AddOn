@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.1"
+VERSION = "20/10 - v3.2 (objets suivis dans le plan)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2299,6 +2299,14 @@ def window(state: dict) -> None:
         if not check_vray():
             return
         try:
+            try:                                  # copies / deplacements faits dans Archicad sur les reperes d'objets
+                objs_, note_ = sync_objects_from_plan((state.get("objets") or {}).get(key, []))
+                if note_:
+                    state.setdefault("objets", {}).setdefault(key, [])[:] = objs_
+                    save_settings(state)
+                    say(note_)
+            except Exception:  # noqa: BLE001
+                pass
             geo, ground, info = prepare_geometry(state, proj, say)
             folder = renders_dir(proj["name"])
             stamp = time.strftime("%Hh%M")
@@ -2942,6 +2950,70 @@ def draw_scatter_in_plan(sc: dict, key: str) -> list:
     return guids
 
 
+def sync_objects_from_plan(objs: list) -> tuple[list, str]:
+    """Relit les reperes d'objets Cosmos dans le plan (calque « V-Ray Link - Objets Cosmos ») : ce qui a ete copie,
+    deplace, tourne ou efface dans Archicad est repris tel quel. Renvoie (objets, resume)."""
+    rows = tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+    lay = next((r for r in rows if r.get("name") == CALQUE_OBJETS), None)
+    if not lay:
+        return objs, ""
+    layer = int(lay["index"])
+    stories = {s_.get("index"): float(s_.get("level", 0.0)) for s_ in tapir("GetStories").get("stories", [])}
+
+    def read(kind):
+        ids = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+        out = []
+        for i in range(0, len(ids), 400):
+            part = ids[i:i + 400]
+            det = tapir("GetDetailsOfElements", {"elements": part, "fields": ["floorIndex", "layerIndex", "details"]}
+                        ).get("detailsOfElements", [])
+            for el, d in zip(part, det):
+                if isinstance(d, dict) and "error" not in d and int(d.get("layerIndex", -1)) == layer:
+                    out.append((el["elementId"]["guid"], d))
+        return out
+
+    polys, texts = read("PolyLine"), read("Text")
+    circles, arrows = [], []
+    for g, d in polys:
+        pts = [(float(c["x"]), float(c["y"])) for c in (d.get("details") or {}).get("coordinates", [])]
+        if len(pts) >= 12:
+            cx, cy = sum(p[0] for p in pts[:-1]) / (len(pts) - 1), sum(p[1] for p in pts[:-1]) / (len(pts) - 1)
+            circles.append({"g": g, "c": (cx, cy), "r": math.dist((cx, cy), pts[0]), "f": d.get("floorIndex", 0)})
+        elif len(pts) == 2:
+            arrows.append({"g": g, "a": pts[0], "b": pts[1]})
+    labels = []
+    for g, d in texts:
+        dd = d.get("details") or {}
+        pos = dd.get("coordinate") or dd.get("position") or dd.get("origin") or {}
+        txt = str(dd.get("text") or dd.get("content") or "").strip()
+        if txt and "x" in pos:
+            labels.append({"g": g, "p": (float(pos["x"]), float(pos["y"])), "t": txt})
+    by_name = {o["nom"]: o["dossier"] for o in objs}
+    lib = {e["nom"]: e["dossier"] for e in cosmos_library("3D_Models")}
+    out, lost = [], 0
+    for c in circles:
+        arrow = min(arrows, key=lambda a: math.dist(a["a"], c["c"]), default=None)
+        rot = 0.0
+        traces = [c["g"]]
+        if arrow and math.dist(arrow["a"], c["c"]) < 0.05 + c["r"] * 0.1:
+            rot = (math.degrees(math.atan2(arrow["b"][1] - arrow["a"][1], arrow["b"][0] - arrow["a"][0])) + 90) % 360
+            traces.append(arrow["g"])
+        lab = min(labels, key=lambda t_: math.dist(t_["p"], (c["c"][0], c["c"][1] - c["r"] - 0.35)), default=None)
+        if not lab or math.dist(lab["p"], c["c"]) > c["r"] + 2.0:
+            lost += 1
+            continue
+        traces.append(lab["g"])
+        folder = by_name.get(lab["t"]) or lib.get(lab["t"])
+        if not folder:
+            lost += 1
+            continue
+        out.append({"nom": lab["t"], "dossier": folder, "x": c["c"][0], "y": c["c"][1],
+                    "z": stories.get(c["f"], 0.0), "rotation": round(rot, 1), "echelle": round(c["r"] / 0.4, 3),
+                    "traces": traces})
+    note = f"{len(out)} objet(s) Cosmos lus dans le plan" + (f" ({lost} repère(s) incomplet(s) ignoré(s))" if lost else "")
+    return out, note
+
+
 def delete_elements(guids: list) -> None:
     for i in range(0, len(guids or []), 300):
         try:
@@ -3182,6 +3254,22 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 + ("" if n == len(scats) else "  Les autres n'ont aucun emplacement : fais d'abord un rendu (export du modèle)."))
 
     ttk.Button(simple, text="👁 Voir la végétation dans le plan", command=show_vegetation).grid(row=0, column=3, padx=3, ipady=4)
+
+    def resync(quiet=False):
+        try:
+            new, note = sync_objects_from_plan(objs)
+        except Exception as error:  # noqa: BLE001
+            if not quiet:
+                msg.set(f"Lecture du plan impossible : {error}")
+            return
+        if note:
+            objs[:] = new
+            save_settings(state)
+            refresh_tree()
+            if not quiet:
+                msg.set(note + " : copies, déplacements, rotations et suppressions faits dans Archicad sont pris en compte.")
+
+    ttk.Button(simple, text="↻ Relire le plan", command=resync).grid(row=0, column=6, padx=3, ipady=4)
 
     def quick_lawn():
         grass = [e for e in lib if kind_of(e) == "Herbe / gazon"]
@@ -3453,6 +3541,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     def on_tab(_e=None):
         if str(nb.select()) == str(tab) and not loaded["v"]:
             loaded["v"] = True
+            resync(quiet=True)
             refresh_tree()
             load_library()
             load_surface_names()
