@@ -3166,8 +3166,6 @@ def window(state: dict) -> None:
         except queue.Empty:
             pass
         root.after(300, poll_viewer)
-    state["_open_viewer"] = open_viewer
-    state["_open_editor"] = lambda: open_viewer("editeur")
 
     def surfaces_info() -> list:
         cols, _ = project_surfaces(state, key)
@@ -3269,6 +3267,8 @@ def window(state: dict) -> None:
         say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
 
     root.after(300, poll_viewer)
+    state["_open_viewer"] = open_viewer
+    state["_open_editor"] = lambda: open_viewer("editeur")
     materials_tab(root, nb, state, proj, key)
     objects_tab(root, nb, state, proj, key)
     root.protocol("WM_DELETE_WINDOW", lambda: (collect(), root.destroy()))
