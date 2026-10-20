@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.3 (V-Ray interactif)"
+VERSION = "20/10 - v5.3b (V-Ray interactif)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3119,6 +3119,7 @@ def window(state: dict) -> None:
         etat = tk.StringVar(value="Calcul…")
         ttk.Label(f, textvariable=etat, foreground="#777").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 6))
         imgs: list = []
+        win._garde = (imgs, etat)             # sinon Python efface les images (et le texte) une fois le calcul fini
         win.geometry("1180x720")
 
         def choisir(ov, label):
