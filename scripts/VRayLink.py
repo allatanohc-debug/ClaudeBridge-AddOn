@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.9 (éditeur de matériaux V-Ray)"
+VERSION = "20/10 - v4.0 (lumières)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -934,6 +934,8 @@ class ViewerServer:
                         from urllib.parse import parse_qs, urlparse
                         nom = parse_qs(urlparse(self.path).query).get("s", [""])[0]
                         self._send(json.dumps(owner.cosmos_tex(nom)).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/lumieres"):
+                        self._send(json.dumps(LIGHTS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/etat"):
                         self._send(json.dumps(owner.etat()).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/hdri"):
@@ -1030,7 +1032,10 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="app"><div id="stage"><div id="frame"><div id="load">Chargement du modèle…</div></div>
 <div id="hud"></div><div id="updown" style="position:absolute;left:12px;top:12px;display:flex;flex-direction:column;gap:4px;z-index:5">
 <button id="bUp" class="mini" title="Monter (E / Espace)">▲</button><button id="bDown" class="mini" title="Descendre (C)">▼</button>
-<button id="bMes" class="mini" title="Mesurer une distance (M)">📏</button></div>
+<button id="bMes" class="mini" title="Mesurer une distance (M)">📏</button>
+<button id="bLum" class="mini" title="Ajouter une lumière (L)">💡</button></div>
+<div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
+<b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
@@ -1347,6 +1352,42 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!mesureOn||!downAt||Math
   const d=a.distanceTo(b), h=Math.hypot(b.x-a.x,b.y-a.y), z=b.z-a.z;
   $("mesure").innerHTML=`<b style="color:var(--acc)">${d.toFixed(2)} m</b> &nbsp;· horizontal ${h.toFixed(2)} m · hauteur ${z>=0?"+":""}${z.toFixed(2)} m<br><span style="color:var(--mute)">Clique un nouveau point pour une autre mesure</span>`}
  else $("mesure").textContent="Mesure : clique le 2e point"});
+// ---- lumieres : affichage + pose en cliquant sur une surface
+const lumGroup=new THREE.Group(); scene.add(lumGroup); let LUM=[], lumRev=-1, poseType=null;
+const LTYPES={"Spot":{intensite:1000,cone:45,penombre:25,rayon_ombre:.02},"IES":{intensite:1,ies:""},"Rectangle":{intensite:30,largeur:1,hauteur:.5,invisible:true},
+ "Sphère":{intensite:30,rayon:.08,invisible:false},"Omni":{intensite:1000,rayon_ombre:.05},"Dôme":{intensite:1}};
+for(const t of Object.keys(LTYPES)){const b=document.createElement("button"); b.textContent=t; b.onclick=()=>{poseType=t; $("lumMenu").style.display="none";
+  $("mesure").style.display=""; $("mesure").textContent=t==="Dôme"?"Dôme ajouté (lumière d'ambiance tout autour)":"Clique sur une surface (plafond, mur…) pour poser : "+t+"  — Échap pour annuler";
+  renderer.domElement.style.cursor="crosshair"; if(t==="Dôme"){addLight(new THREE.Vector3(0,0,info.sol+5),new THREE.Vector3(0,0,-1)); poseType=null}}; $("lumMenu").appendChild(b)}
+$("bLum").onclick=()=>{const m=$("lumMenu"); m.style.display=m.style.display==="flex"?"none":"flex"};
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyL")$("bLum").click();
+ if(e.code==="Escape"&&poseType){poseType=null;$("mesure").style.display="none";renderer.domElement.style.cursor=""}});
+function addLight(p,n){const t=poseType||"Dôme", off=t==="Spot"||t==="IES"?0.12:t==="Rectangle"?0.02:0.1;
+ const pos=p.clone().addScaledVector(n,off), tgt=pos.clone().add(n);
+ const l=Object.assign({type:t,nom:t+" "+(LUM.filter(x=>x.type===t).length+1),pos:pos.toArray().map(v=>+v.toFixed(3)),cible:tgt.toArray().map(v=>+v.toFixed(3)),
+  couleur:[1,.92,.8],actif:true},JSON.parse(JSON.stringify(LTYPES[t])));
+ LUM.push(l); drawLights(); fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lum_save",liste:LUM})});
+ $("mesure").textContent=`✔ ${l.nom} posée. Règle-la dans l'Éditeur V-Ray › Lumières (couleur, intensité, angle…).`; setTimeout(()=>{if(!mesureOn)$("mesure").style.display="none"},4000)}
+renderer.domElement.addEventListener("pointerup",e=>{if(!poseType||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),vmode==="ortho"?ortho:cam);
+ const hit=ray.intersectObjects([model,ground],false)[0]; if(!hit)return; const n=(hit.face?hit.face.normal.clone():new THREE.Vector3(0,0,1));
+ if(n.dot(new THREE.Vector3().subVectors((vmode==="ortho"?ortho:cam).position,hit.point))<0)n.negate();
+ addLight(hit.point,n.normalize()); poseType=null; renderer.domElement.style.cursor=""});
+function drawLights(){lumGroup.clear();
+ for(const l of LUM){if(l.actif===false)continue; const c=new THREE.Color().setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace);
+  const p=new THREE.Vector3(...l.pos), tg=new THREE.Vector3(...(l.cible||[l.pos[0],l.pos[1],l.pos[2]-1])); let L, giz;
+  const gm=new THREE.MeshBasicMaterial({color:c}); 
+  if(l.type==="Spot"||l.type==="IES"){L=new THREE.SpotLight(c,(l.type==="IES"?800*l.intensite:l.intensite)*0.03,0,(l.cone||60)*Math.PI/360,Math.min(1,(l.penombre||25)/(l.cone||45)),2);
+   L.target.position.copy(tg); lumGroup.add(L.target); giz=new THREE.Mesh(new THREE.ConeGeometry(.08,.15,16,1,true),gm); giz.position.copy(p);
+   giz.lookAt(tg); giz.rotateX(-Math.PI/2)}
+  else if(l.type==="Rectangle"){L=new THREE.PointLight(c,l.intensite*(l.largeur||1)*(l.hauteur||.5)*1.2,0,2);
+   giz=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); giz.position.copy(p); giz.lookAt(tg)}
+  else if(l.type==="Dôme"){L=new THREE.HemisphereLight(c,0x444444,l.intensite*0.8)}
+  else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),gm); giz.position.copy(p)}
+  L.position.copy(p); L.castShadow=false; lumGroup.add(L); if(giz)lumGroup.add(giz)}}
+async function pollLights(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev){lumRev=j.rev; LUM=j.liste||[]; drawLights()}}catch(_){}
+ setTimeout(pollLights,800)}
+pollLights();
 const clock=new THREE.Clock();
 function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
@@ -1371,6 +1412,94 @@ async function send(action){const body={action,nom:$("name").value.trim()||"Vue 
  catch(e){$("msg").textContent="V-Ray Link est fermé : relance-le."}}
 $("save").onclick=()=>send("enregistrer"); $("render").onclick=()=>send("rendre");
 </script></body></html>"""
+
+
+
+# ---------------------------------------------------------------- lumieres ---
+TYPES_LUMIERE = {   # type : reglages par defaut (comme V-Ray pour SketchUp)
+    "Spot": {"intensite": 1000.0, "cone": 45.0, "penombre": 25.0, "rayon_ombre": 0.02},
+    "IES": {"intensite": 1.0, "ies": ""},
+    "Rectangle": {"intensite": 30.0, "largeur": 1.0, "hauteur": 0.5, "invisible": True},
+    "Sphère": {"intensite": 30.0, "rayon": 0.08, "invisible": False},
+    "Omni": {"intensite": 1000.0, "rayon_ombre": 0.05},
+    "Dôme": {"intensite": 1.0},
+}
+LIGHTS: dict = {"rev": 0, "liste": []}      # copie partagee avec les pages web (visionneuse / editeur)
+
+
+def _light_frame(l: dict):
+    """Repere de la lumiere : -Z vers la cible (V-Ray eclaire selon -Z pour spot / rectangle / IES)."""
+    pos = [float(v) for v in l.get("pos", (0, 0, 2.5))]
+    tgt = [float(v) for v in l.get("cible", (pos[0], pos[1], pos[2] - 1))]
+    d = [t - p for t, p in zip(tgt, pos)]
+    if math.hypot(*d) < 1e-6:
+        d = [0, 0, -1]
+    up = (0.0, 1.0, 0.0) if abs(d[2]) / (math.hypot(*d)) > 0.95 else (0.0, 0.0, 1.0)
+    x, y, z = frame(d, up)
+    return pos, x, y, z
+
+
+def write_lights(path: Path, lights: list, report=print) -> int:
+    n = 0
+    with path.open("w", encoding="utf-8") as out:
+        out.write("// Lumieres (V-Ray Link)\n")
+        for k, l in enumerate(lights):
+            if not l.get("actif", True):
+                continue
+            t = l.get("type", "Sphère")
+            pos, x, y, z = _light_frame(l)
+            tm = f"Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(pos)})"
+            r, g, b = (srgb_to_linear(float(c)) for c in (l.get("couleur") or (1.0, 0.92, 0.8)))
+            col = f"Color({r:.4f},{g:.4f},{b:.4f})"
+            it = float(l.get("intensite", 30.0))
+            lid = f"lum{k}"
+            if t == "Spot":
+                out.write(f"LightSpot {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; "
+                          f"coneAngle={math.radians(float(l.get('cone', 45))):.5f}; penumbraAngle={math.radians(float(l.get('penombre', 25))):.5f}; "
+                          f"decay=2; shadowRadius={float(l.get('rayon_ombre', 0.02)):.3f}; }}\n")
+            elif t == "IES":
+                ies = str(l.get("ies") or "")
+                if not Path(ies).exists():
+                    report(f"Lumière « {l.get('nom')} » : fichier IES introuvable, remplacée par un spot")
+                    out.write(f"LightSpot {lid} {{ transform={tm}; color={col}; intensity={1000 * it:.3f}; coneAngle=1.4; "
+                              "penumbraAngle=0.5; decay=2; }\n")
+                else:
+                    out.write(f'LightIES {lid} {{ transform={tm}; color={col}; ies_file="{ies.replace(chr(92), "/")}"; '
+                              f"intensity_multiplier={it:.3f}; soft_shadows=1; }}\n")
+            elif t == "Rectangle":
+                out.write(f"LightRectangle {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; units=0; "
+                          f"u_size={float(l.get('largeur', 1.0)) / 2:.4f}; v_size={float(l.get('hauteur', 0.5)) / 2:.4f}; "
+                          f"invisible={1 if l.get('invisible', True) else 0}; noDecay=0; }}\n")
+            elif t == "Omni":
+                out.write(f"LightOmni {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; decay=2; "
+                          f"shadowRadius={float(l.get('rayon_ombre', 0.05)):.3f}; }}\n")
+            elif t == "Dôme":
+                out.write(f"LightDome {lid} {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),Vector(0,0,0)); "
+                          f"color={col}; intensity={it:.3f}; invisible=0; }}\n")
+            else:
+                out.write(f"LightSphere {lid} {{ transform={tm}; color={col}; intensity={it:.3f}; units=0; "
+                          f"radius={float(l.get('rayon', 0.08)):.4f}; invisible={1 if l.get('invisible') else 0}; }}\n")
+            n += 1
+    return n
+
+
+def archicad_lamps() -> list:
+    """Luminaires Archicad (outil Lampe) -> lumieres spheriques au centre haut de chaque luminaire."""
+    ids = tapir("GetElementsByType", {"elementType": "Lamp"}).get("elements", [])
+    out = []
+    for i in range(0, len(ids), 300):
+        part = ids[i:i + 300]
+        boxes = tapir("Get3DBoundingBoxes", {"elements": part}).get("boundingBoxes3D", [])
+        for el, bx in zip(part, boxes):
+            b = bx.get("boundingBox3D", bx) if isinstance(bx, dict) else {}
+            if "xMin" not in b:
+                continue
+            cx, cy = (b["xMin"] + b["xMax"]) / 2, (b["yMin"] + b["yMax"]) / 2
+            z = b["zMin"] + 0.02                                    # sous le luminaire : il eclaire vers le bas
+            out.append({"type": "Sphère", "nom": f"Luminaire {len(out) + 1}", "pos": [cx, cy, z], "cible": [cx, cy, z - 1],
+                        "couleur": [1.0, 0.86, 0.68], "intensite": 30.0, "rayon": 0.05, "invisible": False, "actif": True,
+                        "archicad": el["elementId"]["guid"]})
+    return out
 
 
 # ----------------------------------------------------------------- scene ---
@@ -1484,6 +1613,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     s.append(f'#include "{geometry.name}"')
     if (path.parent / "objets.vrscene").exists():
         s.append('#include "objets.vrscene"')
+    if (path.parent / "lumieres.vrscene").exists():
+        s.append('#include "lumieres.vrscene"')
     text = "\n".join(s) + "\n"
     path.write_text(text, encoding="utf-8")
     secours = path.with_name(path.stem + "_sans_scan.vrscene")      # secours si un materiau scanne fait planter V-Ray
@@ -1981,11 +2112,12 @@ def load_settings() -> dict:
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
             "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
             "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {},
-            "scatter": saved.get("scatter") or {}, "mat_perso": saved.get("mat_perso") or {}}
+            "scatter": saved.get("scatter") or {}, "mat_perso": saved.get("mat_perso") or {},
+            "lumieres": saved.get("lumieres") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter", "mat_perso")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter", "mat_perso", "lumieres")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -2068,10 +2200,12 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
                     encoding="utf-8")
     state["surfaces"] = {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in sorted(meshes)}
     n_obj = write_objects(d / "objets.vrscene", (state.get("objets") or {}).get(key, []), report)
+    lights = (state.get("lumieres") or {}).get(key, [])
+    n_lum = write_lights(d / "lumieres.vrscene", lights, report)
     sc_notes: list = []
     n_sc = write_scatter(d / "objets.vrscene", (state.get("scatter") or {}).get(key, []), meshes, offset, ground, key,
                          sc_notes.append)
-    summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ")
+    summary = f"{len(meshes)} surfaces, {tris:,} triangles".replace(",", " ") + (f", {n_lum} lumière(s)" if n_lum else "")
     if note:
         summary += f" ({note})"
     if used:
@@ -2807,9 +2941,28 @@ def window(state: dict) -> None:
                 msg = inbox.get_nowait()
                 if msg.get("action") == "choisir":
                     from tkinter import filedialog
-                    path = filedialog.askopenfilename(parent=root, title="Image de texture", filetypes=[
-                        ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
+                    if msg.get("filtre") == "ies":
+                        path = filedialog.askopenfilename(parent=root, title="Fichier IES (photométrie du luminaire)",
+                                                          filetypes=[("IES", "*.ies *.IES"), ("Tous", "*.*")])
+                    else:
+                        path = filedialog.askopenfilename(parent=root, title="Image de texture", filetypes=[
+                            ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
                     CHOIX[str(msg.get("id"))] = path or ""
+                    continue
+                if msg.get("action") in ("lum_save", "lum_import"):
+                    lst = state.setdefault("lumieres", {}).setdefault(key, [])
+                    if msg["action"] == "lum_save":
+                        lst[:] = [dict(l_) for l_ in (msg.get("liste") or [])]
+                    else:
+                        try:
+                            known = {l_.get("archicad") for l_ in lst}
+                            new = [l_ for l_ in archicad_lamps() if l_["archicad"] not in known]
+                            lst.extend(new)
+                            say(f"{len(new)} luminaire(s) Archicad ajouté(s) comme lumières V-Ray.")
+                        except Exception as error:  # noqa: BLE001
+                            say(f"Lecture des luminaires impossible : {error}")
+                    save_settings(state)
+                    LIGHTS.update(liste=[dict(l_) for l_ in lst], rev=LIGHTS["rev"] + 1)
                     continue
                 if msg.get("action") == "mat_save":
                     store = state.setdefault("mat_perso", {}).setdefault(key, {})
@@ -2897,6 +3050,7 @@ def window(state: dict) -> None:
             return
         LIVE_MAT.update(tous=dict((state.get("mat_perso") or {}).get(key, {})), surfaces=[], c={}, rev=LIVE_MAT["rev"] + 1)
         snap["_surfaces"] = surfaces_info()
+        LIGHTS.update(liste=[dict(l_) for l_ in (state.get("lumieres") or {}).get(key, [])], rev=LIGHTS["rev"] + 1)
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
@@ -3890,9 +4044,15 @@ input[type=color]{width:56px;height:26px;border:1px solid var(--line);background
 #bar{position:fixed;right:0;bottom:0;left:270px;background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;align-items:center}
 #msg{flex:1;color:var(--mute)}
 .empty{color:var(--mute);padding:40px;text-align:center}
+.tabs{display:flex;gap:4px;margin-bottom:8px}.tabs button{flex:1}.tabs button.on{background:var(--acc);border-color:var(--acc);color:#fff}
+input[type=text].txt{background:#17191c;border:1px solid var(--line);color:var(--txt);border-radius:4px;padding:4px 6px;font:inherit;width:100%}
+.xyz{display:flex;gap:4px}.xyz input{width:70px}
 </style></head><body>
 <div id="app">
-<aside id="list"><header><h1>V-Ray Link · <b>Matériaux</b></h1><input id="q" placeholder="Rechercher une surface…"></header><div id="items"></div></aside>
+<aside id="list"><header><h1>V-Ray Link · <b>Éditeur</b></h1>
+<div class="tabs"><button id="tMat" class="on">🎨 Matériaux</button><button id="tLum">💡 Lumières</button></div>
+<input id="q" placeholder="Rechercher…"></header><div id="items"></div><div id="lumBtns" style="display:none;padding:8px;border-top:1px solid var(--line);flex-direction:column;gap:6px">
+<button id="lImport">⇩ Importer les luminaires Archicad</button><div style="color:var(--mute);font-size:12px">Pour poser une lumière à un endroit précis : visionneuse 3D, bouton 💡, puis clic sur le plafond ou le mur.</div></div></aside>
 <section id="main">
 <div id="prev"><div id="pinfo">Aperçu</div><div id="shape"><button data-s="sphere">Sphère</button><button data-s="cube">Cube</button><button data-s="plan">Plan</button></div></div>
 <div id="params"><div class="empty">Choisis une surface à gauche.</div></div>
@@ -3998,9 +4158,74 @@ let liveT=null;
 function applyLive(){if(!cur)return; paint(C0); clearTimeout(liveT); liveT=setTimeout(()=>post({action:"live",surfaces:[cur.nom],c:C0}),120)}
 $("save").onclick=async()=>{if(!cur)return; await post({action:"mat_save",surface:cur.nom,c:C0}); cur.perso=Object.assign({},C0); list(); $("msg").textContent="✔ Appliqué : visible au prochain rendu."};
 $("reset").onclick=async()=>{if(!cur)return; await post({action:"mat_save",surface:cur.nom,c:null}); cur.perso=null; select(cur); $("msg").textContent="Matériau d'origine rétabli."};
-shape("sphere"); load();
+// =================== LUMIERES ===================
+let tab="mat", LUM=[], lumRev=-1, curL=-1, lastEdit=0;
+const LTYPES=__LTYPES__;
+const room=new THREE.Group(); {const m=new THREE.MeshStandardMaterial({color:0xb9b9b9,roughness:.9});
+ const w=new THREE.Mesh(new THREE.PlaneGeometry(6,4),m); w.position.set(0,2,-1.2); w.receiveShadow=true; room.add(w)} 
+const lprev=new THREE.Group(); room.add(lprev);
+function setTab(t){tab=t; $("tMat").classList.toggle("on",t==="mat"); $("tLum").classList.toggle("on",t==="lum");
+ $("lumBtns").style.display=t==="lum"?"flex":"none"; $("save").style.display=$("reset").style.display=t==="mat"?"":"none";
+ if(t==="lum"){S.add(room); if(obj)obj.visible=false; S.environment=null; L.intensity=0.05; floor.material.color.set(0x9a9a9a); $("shape").style.display="none"; lumList(); lumForm()}
+ else{S.remove(room); if(obj)obj.visible=true; S.environment=envTex; L.intensity=2; $("shape").style.display=""; list(); if(cur)build(); else $("params").innerHTML='<div class="empty">Choisis une surface à gauche.</div>'}}
+const envTex=S.environment;
+$("tMat").onclick=()=>setTab("mat"); $("tLum").onclick=()=>setTab("lum");
+$("lImport").onclick=async()=>{$("msg").textContent="Lecture des luminaires dans Archicad…"; await post({action:"lum_import"}); lastEdit=0};
+async function pollL(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev&&Date.now()-lastEdit>1500){lumRev=j.rev; LUM=j.liste||[];
+  if(tab==="lum"){lumList(); if(curL>=LUM.length)curL=LUM.length-1; lumForm()}}}catch(_){} setTimeout(pollL,1000)}
+function lumList(){const q=$("q").value.toLowerCase(); $("items").innerHTML="";
+ LUM.forEach((l,i)=>{if(q&&!l.nom.toLowerCase().includes(q))return; const d=document.createElement("div"); d.className="it"+(i===curL?" on":"");
+  d.innerHTML=`<span class="dot" style="background:${hex(l.couleur||[1,.92,.8])}"></span><span class="nm"></span><span class="tag">${l.type}</span>`;
+  if(l.actif===false)d.style.opacity=.5; d.querySelector(".nm").textContent=l.nom; d.onclick=()=>{curL=i; lumList(); lumForm()}; $("items").appendChild(d)});
+ if(!LUM.length)$("items").innerHTML='<div class="empty" style="padding:20px">Aucune lumière.<br>Visionneuse 3D › 💡, ou « Importer les luminaires Archicad ».</div>'}
+function saveL(){lastEdit=Date.now(); clearTimeout(saveL.t); saveL.t=setTimeout(()=>post({action:"lum_save",liste:LUM}),350); drawPrevL()}
+function lumForm(){const P=$("params"); P.innerHTML=""; const l=LUM[curL]; if(!l){P.innerHTML='<div class="empty">Choisis une lumière à gauche.</div>'; drawPrevL(); return}
+ $("pinfo").textContent=l.nom+" · "+l.type;
+ const sec=document.createElement("div"); sec.className="sec open"; sec.innerHTML=`<h3>${l.type} Light</h3><div class="body"></div>`; const B=sec.querySelector(".body"); P.appendChild(sec);
+ const row=(lab,html)=>{const r=document.createElement("div"); r.className="row"; r.innerHTML=`<label>${lab}</label>${html}`; B.appendChild(r); return r};
+ let r=row("Nom",`<input class="txt" type="text"><span></span>`); r.querySelector("input").value=l.nom; r.querySelector("input").oninput=e=>{l.nom=e.target.value; saveL(); lumList()};
+ r=row("Allumée",`<input type="checkbox" ${l.actif!==false?"checked":""} style="width:auto"><span></span>`); r.querySelector("input").onchange=e=>{l.actif=e.target.checked; saveL(); lumList()};
+ r=row("Type",`<select>${Object.keys(LTYPES).map(t=>`<option ${t===l.type?"selected":""}>${t}</option>`).join("")}</select><span></span>`);
+ r.querySelector("select").onchange=e=>{l.type=e.target.value; Object.entries(LTYPES[l.type]).forEach(([k,v])=>{if(l[k]===undefined)l[k]=v}); l.intensite=LTYPES[l.type].intensite; saveL(); lumList(); lumForm()};
+ r=row("Couleur",`<input type="color" value="${hex(l.couleur||[1,.92,.8])}"><span></span>`); r.querySelector("input").oninput=e=>{const h=e.target.value; l.couleur=[1,3,5].map(i=>parseInt(h.substr(i,2),16)/255); saveL(); lumList()};
+ const nums=[["intensite","Intensité",0,l.type==="Spot"||l.type==="Omni"?20000:(l.type==="IES"||l.type==="Dôme"?20:500),l.type==="IES"||l.type==="Dôme"?.05:1]];
+ if(l.type==="Spot")nums.push(["cone","Angle du cône (°)",1,170,1],["penombre","Pénombre (°)",0,90,1],["rayon_ombre","Douceur des ombres (m)",0,.5,.01]);
+ if(l.type==="Rectangle")nums.push(["largeur","Largeur (m)",.05,10,.05],["hauteur","Hauteur (m)",.05,10,.05]);
+ if(l.type==="Sphère")nums.push(["rayon","Rayon (m)",.01,1,.01]);
+ if(l.type==="Omni")nums.push(["rayon_ombre","Douceur des ombres (m)",0,.5,.01]);
+ for(const [k,lab,lo,hi,st] of nums){const v=l[k]??LTYPES[l.type][k]??0; r=row(lab,`<input type="range" min="${lo}" max="${hi}" step="${st}" value="${v}"><input class="num" type="number" step="${st}" value="${v}">`);
+  const [rg,nb]=r.querySelectorAll("input"); rg.oninput=()=>{nb.value=rg.value;l[k]=+rg.value;saveL()}; nb.onchange=()=>{rg.value=nb.value;l[k]=+nb.value;saveL()}}
+ if(l.type==="Rectangle"||l.type==="Sphère"){r=row("Invisible à la caméra",`<input type="checkbox" ${l.invisible?"checked":""} style="width:auto"><span></span>`); r.querySelector("input").onchange=e=>{l.invisible=e.target.checked;saveL()}}
+ if(l.type==="IES"){r=row("Fichier IES",`<div class="file"><span class="fn"></span><button>…</button></div>`); r.style.gridTemplateColumns="150px 1fr";
+  const fn=r.querySelector(".fn"); fn.textContent=l.ies?l.ies.split(/[\/]/).pop():"(aucun : ressemble à un spot)";
+  r.querySelector("button").onclick=async()=>{const id=Math.random().toString(36).slice(2); await post({action:"choisir",id,filtre:"ies"});
+   for(let i=0;i<600;i++){await new Promise(z=>setTimeout(z,500)); const j=await (await fetch("/api/choix?id="+id)).json(); if(j.fini){if(j.path){l.ies=j.path; fn.textContent=j.path.split(/[\/]/).pop(); saveL()} break}}}}
+ if(l.type!=="Dôme"){for(const [k,lab] of [["pos","Position x / y / z (m)"],["cible","Vise vers x / y / z"]]){const v=l[k]||[0,0,0];
+  r=row(lab,`<div class="xyz">${v.map(c=>`<input class="num" type="number" step="0.05" value="${(+c).toFixed(2)}">`).join("")}</div><span></span>`);
+  r.querySelectorAll("input").forEach((inp,i)=>inp.onchange=()=>{l[k]=l[k]||[0,0,0]; l[k][i]=+inp.value; saveL()})}}
+ const bar=document.createElement("div"); bar.style.cssText="display:flex;gap:6px;margin-top:10px";
+ bar.innerHTML=`<button id="lDup">Dupliquer</button><button id="lDel">Supprimer</button>`; B.appendChild(bar);
+ $("lDup").onclick=()=>{const c=JSON.parse(JSON.stringify(l)); c.nom=l.nom+" copie"; c.pos=[c.pos[0]+.5,c.pos[1],c.pos[2]]; c.cible=[c.cible[0]+.5,c.cible[1],c.cible[2]]; delete c.archicad;
+  LUM.push(c); curL=LUM.length-1; saveL(); lumList(); lumForm()};
+ $("lDel").onclick=()=>{LUM.splice(curL,1); curL=Math.min(curL,LUM.length-1); saveL(); lumList(); lumForm()};
+ const n=document.createElement("div"); n.style.cssText="color:var(--mute);font-size:12px;margin-top:8px";
+ n.textContent="Intensités comme V-Ray pour SketchUp (Spot ≈ 1000, Rectangle / Sphère ≈ 30). Pour un intérieur, choisis l'exposition « Intérieur » ou monte l'exposition de la vue.";
+ B.appendChild(n); drawPrevL()}
+function drawPrevL(){lprev.clear(); const l=LUM[curL]; if(!l||l.actif===false)return; const c=new THREE.Color().setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace);
+ let X; const top=new THREE.Vector3(0,2.2,0);
+ if(l.type==="Spot"||l.type==="IES"){X=new THREE.SpotLight(c,(l.type==="IES"?800*l.intensite:l.intensite)*0.012,0,Math.min(1.5,(l.cone||60)*Math.PI/360),Math.min(1,(l.penombre||25)/(l.cone||45)),2);
+  X.position.copy(top); X.target.position.set(0,0,0); lprev.add(X.target)}
+ else if(l.type==="Rectangle"){X=new THREE.PointLight(c,l.intensite*(l.largeur||1)*(l.hauteur||.5)*.5,0,2); X.position.copy(top);
+  const g=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); g.rotation.x=Math.PI/2; g.position.copy(top); lprev.add(g)}
+ else if(l.type==="Dôme"){X=new THREE.HemisphereLight(c,0x222222,l.intensite)}
+ else{X=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.012:l.intensite*0.35,0,2); X.position.set(0,1.6,0);
+  const g=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),new THREE.MeshBasicMaterial({color:c})); g.position.copy(X.position); lprev.add(g)}
+ X.castShadow=true; lprev.add(X)}
+$("q").oninput=()=>tab==="lum"?lumList():list();
+shape("sphere"); load(); pollL();
 </script></body></html>
-""".replace("__PRESETS__", json.dumps(MAT_PRESETS, ensure_ascii=False))
+""".replace("__PRESETS__", json.dumps(MAT_PRESETS, ensure_ascii=False)).replace(
+    "__LTYPES__", json.dumps(TYPES_LUMIERE, ensure_ascii=False))
 CHOIX: dict = {}           # fichiers choisis depuis l'editeur web (id -> chemin)
 
 
