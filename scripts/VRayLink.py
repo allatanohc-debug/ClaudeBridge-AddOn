@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.6b (décentrement calibré)"
+VERSION = "20/10 - v4.8 (intérieurs + herbe)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1641,6 +1641,61 @@ def render_size(opts: dict) -> tuple[int, int]:
     return W, H
 
 
+def window_portals(meshes: dict, mats: dict) -> list:
+    """Rectangles des vitrages (pour les portails de lumiere V-Ray) : centre, largeur, hauteur, direction horizontale."""
+    out = []
+    for name, (verts, faces) in meshes.items():
+        info = mats.get(name) or {}
+        if float(info.get("transparence", 0.0)) < 0.15 and "glass" not in name.lower() and "verre" not in name.lower():
+            continue
+        if "mirror" in name.lower() or "miroir" in name.lower():
+            continue
+        parent = list(range(len(verts)))
+        def find(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]; i = parent[i]
+            return i
+        for k in range(0, len(faces) - 2, 3):
+            a, b, c = find(faces[k]), find(faces[k + 1]), find(faces[k + 2])
+            parent[b] = a; parent[c] = a
+        groups = {}
+        for i in range(len(verts)):
+            groups.setdefault(find(i), []).append(verts[i])
+        for pts in groups.values():
+            xs, ys, zs = [p[0] for p in pts], [p[1] for p in pts], [p[2] for p in pts]
+            h = max(zs) - min(zs)
+            if h < 0.3 or len(pts) < 4:
+                continue                                   # verriere horizontale / petit detail : ignore
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            sxx = sum((x - mx) ** 2 for x in xs); syy = sum((y - my) ** 2 for y in ys)
+            sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+            ang = 0.5 * math.atan2(2 * sxy, sxx - syy)
+            ux, uy = math.cos(ang), math.sin(ang)
+            proj = [(x - mx) * ux + (y - my) * uy for x, y in zip(xs, ys)]
+            thick = [-(x - mx) * uy + (y - my) * ux for x, y in zip(xs, ys)]
+            w = max(proj) - min(proj)
+            if w < 0.3 or max(thick) - min(thick) > 0.3:
+                continue
+            c = (mx + ux * (max(proj) + min(proj)) / 2, my + uy * (max(proj) + min(proj)) / 2, (max(zs) + min(zs)) / 2)
+            out.append({"centre": c, "largeur": w, "hauteur": h, "dir": (ux, uy)})
+    # vitres doubles (2 faces d'un meme vitrage) : une seule
+    res = []
+    for p in sorted(out, key=lambda q: -q["largeur"] * q["hauteur"]):
+        if not any(math.dist(p["centre"], q["centre"]) < 0.3 and abs(p["largeur"] - q["largeur"]) < 0.2 for q in res):
+            res.append(p)
+    return res
+
+
+def interieur(opts: dict) -> bool:
+    return str(opts.get("ambiance", "")).startswith("Intérieur")
+
+
+def zones_claires(opts: dict) -> float:
+    """0..1 : protection des zones trop claires (fenetres, ciel). Auto : 60 % en interieur, 0 % dehors."""
+    v = opts.get("zones_claires")
+    return (0.6 if interieur(opts) else 0.0) if v in (None, "", "auto") else max(0.0, min(1.0, float(v) / 100.0))
+
+
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
     W, H = render_size(opts)
     vr = TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0)
@@ -1648,6 +1703,9 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     if opts.get("_apercu"):
         minutes, thr = 0.35, 0.08
     fnum, shutter, iso = AMBIANCES.get(opts["ambiance"], AMBIANCES["Extérieur jour"])
+    inside = interieur(opts)
+    if inside and not opts.get("_apercu"):
+        minutes *= 1.5                        # interieur : lumiere indirecte -> plus de temps pour un rendu propre
     eye, target = list(cam["eye"]), list(cam["target"])
     mode = cam.get("mode")                    # "2pf" (2 points de fuite) / "persp" (libre) ; sinon reglage general
     if TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0) or mode == "2pf" or (
@@ -1673,12 +1731,13 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          "SettingsUnitsInfo { meters_scale=1; photometric_scale=1; }",
          f"SettingsOutput {{ img_width={W}; img_height={H}; }}",
          "SettingsGI { on=1; primary_engine=2; secondary_engine=3; }",
-         "SettingsLightCache { subdivs=1500; }",
+         f"SettingsLightCache {{ subdivs={3000 if inside else 1500}; retrace_enabled={1 if inside else 0}; }}",
          f"SettingsImageSampler {{ type=3; progressive_maxTime={minutes:.2f}; progressive_threshold={thr}; "
          "progressive_minSubdivs=1; progressive_maxSubdivs=100; }",
-         "SettingsColorMapping { type=6; dark_mult=1; bright_mult=1; gamma=2.2; subpixel_mapping=0; clamp_output=0; "
-         f"burn_value={max(0.2, min(1.0, 2.0 - float(opts.get('contraste', 1.0)))):.2f}; }}",
-         "RenderChannelDenoiser denoiser { enabled=1; name=\"VRayDenoiser\"; }",
+         # Reinhard (type 6) : bright_mult = « burn » = garde le detail des zones trop claires (1 = aucun effet)
+         "SettingsColorMapping { type=6; dark_mult=1; gamma=2.2; subpixel_mapping=0; clamp_output=0; "
+         f"bright_mult={max(0.2, min(1.0, 2.0 - float(opts.get('contraste', 1.0))) - 0.8 * zones_claires(opts)):.2f}; }}",
+         "RenderChannelDenoiser denoiser { enabled=1; mode=1; name=\"VRayDenoiser\"; }",   # mode 1 : pas de fichier « VRayDenoiser » en double ; l image debruitee = .effectsResult (voir _fx)
          f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n"
          + (f"  clipping=1;\n  clipping_near={clip:.3f};\n  clipping_far=100000;\n" if clip > 0 else "") + "}",
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
@@ -1690,21 +1749,20 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
          "TexSky sky { sun=sun; }"]
     if vr:                                    # panorama / cubemap VR : camera horizontale, sans appareil physique
-        k = 320.0 * (float(iso) / 100.0) / (float(shutter) * float(fnum) ** 2)
         s = [l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
-        s.append(f"SettingsCamera {{ type={vr}; fov=6.283185; height=400; }}")
-        s = [re.sub(r"intensity_multiplier=([0-9.]+);", lambda m_: f"intensity_multiplier={float(m_.group(1)) * k:.5f};", l_)
-             if l_.startswith("SunLight sun") else l_ for l_ in s]
-        s = [f"TexSky sky {{ sun=sun; intensity_multiplier={k:.5f}; }}" if l_.startswith("TexSky sky") else l_ for l_ in s]
+        s.append(f"SettingsCamera {{ type={vr}; fov=6.283185; height=180; }}")   # height = champ vertical (degres) du panorama
         s = [l_.replace(f"fov={hfov:.6f};", "fov=6.283185;") if l_.startswith("RenderView view") else l_ for l_ in s]
-    if mode == "ortho" and not vr:           # vue orthogonale : pas d'appareil photo physique, exposition reportee sur le soleil
-        k = 320.0 * (float(iso) / 100.0) / (float(shutter) * float(fnum) ** 2)
+    auto_expo = bool(vr) or mode == "ortho" or opts.get("ambiance") == "Nuit"
+    if mode == "ortho" and not vr:           # vue orthogonale : pas d'appareil photo physique -> exposition automatique
         width = max(1.0, float(cam.get("ortho_largeur", 20.0)))
-        s = [l_.replace("  fov=", f"  orthographic=1;\n  orthographicWidth={width:.3f};\n  fov=") if l_.startswith("RenderView view")
-             else l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
-        s = [re.sub(r"intensity_multiplier=([0-9.]+);", lambda m_: f"intensity_multiplier={float(m_.group(1)) * k:.5f};", l_)
-             if l_.startswith("SunLight sun") else l_ for l_ in s]
-        s = [f"TexSky sky {{ sun=sun; intensity_multiplier={k:.5f}; }}" if l_.startswith("TexSky sky") else l_ for l_ in s]
+        s = [l_.replace("  fov=", f"  orthographic=1;\n  orthographicWidth={width:.3f};\n  ortho_adjust_to_scene=0;\n  fov=")
+             if l_.startswith("RenderView view") else l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
+    if auto_expo:                            # nuit / ortho : V-Ray regle lui-meme l'exposition (comme V-Ray pour SketchUp)
+        ae = f"auto_exposure=2; auto_corrections_mode=1; auto_exposure_compensation={float(cam.get('ev', 0.0)):.2f};"
+        if any(l_.startswith("SettingsCamera") for l_ in s):
+            s = [l_.replace("SettingsCamera {", "SettingsCamera { " + ae, 1) if l_.startswith("SettingsCamera") else l_ for l_ in s]
+        else:
+            s.append(f"SettingsCamera {{ {ae} }}")
     hdri = str(opts.get("hdri") or "")
     env = "sky"
     if hdri and Path(hdri).exists():
@@ -1718,8 +1776,14 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
         if not opts.get("hdri_soleil", True):
             s[s.index(next(l for l in s if l.startswith("SunLight sun")))] = \
                 re.sub(r"intensity_multiplier=[0-9.]+;", "intensity_multiplier=0;", next(l for l in s if l.startswith("SunLight sun")))
-    s.append(f"SettingsEnvironment {{ bg_tex={env}; gi_tex={env}; reflect_tex={env}; refract_tex={env}; "
-             "bg_tex_on=1; gi_tex_on=1; reflect_tex_on=1; refract_tex_on=1; }")
+    if inside and opts.get("portails", True):
+        # Interieur : le ciel eclaire par un Dome Light adaptatif (V-Ray trouve tout seul les fenetres, comme des
+        # portails automatiques) au lieu de l'environnement brut -> beaucoup moins de grain dans la piece.
+        s.append(f"LightDome ciel_dome {{ transform=Transform(Matrix(Vector(1,0,0),Vector(0,1,0),Vector(0,0,1)),Vector(0,0,0)); "
+                 f"use_dome_tex=1; dome_tex={env}; dome_spherical=1; dome_adaptive=1; invisible=1; affectReflections=0; }}")
+        s.append(f"SettingsEnvironment {{ bg_tex={env}; reflect_tex={env}; refract_tex={env}; use_gi=0; }}")
+    else:
+        s.append(f"SettingsEnvironment {{ bg_tex={env}; gi_tex={env}; reflect_tex={env}; refract_tex={env}; }}")
     for name in opts.get("canaux") or []:
         if name in CANAUX:
             s.append(CANAUX[name])
@@ -2194,6 +2258,9 @@ def vrmat_for_render(vrmat: Path) -> tuple[Path, str]:
 
     pattern = r">([^<>]+?\.(?:" + "|".join(TEXTURE_EXT) + r"))<"
     fixed = re.sub(pattern, fix, text, flags=re.I)
+    # Le lecteur .vrmat de vray.exe (V-Ray pour SketchUp) ne comprend pas « texture::out_intensity » :
+    # la texture d'opacite des feuilles etait perdue -> herbe / feuillage invisibles (seuls quelques reflets blancs).
+    fixed = fixed.replace("::out_intensity", "")
     urls = re.findall(r'<Asset\s+[^>]*?url="([^"]+)"[^>]*?type="material"', fixed) + \
         re.findall(r'<Asset\s+[^>]*?type="material"[^>]*?url="([^"]+)"', fixed)
     urls = list(dict.fromkeys(urls))
@@ -2233,7 +2300,7 @@ def load_settings() -> dict:
             "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True, "soleil_intensite": 1.0,
             "type_camera": "Standard", "taille_perso": False, "largeur": 3000, "hauteur": 2000,
             "balance": 0.0, "vignettage": 0.3, "contraste": 1.0,
-            "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
+            "trouble": 3.0, "taille_soleil": 3.0, "zones_claires": "auto", "portails": True, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
@@ -2389,8 +2456,22 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True, engine: str =
         'if exist "%VRL_IMAGE%" goto fin',
         ":echec", "set CODE=%RC%", "echo.",
         "echo *** V-Ray n'a pas pu rendre l'image ^(code %CODE%^) : fais une capture de cette fenetre. ***",
-        "pause", ":fin"], {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image,
-                           "VRL_SECOURS": secours if secours.exists() else ""}, scene.parent)
+        "pause", ":fin", *_SWAP("VRL_IMAGE", "VRL_FX", "VRL_BRUT")],
+        {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image, "VRL_FX": _fx(image), "VRL_BRUT": _brut(image),
+         "VRL_SECOURS": secours if secours.exists() else ""}, scene.parent)
+
+
+def _fx(image: Path) -> Path:
+    """V-Ray enregistre l'image brute (avec grain) + « .effectsResult » = l'image debruitee, celle a garder."""
+    return image.with_name(image.stem + ".effectsResult" + image.suffix)
+
+
+def _brut(image: Path) -> Path:
+    return image.with_name(image.stem + "_brut_avec_grain" + image.suffix)
+
+
+def _SWAP(img: str, fx: str, brut: str) -> list:
+    return [f'if exist "%{fx}%" if exist "%{img}%" (copy /y "%{img}%" "%{brut}%" >nul & copy /y "%{fx}%" "%{img}%" >nul & del "%{fx}%")']
 
 
 def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine: str = "") -> Path:
@@ -2405,6 +2486,8 @@ def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine:
         env[f"VRL_B{k}"] = scene.with_name(scene.stem + "_sans_scan.vrscene")
         lines.append(f'if not exist "%VRL_I{k}%" "%VRL_VRAY%" -sceneFile="%VRL_B{k}%" -imgFile="%VRL_I{k}%" -display=1 -autoClose=1')
         lines.append(f'if not exist "%VRL_I{k}%" (echo *** Erreur V-Ray sur cette vue : fais une capture. *** & pause)')
+        env[f"VRL_F{k}"], env[f"VRL_R{k}"] = _fx(image), _brut(image)
+        lines += _SWAP(f"VRL_I{k}", f"VRL_F{k}", f"VRL_R{k}")
     lines += ['explorer "%VRL_DOSSIER%"', "echo Termine.", "timeout /t 5"]
     _run_bat(bat, lines, env, bat.parent)
     return bat
@@ -2698,6 +2781,14 @@ def window(state: dict) -> None:
     ttk.Label(am, text="Sol autour").grid(row=0, column=2, sticky="w")
     sol_var = tk.StringVar(value=opts["sol"])
     ttk.Combobox(am, values=list(SOLS), textvariable=sol_var, state="readonly", width=20).grid(row=0, column=3, padx=6)
+    ttk.Label(am, text="Fenêtres et ciel trop blancs : garder le détail").grid(row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    zc_var = tk.StringVar(value=str(opts.get("zones_claires", "auto")))
+    ttk.Combobox(am, values=["auto", "0", "25", "50", "75", "100"], textvariable=zc_var, width=6).grid(
+        row=2, column=2, sticky="w", pady=(6, 0))
+    ttk.Label(am, foreground="#777", wraplength=430, justify="left",
+              text="« auto » = 60 % en intérieur (on voit encore le jardin par la fenêtre), 0 % dehors. "
+                   "En intérieur, V-Ray Link éclaire aussi la pièce avec la lumière du ciel « intelligente » de V-Ray "
+                   "(elle passe par les fenêtres) : image moins granuleuse.").grid(row=3, column=0, columnspan=4, sticky="w")
     reuse_var = tk.BooleanVar(value=opts["reutiliser"])
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -2722,6 +2813,7 @@ def window(state: dict) -> None:
             opts.update(qualite=qual_var.get(), taille=size_var.get(), ambiance=amb_var.get(), sol=sol_var.get(),
                         jour=int(day_var.get()), mois=int(month_var.get()), heure=round(float(hour_var.get()), 2),
                         verticales=bool(vert_var.get()), lieu=place_var.get(), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()),
+                        zones_claires=(zc_var.get().strip() if zc_var.get().strip() in ("auto", "") else float(zc_var.get())),
                         cible=float(tgt_var.get()), focale=int(foc_var.get()))
         except (ValueError, tk.TclError):
             pass
@@ -3226,6 +3318,9 @@ def window(state: dict) -> None:
                                 "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
                                cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=600)
                 ok_ = image.exists()
+                fx = image.with_name(image.stem + ".effectsResult" + image.suffix)      # image debruitee
+                if ok_ and fx.exists() and fx.stat().st_mtime >= image.stat().st_mtime - 5:
+                    image = fx
                 APERCU.update(etat="pret" if ok_ else "erreur : V-Ray n'a pas produit d'image", fichier=str(image) if ok_ else "",
                               rev=APERCU["rev"] + 1)
             except Exception as error:  # noqa: BLE001
@@ -3372,11 +3467,23 @@ SCATTER_TYPES = {  # densite affichee, unite (m2 par unite), variation %, espace
 SCATTER_MAX = 30000
 
 
+def grass_density(folder: str, default: float) -> float:
+    """Touffes par m2 pour un gazon couvrant (~95 %) : depend de la taille reelle de la touffe Cosmos."""
+    try:
+        mesh = sorted(Path(folder).glob("*.vrmesh"), key=_lod)[0]
+        w, d_ = vrmesh_size(mesh)[:2]
+        return max(default, min(60.0, 4.5 / max(0.01, w * d_)))
+    except Exception:  # noqa: BLE001
+        return default
+
+
 def scatter_points(sc: dict, meshes: dict, offset: tuple, ground: float, key: str) -> list:
     """Points (x, y, z) repartis au hasard (graine fixe) sur une surface Archicad (faces vers le haut) ou sur le sol autour."""
     import random
     rnd = random.Random(f"{sc.get('dossier')}|{sc.get('surface')}")
     dens = max(0.01, float(sc.get("densite", 4.0)))
+    if sc.get("type") == "Herbe / gazon" and sc.get("zones") and not sc.get("densite_manuelle"):
+        dens = grass_density(sc.get("dossier", ""), dens)
     ox, oy, oz = offset
     pts = []
     if sc.get("zones"):                                   # dalles selectionnees dans Archicad
@@ -4498,7 +4605,7 @@ def custom_material_block(mid: str, c: dict) -> str:
             dif = f"{mid}_cc"
     elif c.get("procedural") == "Bruit (variation de couleur)":
         var = float(c.get("proc_variation", 0.3))
-        out.append(f"UVWGenChannel {mid}_nuvw {{ uvw_channel=1; }}\n"
+        out.append(f"UVWGenObject {mid}_nuvw {{ }}\n"   # coordonnees 3D de l'objet : taille du motif en metres, sans UV
                    f"TexNoiseMax {mid}_noise {{ color1=AColor({r:.4f},{g:.4f},{b:.4f},1); "
                    f"color2=AColor({r * (1 - var):.4f},{g * (1 - var):.4f},{b * (1 - var):.4f},1); "
                    f"size={float(c.get('proc_taille', 0.3)):.3f}; type=1; uvwgen={mid}_nuvw; }}\n")
