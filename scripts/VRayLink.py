@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.8"
+VERSION = "20/10 - v3.9 (éditeur de matériaux V-Ray)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -921,6 +921,19 @@ class ViewerServer:
                         ok_ = f_ and Path(f_).suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp") and Path(f_).exists()
                         body = b'{"d":"' + (base64.b64encode(Path(f_).read_bytes()) if ok_ else b"") + b'"}'
                         self._send(body, "application/json")
+                    elif self.path.startswith("/editeur"):
+                        self._send(EDITOR_HTML.encode("utf-8"), "text/html; charset=utf-8")
+                    elif self.path.startswith("/api/surfaces"):
+                        self._send(json.dumps(owner.surfaces()).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/choix"):
+                        from urllib.parse import parse_qs, urlparse
+                        id_ = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+                        res = {"fini": id_ in CHOIX, "path": CHOIX.get(id_, "")}
+                        self._send(json.dumps(res).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/cosmos_tex"):
+                        from urllib.parse import parse_qs, urlparse
+                        nom = parse_qs(urlparse(self.path).query).get("s", [""])[0]
+                        self._send(json.dumps(owner.cosmos_tex(nom)).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/etat"):
                         self._send(json.dumps(owner.etat()).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/hdri"):
@@ -944,13 +957,18 @@ class ViewerServer:
                 n = int(self.headers.get("Content-Length", 0) or 0)
                 try:
                     msg = json.loads(self.rfile.read(n).decode("utf-8"))
-                    owner.on_camera(msg)
+                    if msg.get("action") == "live":           # apercu editeur -> visionneuse, sans passer par Tk
+                        LIVE_MAT.update(surfaces=list(msg.get("surfaces") or []), c=msg.get("c") or {}, rev=LIVE_MAT["rev"] + 1)
+                    else:
+                        owner.on_camera(msg)
                     self._send(b'{"ok":true}', "application/json")
                 except Exception as error:  # noqa: BLE001
                     self.send_error(400, str(error))
 
         self.on_camera = on_camera
         self.etat = lambda: {}
+        self.surfaces = lambda: []
+        self.cosmos_tex = lambda nom: {}
 
         class Quiet(http.server.ThreadingHTTPServer):
             daemon_threads = True
@@ -966,8 +984,8 @@ class ViewerServer:
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
-    def open(self) -> None:
-        url = f"http://127.0.0.1:{self.port}/"
+    def open(self, page: str = "") -> None:
+        url = f"http://127.0.0.1:{self.port}/{page}"
         for edge in (r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
                      r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"):
             if Path(edge).exists():
@@ -2787,6 +2805,24 @@ def window(state: dict) -> None:
         try:
             while True:
                 msg = inbox.get_nowait()
+                if msg.get("action") == "choisir":
+                    from tkinter import filedialog
+                    path = filedialog.askopenfilename(parent=root, title="Image de texture", filetypes=[
+                        ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
+                    CHOIX[str(msg.get("id"))] = path or ""
+                    continue
+                if msg.get("action") == "mat_save":
+                    store = state.setdefault("mat_perso", {}).setdefault(key, {})
+                    if msg.get("c"):
+                        store[msg["surface"]] = dict(msg["c"])
+                    else:
+                        store.pop(msg.get("surface"), None)
+                    save_settings(state)
+                    LIVE_MAT.update(tous=dict(store), surfaces=[msg.get("surface")] if not msg.get("c") else [], c={},
+                                    rev=LIVE_MAT["rev"] + 1)
+                    snap["_surfaces"] = surfaces_info()
+                    say(f"Matériau « {msg.get('surface')} » {'réglé' if msg.get('c') else 'remis d’origine'} (prochain rendu).")
+                    continue
                 if "heure" in msg:                                   # soleil choisi dans la visionneuse
                     hour_var.set(round(float(msg["heure"]), 2))
                     day_var.set(int(msg["jour"]))
@@ -2830,8 +2866,16 @@ def window(state: dict) -> None:
             pass
         root.after(300, poll_viewer)
     state["_open_viewer"] = open_viewer
+    state["_open_editor"] = lambda: open_viewer("editeur")
 
-    def open_viewer():
+    def surfaces_info() -> list:
+        cols, _ = project_surfaces(state, key)
+        perso = (state.get("mat_perso") or {}).get(key, {})
+        cos = state.get("cosmos") or {}
+        return [{"nom": n, "rgb": list(c)[:3], "perso": perso.get(n), "cosmos": bool((cos.get(n) or {}).get("dossier"))}
+                for n, c in sorted(cols.items())]
+
+    def open_viewer(page: str = ""):
         collect()
         if not (data_dir() / key / "geometrie.pkl").exists():
             try:
@@ -2852,11 +2896,17 @@ def window(state: dict) -> None:
             show([f"Modèle 3D illisible : {error}"])
             return
         LIVE_MAT.update(tous=dict((state.get("mat_perso") or {}).get(key, {})), surfaces=[], c={}, rev=LIVE_MAT["rev"] + 1)
+        snap["_surfaces"] = surfaces_info()
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
                                           "intensite": float(opts.get("soleil_intensite", 1.0))}
-        viewer["srv"].open()
+            viewer["srv"].surfaces = lambda: snap.get("_surfaces", [])
+            viewer["srv"].cosmos_tex = lambda nom: cosmos_textures(((state.get("cosmos") or {}).get(nom) or {}).get("dossier", ""))
+        viewer["srv"].open(page)
+        if page:
+            say("Éditeur de matériaux ouvert : les réglages s'affichent en direct (et dans la visionneuse si elle est ouverte).")
+            return
         say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
 
     root.after(300, poll_viewer)
@@ -3800,6 +3850,160 @@ MAT_PRESETS = {   # reflet, brillance, metal, refraction, ior
 }
 
 
+EDITOR_HTML = r"""<!doctype html>
+<html lang="fr"><head><meta charset="utf-8"><title>V-Ray Link · Éditeur de matériaux</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{--bg:#1d1f23;--panel:#25282d;--panel2:#2c3036;--line:#383c44;--txt:#e6e6e6;--mute:#9aa0aa;--acc:#1fa3ff;--org:#e0702a}
+*{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px "Segoe UI",system-ui,sans-serif}
+#app{display:grid;grid-template-columns:270px 1fr;height:100%}
+#list{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+#list header{padding:10px;border-bottom:1px solid var(--line)}
+#list h1{font-size:14px;margin:0 0 8px}#list h1 b{color:var(--acc)}
+#q{width:100%;background:#17191c;border:1px solid var(--line);color:var(--txt);border-radius:6px;padding:7px 9px;font:inherit}
+#items{overflow:auto;flex:1;padding:4px 0}
+.it{display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;border-left:3px solid transparent}
+.it:hover{background:#2e3238}.it.on{background:#203448;border-left-color:var(--acc)}
+.dot{width:14px;height:14px;border-radius:50%;flex:none;box-shadow:inset 0 0 0 1px rgba(255,255,255,.2)}
+.it .nm{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tag{font-size:10px;padding:1px 5px;border-radius:4px;background:#3a3f48;color:var(--mute)}.tag.p{background:#2b4a2b;color:#9fdc9f}.tag.c{background:#4a3a24;color:#f0b77a}
+#main{display:grid;grid-template-rows:300px 1fr;min-height:0}
+#prev{position:relative;background:repeating-conic-gradient(#2a2d32 0 25%,#232529 0 50%) 0 0/24px 24px;border-bottom:1px solid var(--line);display:flex;justify-content:center;align-items:center}
+#prev canvas{border-radius:4px}
+#pinfo{position:absolute;left:12px;top:10px;color:var(--mute);font-size:12px}
+#shape{position:absolute;right:12px;top:10px;display:flex;gap:4px}
+#params{overflow:auto;padding:10px 14px 80px}
+.sec{background:var(--panel);border:1px solid var(--line);border-radius:6px;margin-bottom:8px}
+.sec>h3{margin:0;padding:9px 12px;font-size:13px;display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none}
+.sec>h3::before{content:"▸";color:var(--mute);transition:transform .15s}.sec.open>h3::before{transform:rotate(90deg)}
+.sec .body{display:none;padding:4px 12px 12px}.sec.open .body{display:block}
+.row{display:grid;grid-template-columns:150px 1fr 56px;align-items:center;gap:10px;margin:7px 0}
+.row label{color:var(--mute)}
+input[type=range]{width:100%;accent-color:var(--acc)}
+.num{background:#17191c;border:1px solid var(--line);color:var(--acc);border-radius:4px;padding:3px 5px;width:56px;font:inherit;text-align:right}
+.file{display:flex;gap:6px;align-items:center}.file .fn{flex:1;background:#17191c;border:1px solid var(--line);border-radius:4px;padding:5px 8px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:28px}
+.file .th{width:28px;height:28px;border-radius:4px;background:#17191c center/cover;border:1px solid var(--line);flex:none}
+button{background:#33373e;color:var(--txt);border:1px solid var(--line);border-radius:5px;padding:5px 10px;cursor:pointer;font:inherit}
+button:hover{border-color:#566}button.main{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+select{background:#17191c;color:var(--txt);border:1px solid var(--line);border-radius:4px;padding:4px 6px;font:inherit}
+input[type=color]{width:56px;height:26px;border:1px solid var(--line);background:#17191c;border-radius:4px;padding:0}
+#bar{position:fixed;right:0;bottom:0;left:270px;background:var(--panel);border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:8px;align-items:center}
+#msg{flex:1;color:var(--mute)}
+.empty{color:var(--mute);padding:40px;text-align:center}
+</style></head><body>
+<div id="app">
+<aside id="list"><header><h1>V-Ray Link · <b>Matériaux</b></h1><input id="q" placeholder="Rechercher une surface…"></header><div id="items"></div></aside>
+<section id="main">
+<div id="prev"><div id="pinfo">Aperçu</div><div id="shape"><button data-s="sphere">Sphère</button><button data-s="cube">Cube</button><button data-s="plan">Plan</button></div></div>
+<div id="params"><div class="empty">Choisis une surface à gauche.</div></div>
+</section></div>
+<div id="bar"><span id="msg">Les réglages s'affichent en direct ici et dans la visionneuse 3D.</span>
+<button id="reset">Matériau d'origine</button><button id="save" class="main">Appliquer au rendu</button></div>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from "three";
+import {RoomEnvironment} from "three/addons/environments/RoomEnvironment.js";
+const $=id=>document.getElementById(id);
+const post=(b)=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+// ---------- apercu
+const pv=$("prev"); const R=new THREE.WebGLRenderer({antialias:true,alpha:true}); R.setPixelRatio(Math.min(devicePixelRatio,2));
+R.toneMapping=THREE.ACESFilmicToneMapping; R.shadowMap.enabled=true; pv.appendChild(R.domElement);
+const S=new THREE.Scene(); const C=new THREE.PerspectiveCamera(30,1.6,0.05,50); C.position.set(0,0.55,2.5); C.lookAt(0,0.45,0);
+const pm=new THREE.PMREMGenerator(R); S.environment=pm.fromScene(new RoomEnvironment(),0.04).texture;
+const L=new THREE.DirectionalLight(0xffffff,2); L.position.set(2,3,2); L.castShadow=true; S.add(L);
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(6,6),new THREE.MeshStandardMaterial({color:0x8a8d92,roughness:.9}));
+floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; S.add(floor);
+const M=new THREE.MeshPhysicalMaterial({color:0xcccccc,roughness:.85}); let obj;
+function shape(k){if(obj)S.remove(obj); const g=k==="cube"?new THREE.BoxGeometry(.75,.75,.75):k==="plan"?new THREE.PlaneGeometry(1.6,1.0):new THREE.SphereGeometry(.45,96,64);
+ obj=new THREE.Mesh(g,M); obj.castShadow=true; obj.position.y=k==="plan"?0.5:(k==="cube"?0.375:0.45); S.add(obj); kind=k; applyLive()}
+let kind="sphere"; for(const b of document.querySelectorAll("#shape button"))b.onclick=()=>shape(b.dataset.s);
+function size(){const w=Math.min(pv.clientWidth-40,pv.clientHeight*1.6-20),h=w/1.6; R.setSize(w,h); C.aspect=1.6; C.updateProjectionMatrix()}
+addEventListener("resize",size); size();
+(function loop(){if(obj&&kind!=="plan")obj.rotation.y+=0.003; R.render(S,C); requestAnimationFrame(loop)})();
+const texCache={};
+async function tex(path,sz,rot,srgb,du=0,dv=0){if(!path)return null; const k=path+"|"+srgb;
+ if(!texCache[k]){texCache[k]=(async()=>{const r=await fetch("/api/tex?f="+encodeURIComponent(path)); const d=(await r.json()).d; if(!d)return null;
+  const t=await new THREE.TextureLoader().loadAsync("data:image/*;base64,"+d); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.anisotropy=8;
+  t.colorSpace=srgb?THREE.SRGBColorSpace:THREE.NoColorSpace; return t})()}
+ const t0=await texCache[k]; if(!t0)return null; const t=t0.clone(); t.needsUpdate=true;
+ const ext=kind==="sphere"?[2.83,1.41]:kind==="cube"?[0.75,0.75]:[1.6,1.0]; const s=1/Math.max(0.01,sz||1);
+ t.repeat.set(ext[0]*s,ext[1]*s); t.rotation=(rot||0)*Math.PI/180; t.offset.set(-du*s,-dv*s); return t}
+async function paint(c){const m=M, sz=c.taille_tex||1, rot=c.rotation_tex||0, du=c.decalage_u||0, dv=c.decalage_v||0;
+ m.color.setRGB(c.couleur[0],c.couleur[1],c.couleur[2],THREE.SRGBColorSpace);
+ m.map=await tex(c.tex_couleur,sz,rot,true,du,dv); if(m.map){const k=1+(c.luminosite||0); m.color.setRGB(k,k,k)}
+ m.roughness=1-(c.brillance??0.5)*(c.reflet>0.02?1:0.3); m.metalness=c.metal||0; m.ior=c.ior||1.5; m.specularIntensity=Math.min(1,(c.reflet??0.1)*2);
+ m.roughnessMap=await tex(c.tex_brillance,sz,rot,false,du,dv);
+ const op=c.opacite??1; m.alphaMap=await tex(c.tex_opacite,sz,rot,false,du,dv); m.transparent=op<1||!!m.alphaMap; m.opacity=op;
+ m.transmission=c.refraction||0; m.thickness=0.3; if(m.transmission>0)m.roughness=Math.max(m.roughness,(c.flou_refraction||0)*0.6);
+ const rel=await tex(c.tex_relief,sz,rot,false,du,dv), nm=c.type_relief==="Normal map";
+ m.normalMap=nm?rel:null; m.bumpMap=nm?null:rel; m.bumpScale=(c.relief||0.5)*2; if(nm)m.normalScale.set(c.relief||0.5,c.relief||0.5);
+ const em=c.emission||0; m.emissive.setRGB(1,.9,.7); m.emissiveIntensity=em*0.4; if(!em)m.emissive.set(0);
+ m.clearcoat=c.vernis||0; m.clearcoatRoughness=1-(c.vernis_brillance??0.9); m.sheen=c.velours||0; m.sheenColor.setRGB(1,1,1);
+ m.needsUpdate=true}
+// ---------- donnees
+let SURF=[], cur=null, C0=null;
+const DEF={couleur:[.75,.75,.75],tex_couleur:"",taille_tex:1,rotation_tex:0,decalage_u:0,decalage_v:0,luminosite:0,contraste_tex:1,saturation:1,teinte:0,
+ reflet:.1,brillance:.5,metal:0,ior:1.5,tex_brillance:"",refraction:0,flou_refraction:0,opacite:1,tex_opacite:"",tex_relief:"",type_relief:"Bump (gris)",relief:.5,
+ emission:0,vernis:0,vernis_brillance:.9,velours:0,procedural:"Aucune",proc_variation:.3,proc_taille:.3};
+const PRESETS=__PRESETS__;
+async function load(){SURF=await (await fetch("/api/surfaces")).json(); list()}
+function hex(c){return "#"+c.map(v=>Math.round(Math.max(0,Math.min(1,v))*255).toString(16).padStart(2,"0")).join("")}
+function list(){const q=$("q").value.toLowerCase(); $("items").innerHTML="";
+ for(const s of SURF){if(q&&!s.nom.toLowerCase().includes(q))continue; const d=document.createElement("div"); d.className="it"+(cur&&cur.nom===s.nom?" on":"");
+  d.innerHTML=`<span class="dot" style="background:${hex((s.perso&&s.perso.couleur)||s.rgb)}"></span><span class="nm"></span>${s.perso?'<span class="tag p">réglé</span>':s.cosmos?'<span class="tag c">Cosmos</span>':""}`;
+  d.querySelector(".nm").textContent=s.nom; d.onclick=()=>select(s); $("items").appendChild(d)}}
+$("q").oninput=list;
+function select(s){cur=s; C0=Object.assign({},DEF,{couleur:s.rgb},s.perso||{}); build(); list(); applyLive()}
+// ---------- formulaire
+const SECS=[
+ ["Diffuse",[["color","couleur","Couleur"],["file","tex_couleur","Texture (image)"],["num","taille_tex","Taille de l'image (m)",.05,10,.05],
+  ["num","rotation_tex","Rotation (°)",0,180,1],["num","decalage_u","Décalage horizontal (m)",-2,2,.01],["num","decalage_v","Décalage vertical (m)",-2,2,.01],
+  ["num","luminosite","Luminosité",-1,1,.01],["num","contraste_tex","Contraste *",0,2,.01],["num","saturation","Saturation *",0,2,.01],["num","teinte","Teinte (°) *",-180,180,1]]],
+ ["Reflection",[["num","reflet","Réflexion",0,1,.01],["num","brillance","Brillance",0,1,.01],["num","metal","Métal",0,1,.01],["num","ior","Indice (IOR)",1,3,.01],["file","tex_brillance","Texture de brillance"]]],
+ ["Refraction",[["num","refraction","Réfraction (verre)",0,1,.01],["num","flou_refraction","Flou (verre dépoli)",0,1,.01]]],
+ ["Coat (vernis)",[["num","vernis","Vernis",0,1,.01],["num","vernis_brillance","Brillance du vernis",0,1,.01]]],
+ ["Sheen (velours)",[["num","velours","Velours (tissus)",0,1,.01]]],
+ ["Opacity",[["num","opacite","Opacité",0,1,.01],["file","tex_opacite","Texture d'opacité"]]],
+ ["Bump",[["file","tex_relief","Texture de relief"],["sel","type_relief","Type",["Bump (gris)","Normal map"]],["num","relief","Intensité",0,2,.01]]],
+ ["Self-illumination",[["num","emission","Émission (lumineux)",0,20,.1]]],
+ ["Texture procédurale *",[["sel","procedural","Type",["Aucune","Bruit (variation de couleur)","Usure / saleté dans les angles"]],["num","proc_variation","Variation",0,1,.01],["num","proc_taille","Taille du motif (m)",.02,3,.01]]]];
+const opened=new Set(["Diffuse","Reflection"]);
+function build(){const P=$("params"); P.innerHTML="";
+ const pr=document.createElement("div"); pr.className="row"; pr.innerHTML=`<label>Préréglage</label><select id="preset"><option value="">—</option>${Object.keys(PRESETS).map(k=>`<option>${k}</option>`).join("")}</select><span></span>`;
+ P.appendChild(pr); $("preset").onchange=e=>{Object.assign(C0,PRESETS[e.target.value]||{}); build(); applyLive()};
+ for(const [title,fields] of SECS){const sec=document.createElement("div"); sec.className="sec"+(opened.has(title)?" open":"");
+  sec.innerHTML=`<h3>${title}</h3><div class="body"></div>`; sec.querySelector("h3").onclick=()=>{sec.classList.toggle("open"); sec.classList.contains("open")?opened.add(title):opened.delete(title)};
+  const body=sec.querySelector(".body");
+  for(const f of fields){const r=document.createElement("div"); r.className="row"; const [t,k,lab]=f; r.innerHTML=`<label>${lab}</label>`;
+   if(t==="num"){const [, , ,lo,hi,st]=f; r.innerHTML+=`<input type="range" min="${lo}" max="${hi}" step="${st}" value="${C0[k]}"><input class="num" type="number" step="${st}" value="${C0[k]}">`;
+    const [rg,nb]=r.querySelectorAll("input"); rg.oninput=()=>{nb.value=rg.value;C0[k]=+rg.value;applyLive()}; nb.onchange=()=>{rg.value=nb.value;C0[k]=+nb.value;applyLive()}}
+   else if(t==="color"){r.innerHTML+=`<input type="color" value="${hex(C0.couleur)}"><span></span>`; r.querySelector("input").oninput=e=>{const h=e.target.value;
+     C0.couleur=[1,3,5].map(i=>parseInt(h.substr(i,2),16)/255); applyLive()}}
+   else if(t==="sel"){r.innerHTML+=`<select>${f[3].map(o=>`<option ${o===C0[k]?"selected":""}>${o}</option>`).join("")}</select><span></span>`; r.querySelector("select").onchange=e=>{C0[k]=e.target.value;applyLive()}}
+   else if(t==="file"){r.style.gridTemplateColumns="150px 1fr"; r.innerHTML+=`<div class="file"><span class="th"></span><span class="fn"></span><button>…</button><button>✕</button></div>`;
+    const fn=r.querySelector(".fn"), th=r.querySelector(".th"), [b1,b2]=r.querySelectorAll("button");
+    const show=()=>{fn.textContent=C0[k]?C0[k].split(/[\\/]/).pop():"(aucune)"; fn.title=C0[k]||""; th.style.backgroundImage="";
+     if(C0[k]&&/\.(jpe?g|png|bmp|webp)$/i.test(C0[k]))fetch("/api/tex?f="+encodeURIComponent(C0[k])).then(r=>r.json()).then(j=>{if(j.d)th.style.backgroundImage=`url(data:image/*;base64,${j.d})`})};
+    show(); b1.onclick=async()=>{$("msg").textContent="Choisis l'image dans la fenêtre qui s'ouvre…"; const id=Math.random().toString(36).slice(2);
+     await post({action:"choisir",id}); for(let i=0;i<600;i++){await new Promise(r=>setTimeout(r,500)); const j=await (await fetch("/api/choix?id="+id)).json();
+      if(j.fini){if(j.path){C0[k]=j.path; show(); applyLive()} $("msg").textContent=""; break}}};
+    b2.onclick=()=>{C0[k]="";show();applyLive()}}
+   body.appendChild(r)}
+  if(title==="Diffuse"&&cur.cosmos){const b=document.createElement("button"); b.textContent="⇩ Reprendre les textures du matériau Cosmos"; b.onclick=async()=>{
+    Object.assign(C0,await (await fetch("/api/cosmos_tex?s="+encodeURIComponent(cur.nom))).json()); build(); applyLive()}; body.appendChild(b)}
+  P.appendChild(sec)}
+ const n=document.createElement("div"); n.style.cssText="color:var(--mute);font-size:12px;margin-top:6px"; n.textContent="* visible seulement au rendu V-Ray (pas dans l'aperçu).";
+ P.appendChild(n); $("pinfo").textContent=cur.nom}
+let liveT=null;
+function applyLive(){if(!cur)return; paint(C0); clearTimeout(liveT); liveT=setTimeout(()=>post({action:"live",surfaces:[cur.nom],c:C0}),120)}
+$("save").onclick=async()=>{if(!cur)return; await post({action:"mat_save",surface:cur.nom,c:C0}); cur.perso=Object.assign({},C0); list(); $("msg").textContent="✔ Appliqué : visible au prochain rendu."};
+$("reset").onclick=async()=>{if(!cur)return; await post({action:"mat_save",surface:cur.nom,c:null}); cur.perso=null; select(cur); $("msg").textContent="Matériau d'origine rétabli."};
+shape("sphere"); load();
+</script></body></html>
+""".replace("__PRESETS__", json.dumps(MAT_PRESETS, ensure_ascii=False))
+CHOIX: dict = {}           # fichiers choisis depuis l'editeur web (id -> chemin)
+
+
 def _tex(name: str, path: str, size: float, rot: float, color: bool = True, off=(0.0, 0.0)) -> str:
     """TexBitmap avec la projection boite du modele (1 unite UV = 1 m) : taille reelle de l'image en metres."""
     k = 1.0 / max(0.01, float(size or 1.0))
@@ -3848,6 +4052,12 @@ def custom_material_block(mid: str, c: dict) -> str:
     if c.get("tex_brillance") and Path(c["tex_brillance"]).exists():
         out.append(_tex(f"{mid}_gl", c["tex_brillance"], size, rot, color=False, off=off))
         p.append(f"reflect_glossiness_tex={mid}_gl::out_intensity;")
+    if float(c.get("vernis", 0.0)) > 0:
+        p += [f"coat_amount={float(c['vernis']):.3f};", f"coat_glossiness={float(c.get('vernis_brillance', 0.9)):.3f};",
+              "coat_color=Color(1,1,1);", "coat_ior=1.6;"]
+    if float(c.get("velours", 0.0)) > 0:
+        sv = float(c["velours"])
+        p += [f"sheen_color=Color({sv:.3f},{sv:.3f},{sv:.3f});", "sheen_glossiness=0.8;"]
     rr = float(c.get("refraction", 0.0))
     if rr > 0:
         p += [f"refract=AColor({rr:.3f},{rr:.3f},{rr:.3f},1);", f"refract_ior={float(c.get('ior', 1.5)):.3f};",
@@ -4325,6 +4535,8 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         material_editor(root, state, key, names, cols, done)
 
     ttk.Button(acts, text="🎨 Modifier le matériau…", command=edit_material).grid(row=0, column=6, padx=(12, 3))
+    ttk.Button(acts, text="🎛 Éditeur V-Ray (aperçu)", command=lambda: state.get("_open_editor") and state["_open_editor"]()).grid(
+        row=0, column=7, padx=3)
     sel_info = tk.StringVar()
     ttk.Label(tab, textvariable=sel_info, foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(6, 0))
     ttk.Button(tab, text="Effacer les matériaux posés sur des éléments", command=lambda: clear_selection()
