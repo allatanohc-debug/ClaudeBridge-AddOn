@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.5 (perspective corrigée)"
+VERSION = "20/10 - v4.6 (champ de vision)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1080,7 +1080,9 @@ Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" 
 <label><input type="checkbox" id="gCroix"> Centre</label><label><input type="checkbox" id="gDiag"> Diagonales</label>
 <label><input type="checkbox" id="gMarges"> Marges</label></div></div>
 <div><label>Navigation</label><div class="seg"><button id="mOrbit" class="on">Tourner autour</button><button id="mWalk">Marcher</button></div></div>
-<div class="row"><div><label>Focale</label><select id="foc"></select></div>
+<div class="row"><div><label>Champ de vision (°)</label><input id="fovDeg" type="number" min="5" max="140" step="1" value="35"></div><div><label>Focale (mm)</label><input id="foc" type="number" min="4" max="300" step="1" value="24" list="focList"><datalist id="focList"></datalist></div></div>
+<input id="fovR" type="range" min="5" max="140" step="1" value="35" title="Champ de vision vertical, comme l'outil Zoom de SketchUp">
+<div class="row">
 <div><label>Hauteur yeux (m)</label><input id="eyeh" type="number" step="0.1" value="1.6"></div></div>
 <button id="eyeBtn">Se mettre à hauteur d'yeux</button>
 <div><label>Soleil : <span id="sunTxt"></span></label>
@@ -1159,9 +1161,12 @@ function setPanel(open){$("app").classList.toggle("ferme",!open); $("toggle").te
 $("toggle").onclick=()=>setPanel($("app").classList.contains("ferme"));
 addEventListener("keydown",e=>{if(e.target.tagName!=="INPUT"&&e.code==="KeyP")setPanel($("app").classList.contains("ferme"))});
 try{if(localStorage.getItem("vrl_panneau")==="0")setPanel(false)}catch(_){}
-function setFocal(f){const hf=2*Math.atan(18/f); cam.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(hf/2)/aspect)); cam.updateProjectionMatrix();}
-for(const f of info.focales){const o=document.createElement("option");o.value=f;o.textContent=f+" mm";$("foc").appendChild(o)}
-$("foc").value=24; setFocal(24); $("foc").onchange=()=>setFocal(+$("foc").value);
+function setFocal(f){f=Math.max(4,Math.min(300,+f||24)); const hf=2*Math.atan(18/f); cam.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(hf/2)/aspect)); cam.updateProjectionMatrix();
+ if(document.activeElement!==$("foc"))$("foc").value=+f.toFixed(1); const v=Math.round(cam.fov); if(document.activeElement!==$("fovDeg"))$("fovDeg").value=v; $("fovR").value=v}
+function setFov(v){v=Math.max(5,Math.min(140,+v||35)); const hf=2*Math.atan(Math.tan(THREE.MathUtils.degToRad(v)/2)*aspect); setFocal(18/Math.tan(hf/2))}
+for(const f of info.focales){const o=document.createElement("option");o.value=f;o.textContent=f+" mm";$("focList").appendChild(o)}
+$("foc").value=24; setFocal(24); $("foc").oninput=()=>setFocal(+$("foc").value); $("fovDeg").oninput=()=>setFov(+$("fovDeg").value); $("fovR").oninput=()=>setFov(+$("fovR").value);
+renderer.domElement.addEventListener("wheel",e=>{if(!e.shiftKey)return; e.preventDefault(); e.stopImmediatePropagation(); setFov(cam.fov+(e.deltaY>0?2:-2))},{capture:true,passive:false});
 const ortho=new THREE.OrthographicCamera(-10,10,5,-5,-2000,5000); ortho.up.set(0,0,1);
 function syncOrtho(){const w=+$("ow").value; ortho.left=-w/2; ortho.right=w/2; ortho.top=w/aspect/2; ortho.bottom=-w/aspect/2;
  ortho.position.copy(cam.position); ortho.quaternion.copy(cam.quaternion); ortho.updateProjectionMatrix(); $("owTxt").textContent=w+" m"}
@@ -1499,7 +1504,7 @@ function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft|
  if(mode==="orbit")controls.update(); else cam.lookAt(controls.target);
  drawGuides(); {const d=new THREE.Vector3().subVectors(controls.target,cam.position); const t=Math.asin(THREE.MathUtils.clamp(d.z/d.length(),-1,1))*180/Math.PI;
   $("tilt").textContent=vmode==="2pf"?"verticales droites":`inclinaison ${t>0?"+":""}${t.toFixed(1)}°`}
- const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${$("foc").value} mm`;
+ const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${(+$("foc").value).toFixed(0)} mm · ${Math.round(cam.fov)}°`;
  if(vmode==="ortho"){syncOrtho(); renderer.render(scene,ortho)} else renderer.render(scene,cam);requestAnimationFrame(loop)}
 loop();
 $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;
@@ -2366,11 +2371,15 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True, engine: str =
         "@echo off", "title V-Ray Link - rendu",
         'if exist "%VRL_IMAGE%" del "%VRL_IMAGE%"',
         f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts} {engine}',
+        'set RC=%errorlevel%',
         'if exist "%VRL_IMAGE%" goto fin',
+        'if "%RC%"=="0" goto fin',
         "echo.", "echo V-Ray s'est ferme sans image : nouvel essai" + (" sur le processeur (CPU)..." if engine else "..."),
         "timeout /t 3 >nul",
         f'"%VRL_VRAY%" -sceneFile="%VRL_SCENE%" -imgFile="%VRL_IMAGE%" {opts}',
+        'set RC=%errorlevel%',
         'if exist "%VRL_IMAGE%" goto fin',
+        'if "%RC%"=="0" goto fin',
         'if not exist "%VRL_SECOURS%" goto echec',
         "echo.", "echo ============================================================",
         "echo  V-Ray plante sur un materiau SCANNE ^(Chaos Scans^).",
@@ -2378,7 +2387,7 @@ def launch(vray: str, scene: Path, image: Path, show: bool = True, engine: str =
         "echo ============================================================", "timeout /t 3 >nul",
         f'"%VRL_VRAY%" -sceneFile="%VRL_SECOURS%" -imgFile="%VRL_IMAGE%" {opts}',
         'if exist "%VRL_IMAGE%" goto fin',
-        ":echec", "set CODE=%errorlevel%", "echo.",
+        ":echec", "set CODE=%RC%", "echo.",
         "echo *** V-Ray n'a pas pu rendre l'image ^(code %CODE%^) : fais une capture de cette fenetre. ***",
         "pause", ":fin"], {"VRL_VRAY": vray, "VRL_SCENE": scene, "VRL_IMAGE": image,
                            "VRL_SECOURS": secours if secours.exists() else ""}, scene.parent)
@@ -3151,7 +3160,7 @@ def window(state: dict) -> None:
                         f"{int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.")
                     continue
                 name = str(msg.get("nom") or "Vue 3D")[:60]
-                cam = {"nom": name, "focale": int(msg.get("focale", 24)),
+                cam = {"nom": name, "focale": round(float(msg.get("focale", 24)), 2),
                        "eye": [float(v) for v in msg["eye"]][:3], "target": [float(v) for v in msg["target"]][:3],
                        "mode": msg.get("mode") if msg.get("mode") in ("2pf", "ortho") else "persp",
                        "decentrement": float(msg.get("decentrement", 0.0)), "ortho_largeur": float(msg.get("ortho_largeur", 20.0)),
@@ -3187,7 +3196,7 @@ def window(state: dict) -> None:
         if not check_vray():
             return
         collect()
-        cam = {"nom": "Aperçu", "focale": int(msg.get("focale", 24)), "eye": [float(v) for v in msg["eye"]][:3],
+        cam = {"nom": "Aperçu", "focale": round(float(msg.get("focale", 24)), 2), "eye": [float(v) for v in msg["eye"]][:3],
                "target": [float(v) for v in msg["target"]][:3], "mode": msg.get("mode") if msg.get("mode") in ("2pf", "ortho") else "persp",
                "decentrement": float(msg.get("decentrement", 0.0)), "ortho_largeur": float(msg.get("ortho_largeur", 20.0)),
                "coupe": float(msg.get("coupe", 0.0)), "ev": float(msg.get("ev", 0.0))}
