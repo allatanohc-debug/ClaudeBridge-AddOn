@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.7 (vues intérieures + orthogonale)"
+VERSION = "20/10 - v3.8"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -77,6 +77,7 @@ TAILLES = {"1280 × 720 (16:9)": (1280, 720), "1920 × 1080 (16:9)": (1920, 1080
            "1080 × 1920 (story)": (1080, 1920), "2000 × 2000 (carré)": (2000, 2000),
            "3508 × 2480 (A3/A4 paysage, 300 dpi A4)": (3508, 2480), "4961 × 3508 (A3 paysage 300 dpi)": (4961, 3508),
            "3840 × 1646 (cinéma 21:9)": (3840, 1646), "2480 × 3508 (A4 portrait)": (2480, 3508)}
+TYPES_CAMERA = {"Standard": 0, "Panorama 360° sphérique (VR)": 9, "Cubemap 6×1 (VR)": 10}
 MOTEURS = {"CPU (processeur)": "", "GPU CUDA (carte NVIDIA)": "-rtEngine=5", "GPU RTX (NVIDIA RTX)": "-rtEngine=7"}
 FORMATS = {"PNG": ".png", "JPEG": ".jpg", "EXR 32 bits (multicouche, retouche)": ".exr"}
 CANAUX = {
@@ -987,6 +988,7 @@ VIEWER_HTML = r"""<!doctype html>
 #toggle{position:absolute;top:10px;right:10px;z-index:5;background:rgba(32,35,42,.85);color:var(--txt);border:1px solid var(--line);
  border-radius:7px;padding:6px 10px;cursor:pointer;font:13px "Segoe UI",sans-serif}
 #toggle:hover{border-color:#4a505c}
+.mini{width:34px;height:30px;padding:0;background:rgba(32,35,42,.85);font-size:14px}.mini.on{background:var(--acc);border-color:var(--acc)}
 .aides{display:flex;flex-wrap:wrap;gap:4px 12px}.aides label{display:flex;gap:5px;align-items:center;color:var(--txt);font-size:12px;margin:0}
 .aides input{width:auto}
 #guides{position:absolute;inset:0;pointer-events:none}
@@ -1008,7 +1010,10 @@ button:hover{border-color:#4a505c}button.main{background:var(--acc);border-color
 kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
 </style></head><body>
 <div id="app"><div id="stage"><div id="frame"><div id="load">Chargement du modèle…</div></div>
-<div id="hud"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
+<div id="hud"></div><div id="updown" style="position:absolute;left:12px;top:12px;display:flex;flex-direction:column;gap:4px;z-index:5">
+<button id="bUp" class="mini" title="Monter (E / Espace)">▲</button><button id="bDown" class="mini" title="Descendre (C)">▼</button>
+<button id="bMes" class="mini" title="Mesurer une distance (M)">📏</button></div>
+<div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
@@ -1056,7 +1061,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="msg"></div>
 <div style="color:var(--mute);font-size:12px;line-height:1.7">
 <b style="color:var(--txt)">Tourner autour</b> : clic gauche = tourner, clic droit = déplacer, molette = avancer.<br>
-<b style="color:var(--txt)">Marcher</b> : clic gauche glissé = regarder, <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches = avancer / côtés, <kbd>A</kbd>/<kbd>E</kbd> = monter / descendre, <kbd>Maj</kbd> = plus vite.<br>
+<b style="color:var(--txt)">Marcher</b> : clic gauche glissé = regarder, <kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches = avancer / côtés, <kbd>E</kbd>/<kbd>Espace</kbd> = monter, <kbd>C</kbd> = descendre (aussi Page ↑ / Page ↓ ou les boutons ▲ ▼ sur l'image), <kbd>Maj</kbd> = plus vite.<br>
 Le cadre clair = l'image exacte du rendu.</div>
 </aside></div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
@@ -1180,18 +1185,19 @@ const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]); window.__mats=MATS; s
  scene.environmentIntensity=0.9; hemi.intensity=0.45}
 // reglages de materiaux (editeur V-Ray Link) appliques en direct
 const texCache={};
-async function tex(path,size,rot,srgb){if(!path)return null; const k=path+"|"+srgb;
+async function tex(path,size,rot,srgb,du=0,dv=0){if(!path)return null; const k=path+"|"+srgb;
  if(!texCache[k]){texCache[k]=(async()=>{const r=await fetch("/api/tex?f="+encodeURIComponent(path)); const d=(await r.json()).d; if(!d)return null;
    const t=await new THREE.TextureLoader().loadAsync("data:image/*;base64,"+d); t.wrapS=t.wrapT=THREE.RepeatWrapping;
    t.colorSpace=srgb?THREE.SRGBColorSpace:THREE.NoColorSpace; t.anisotropy=8; return t})()}
  const t0=await texCache[k]; if(!t0)return null; const t=t0.clone(); t.needsUpdate=true;
- const s=1/Math.max(0.01,size||1); t.repeat.set(s,s); t.rotation=(rot||0)*Math.PI/180; return t}
+ const s=1/Math.max(0.01,size||1); t.repeat.set(s,s); t.rotation=(rot||0)*Math.PI/180; t.offset.set(-du*s,-dv*s); return t}
 async function applyMat(nom,c){const i=PAR[nom]; if(i===undefined)return; const m=MATS[i];
  if(!c){m.color.copy(m.userData.base);m.map=m.roughnessMap=m.alphaMap=m.bumpMap=m.normalMap=null;m.roughness=.85;m.metalness=0;
   m.opacity=1;m.transparent=false;m.transmission=0;m.emissive.set(0);m.needsUpdate=true;return}
  const sz=c.taille_tex||1, rot=c.rotation_tex||0;
  if(c.couleur)m.color.setRGB(c.couleur[0],c.couleur[1],c.couleur[2],THREE.SRGBColorSpace);
- m.map=await tex(c.tex_couleur,sz,rot,true); if(m.map)m.color.set(0xffffff);
+ const du=c.decalage_u||0, dv=c.decalage_v||0;
+ m.map=await tex(c.tex_couleur,sz,rot,true,du,dv); if(m.map){const k=1+(c.luminosite||0); m.color.setRGB(k,k,k)}
  m.roughness=1-(c.brillance??0.5)*(c.reflet>0.02?1:0.3); m.metalness=c.metal||0; m.ior=c.ior||1.5;
  m.specularIntensity=Math.min(1,(c.reflet??0.1)*2);
  m.roughnessMap=await tex(c.tex_brillance,sz,rot,false);
@@ -1292,7 +1298,8 @@ goTo(info.cameras.find(c=>c.nom===info.courante)||info.cameras[0]);
 let mode="orbit"; const keys={};
 $("mOrbit").onclick=()=>{mode="orbit";$("mOrbit").classList.add("on");$("mWalk").classList.remove("on");controls.enabled=true};
 $("mWalk").onclick=()=>{mode="walk";$("mWalk").classList.add("on");$("mOrbit").classList.remove("on");controls.enabled=false};
-addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return;keys[e.code]=true});addEventListener("keyup",e=>keys[e.code]=false);
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT")return;keys[e.code]=true;
+ if(["Space","PageUp","PageDown"].includes(e.code))e.preventDefault()});addEventListener("keyup",e=>keys[e.code]=false);
 let drag=null; renderer.domElement.addEventListener("pointerdown",e=>{if(mode==="walk"){drag=[e.clientX,e.clientY];renderer.domElement.setPointerCapture(e.pointerId)}});
 renderer.domElement.addEventListener("pointerup",()=>drag=null);
 renderer.domElement.addEventListener("pointermove",e=>{if(!drag||mode!=="walk")return;const dx=e.clientX-drag[0],dy=e.clientY-drag[1];drag=[e.clientX,e.clientY];
@@ -1303,12 +1310,31 @@ renderer.domElement.addEventListener("wheel",e=>{if(mode!=="walk")return;e.preve
 function step(f,s,u){const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;d.normalize();
  const side=new THREE.Vector3(d.y,-d.x,0);const m=d.multiplyScalar(f).add(side.multiplyScalar(s)).add(new THREE.Vector3(0,0,u));
  cam.position.add(m);controls.target.add(m)}
+let btnUp=false, btnDown=false;
+for(const [id,set] of [["bUp",v=>btnUp=v],["bDown",v=>btnDown=v]]){const b=$(id);
+ b.addEventListener("pointerdown",()=>set(true)); for(const ev of ["pointerup","pointerleave"])b.addEventListener(ev,()=>set(false))}
+// ---- outil Mesurer : deux clics sur le modele -> distance, horizontale, hauteur
+let mesureOn=false, mPts=[]; const mGroup=new THREE.Group(); scene.add(mGroup); const ray=new THREE.Raycaster();
+function setMesure(on){mesureOn=on; $("bMes").classList.toggle("on",on); $("mesure").style.display=on?"":"none";
+ mPts=[]; mGroup.clear(); $("mesure").textContent=on?"Mesure : clique le 1er point sur le modèle (Échap pour quitter)":""; renderer.domElement.style.cursor=on?"crosshair":""}
+$("bMes").onclick=()=>setMesure(!mesureOn);
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyM")setMesure(!mesureOn); if(e.code==="Escape"&&mesureOn)setMesure(false)});
+let downAt=null; renderer.domElement.addEventListener("pointerdown",e=>downAt=[e.clientX,e.clientY]);
+renderer.domElement.addEventListener("pointerup",e=>{if(!mesureOn||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),vmode==="ortho"?ortho:cam);
+ const hit=ray.intersectObjects([model,ground],false)[0]; if(!hit)return; const p=hit.point.clone();
+ if(mPts.length===2){mPts=[];mGroup.clear()}
+ mPts.push(p); const dot=new THREE.Mesh(new THREE.SphereGeometry(0.06,12,8),new THREE.MeshBasicMaterial({color:0xe0702a,depthTest:false})); dot.position.copy(p); dot.renderOrder=9; mGroup.add(dot);
+ if(mPts.length===2){const [a,b]=mPts; const ln=new THREE.Line(new THREE.BufferGeometry().setFromPoints([a,b]),new THREE.LineBasicMaterial({color:0xe0702a,depthTest:false})); ln.renderOrder=9; mGroup.add(ln);
+  const d=a.distanceTo(b), h=Math.hypot(b.x-a.x,b.y-a.y), z=b.z-a.z;
+  $("mesure").innerHTML=`<b style="color:var(--acc)">${d.toFixed(2)} m</b> &nbsp;· horizontal ${h.toFixed(2)} m · hauteur ${z>=0?"+":""}${z.toFixed(2)} m<br><span style="color:var(--mute)">Clique un nouveau point pour une autre mesure</span>`}
+ else $("mesure").textContent="Mesure : clique le 2e point"});
 const clock=new THREE.Clock();
 function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
   const f=(keys.KeyW||keys.KeyZ||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
-  const s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyA&&mode!=="walk"||keys.KeyQ||keys.ArrowLeft?1:0);
-  const u=(mode==="walk"&&keys.KeyE?1:0)-(mode==="walk"&&keys.KeyA?1:0);
+  const s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyQ||keys.KeyA||keys.ArrowLeft?1:0);
+  const u=(keys.KeyE||keys.Space||keys.PageUp||btnUp?1:0)-(keys.KeyC||keys.PageDown||btnDown?1:0);
   if(f||s||u)step(f*v,s*v,u*v);}
  if(vmode==="2pf")controls.target.z=cam.position.z;
  if(mode==="orbit")controls.update(); else cam.lookAt(controls.target);
@@ -1339,11 +1365,19 @@ def _read(p: Path) -> str:
 
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
     W, H = TAILLES.get(opts["taille"], (1920, 1080))
+    if opts.get("taille_perso"):
+        W, H = max(64, int(opts.get("largeur", 3000))), max(64, int(opts.get("hauteur", 2000)))
+    vr = TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0)
+    if vr == 9:
+        W, H = W, W // 2                      # panorama 360 : image 2:1
+    elif vr == 10:
+        W, H = W, max(64, W // 6)             # cubemap 6x1
     minutes, thr = QUALITES.get(opts["qualite"], QUALITES["Haute"])
     fnum, shutter, iso = AMBIANCES.get(opts["ambiance"], AMBIANCES["Extérieur jour"])
     eye, target = list(cam["eye"]), list(cam["target"])
     mode = cam.get("mode")                    # "2pf" (2 points de fuite) / "persp" (libre) ; sinon reglage general
-    if mode == "2pf" or (mode is None and opts.get("verticales") and not cam.get("nom", "").startswith("Vue aérienne")):
+    if TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0) or mode == "2pf" or (
+            mode is None and opts.get("verticales") and not cam.get("nom", "").startswith("Vue aérienne")):
         target[2] = eye[2]                    # camera horizontale : les verticales restent droites
     shift = float(cam.get("decentrement", 0.0)) if mode == "2pf" else 0.0
     shutter = shutter / (2.0 ** float(cam.get("ev", 0.0)))          # correction d'exposition propre a la vue (+1 = 2x plus clair)
@@ -1381,7 +1415,15 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"  intensity_multiplier={float(opts.get('soleil_intensite', 1.0)):.3f};\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
          "TexSky sky { sun=sun; }"]
-    if mode == "ortho":                      # vue orthogonale : pas d'appareil photo physique, exposition reportee sur le soleil
+    if vr:                                    # panorama / cubemap VR : camera horizontale, sans appareil physique
+        k = 320.0 * (float(iso) / 100.0) / (float(shutter) * float(fnum) ** 2)
+        s = [l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
+        s.append(f"SettingsCamera {{ type={vr}; fov=6.283185; height=400; }}")
+        s = [re.sub(r"intensity_multiplier=([0-9.]+);", lambda m_: f"intensity_multiplier={float(m_.group(1)) * k:.5f};", l_)
+             if l_.startswith("SunLight sun") else l_ for l_ in s]
+        s = [f"TexSky sky {{ sun=sun; intensity_multiplier={k:.5f}; }}" if l_.startswith("TexSky sky") else l_ for l_ in s]
+        s = [l_.replace(f"fov={hfov:.6f};", "fov=6.283185;") if l_.startswith("RenderView view") else l_ for l_ in s]
+    if mode == "ortho" and not vr:           # vue orthogonale : pas d'appareil photo physique, exposition reportee sur le soleil
         k = 320.0 * (float(iso) / 100.0) / (float(shutter) * float(fnum) ** 2)
         width = max(1.0, float(cam.get("ortho_largeur", 20.0)))
         s = [l_.replace("  fov=", f"  orthographic=1;\n  orthographicWidth={width:.3f};\n  fov=") if l_.startswith("RenderView view")
@@ -1913,6 +1955,7 @@ def load_settings() -> dict:
     opts = {"qualite": "Haute", "taille": "1920 × 1080 (16:9)", "ambiance": "Extérieur jour", "sol": "Gazon",
             "jour": today.day, "mois": today.month, "heure": 16.5, "fuseau": 0.0, "verticales": True, "moteur": "CPU (processeur)", "format": "PNG", "canaux": [],
             "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True, "soleil_intensite": 1.0,
+            "type_camera": "Standard", "taille_perso": False, "largeur": 3000, "hauteur": 2000,
             "balance": 0.0, "vignettage": 0.3, "contraste": 1.0,
             "trouble": 3.0, "taille_soleil": 3.0, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
@@ -2536,6 +2579,23 @@ def window(state: dict) -> None:
         ttk.Label(im, text="Format").grid(row=0, column=0, sticky="w")
         v["format"] = tk.StringVar(value=opts.get("format", "PNG"))
         ttk.Combobox(im, values=list(FORMATS), textvariable=v["format"], state="readonly", width=34).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(im, text="Type de caméra").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        v["type_camera"] = tk.StringVar(value=opts.get("type_camera", "Standard"))
+        ttk.Combobox(im, values=list(TYPES_CAMERA), textvariable=v["type_camera"], state="readonly", width=34).grid(
+            row=2, column=1, sticky="w", padx=6, pady=(6, 0))
+        v["taille_perso"] = tk.BooleanVar(value=opts.get("taille_perso", False))
+        ttk.Checkbutton(im, text="Taille personnalisée (px)", variable=v["taille_perso"]).grid(row=3, column=0, sticky="w", pady=(6, 0))
+        wh = ttk.Frame(im)
+        wh.grid(row=3, column=1, sticky="w", padx=6, pady=(6, 0))
+        v["largeur"] = tk.IntVar(value=opts.get("largeur", 3000))
+        v["hauteur"] = tk.IntVar(value=opts.get("hauteur", 2000))
+        ttk.Spinbox(wh, from_=64, to=16000, increment=100, textvariable=v["largeur"], width=7).grid(row=0, column=0)
+        ttk.Label(wh, text=" × ").grid(row=0, column=1)
+        ttk.Spinbox(wh, from_=64, to=16000, increment=100, textvariable=v["hauteur"], width=7).grid(row=0, column=2)
+        ttk.Label(im, foreground="#777", wraplength=430, justify="left",
+                  text="Panorama 360° : image 2:1 à regarder en visite virtuelle (casque VR, Kuula, Facebook 360). "
+                       "Cubemap : 6 faces côte à côte. Place la caméra au centre de la pièce, à 1,6 m.").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(im, text="Contraste").grid(row=1, column=0, sticky="w", pady=(6, 0))
         v["contraste"] = tk.DoubleVar(value=opts.get("contraste", 1.0))
         ttk.Scale(im, from_=1.0, to=1.8, variable=v["contraste"], length=220).grid(row=1, column=1, sticky="w", padx=6, pady=(6, 0))
@@ -2609,7 +2669,7 @@ def window(state: dict) -> None:
         def ok():
             try:
                 for name in ("moteur", "format", "dof", "dof_f", "balance", "vignettage", "hdri", "hdri_mult", "hdri_rot",
-                             "hdri_soleil", "contraste", "soleil_intensite"):
+                             "hdri_soleil", "contraste", "soleil_intensite", "type_camera", "taille_perso", "largeur", "hauteur"):
                     opts[name] = v[name].get()
                 opts["canaux"] = [n for n in CANAUX if v["ch_" + n].get()]
             except (ValueError, tk.TclError):
@@ -3740,15 +3800,16 @@ MAT_PRESETS = {   # reflet, brillance, metal, refraction, ior
 }
 
 
-def _tex(name: str, path: str, size: float, rot: float, color: bool = True) -> str:
+def _tex(name: str, path: str, size: float, rot: float, color: bool = True, off=(0.0, 0.0)) -> str:
     """TexBitmap avec la projection boite du modele (1 unite UV = 1 m) : taille reelle de l'image en metres."""
     k = 1.0 / max(0.01, float(size or 1.0))
     a = math.radians(float(rot or 0.0))
     c, s = math.cos(a) * k, math.sin(a) * k
+    tu, tv = -float(off[0] or 0.0) * k, -float(off[1] or 0.0) * k
     return (f'BitmapBuffer {name}_bmp {{ file="{str(path).replace(chr(92), "/")}"; '
             f'{"color_space=2;" if color else "color_space=0; gamma=1;"} filter_type=1; }}\n'
             f"UVWGenChannel {name}_uvw {{ uvw_channel=1; uvw_transform=Transform(Matrix(Vector({c:.6f},{s:.6f},0),"
-            f"Vector({-s:.6f},{c:.6f},0),Vector(0,0,1)),Vector(0,0,0)); wrap_u=1; wrap_v=1; }}\n"
+            f"Vector({-s:.6f},{c:.6f},0),Vector(0,0,1)),Vector({tu:.5f},{tv:.5f},0)); wrap_u=1; wrap_v=1; }}\n"
             f"TexBitmap {name} {{ bitmap={name}_bmp; uvwgen={name}_uvw; }}\n")
 
 
@@ -3757,16 +3818,35 @@ def custom_material_block(mid: str, c: dict) -> str:
     out, p = [], []
     r, g, b = (srgb_to_linear(v) for v in c.get("couleur", (0.75, 0.75, 0.75)))
     size, rot = float(c.get("taille_tex", 1.0)), float(c.get("rotation_tex", 0.0))
+    off = (float(c.get("decalage_u", 0.0)), float(c.get("decalage_v", 0.0)))
+    dif = f"AColor({r:.4f},{g:.4f},{b:.4f},1)"
     if c.get("tex_couleur") and Path(c["tex_couleur"]).exists():
-        out.append(_tex(f"{mid}_dif", c["tex_couleur"], size, rot))
-        p.append(f"diffuse={mid}_dif;")
-    else:
-        p.append(f"diffuse=AColor({r:.4f},{g:.4f},{b:.4f},1);")
+        out.append(_tex(f"{mid}_dif", c["tex_couleur"], size, rot, off=off))
+        dif = f"{mid}_dif"
+        br, ct = float(c.get("luminosite", 0.0)), float(c.get("contraste_tex", 1.0))
+        sa, hu = float(c.get("saturation", 1.0)), float(c.get("teinte", 0.0))
+        if abs(br) > 1e-3 or abs(ct - 1) > 1e-3 or abs(sa - 1) > 1e-3 or abs(hu) > 0.5:
+            out.append(f"ColorCorrection {mid}_cc {{ texture_map={mid}_dif; brightness={br * 100:.1f}; contrast={(ct - 1) * 100:.1f}; "
+                       f"saturation={(sa - 1) * 100:.1f}; hue_shift={hu:.1f}; }}\n")
+            dif = f"{mid}_cc"
+    elif c.get("procedural") == "Bruit (variation de couleur)":
+        var = float(c.get("proc_variation", 0.3))
+        out.append(f"UVWGenChannel {mid}_nuvw {{ uvw_channel=1; }}\n"
+                   f"TexNoiseMax {mid}_noise {{ color1=AColor({r:.4f},{g:.4f},{b:.4f},1); "
+                   f"color2=AColor({r * (1 - var):.4f},{g * (1 - var):.4f},{b * (1 - var):.4f},1); "
+                   f"size={float(c.get('proc_taille', 0.3)):.3f}; type=1; uvwgen={mid}_nuvw; }}\n")
+        dif = f"{mid}_noise"
+    if c.get("procedural") == "Usure / saleté dans les angles":
+        var = float(c.get("proc_variation", 0.3))
+        out.append(f"TexDirt {mid}_dirt {{ white_color={dif}; black_color=AColor({r * (1 - var) * 0.6:.4f},{g * (1 - var) * 0.6:.4f},"
+                   f"{b * (1 - var) * 0.6:.4f},1); radius={float(c.get('proc_taille', 0.3)):.3f}; subdivs=8; }}\n")
+        dif = f"{mid}_dirt"
+    p.append(f"diffuse={dif};")
     rf = float(c.get("reflet", 0.1))
     p += [f"reflect=AColor({rf:.3f},{rf:.3f},{rf:.3f},1);", f"reflect_glossiness={float(c.get('brillance', 0.5)):.3f};",
           "fresnel=1;", f"fresnel_ior={float(c.get('ior', 1.5)):.3f};", f"metalness={float(c.get('metal', 0.0)):.2f};"]
     if c.get("tex_brillance") and Path(c["tex_brillance"]).exists():
-        out.append(_tex(f"{mid}_gl", c["tex_brillance"], size, rot, color=False))
+        out.append(_tex(f"{mid}_gl", c["tex_brillance"], size, rot, color=False, off=off))
         p.append(f"reflect_glossiness_tex={mid}_gl::out_intensity;")
     rr = float(c.get("refraction", 0.0))
     if rr > 0:
@@ -3774,7 +3854,7 @@ def custom_material_block(mid: str, c: dict) -> str:
               f"refract_glossiness={1.0 - float(c.get('flou_refraction', 0.0)):.3f};", "refract_affect_shadows=1;"]
     op = float(c.get("opacite", 1.0))
     if c.get("tex_opacite") and Path(c["tex_opacite"]).exists():
-        out.append(_tex(f"{mid}_op", c["tex_opacite"], size, rot, color=False))
+        out.append(_tex(f"{mid}_op", c["tex_opacite"], size, rot, color=False, off=off))
         p.append(f"opacity={mid}_op::out_intensity;")
     elif op < 1.0:
         p.append(f"opacity={op:.3f};")
@@ -3786,7 +3866,7 @@ def custom_material_block(mid: str, c: dict) -> str:
     base = f"{mid}_brdf"
     if c.get("tex_relief") and Path(c["tex_relief"]).exists():
         normal = c.get("type_relief") == "Normal map"
-        out.append(_tex(f"{mid}_bump", c["tex_relief"], size, rot, color=False))
+        out.append(_tex(f"{mid}_bump", c["tex_relief"], size, rot, color=False, off=off))
         amt = float(c.get("relief", 0.5))
         out.append(f"BRDFBump {mid}_brdfb {{ base_brdf={mid}_brdf; "
                    + (f"map_type=1; bump_tex_color={mid}_bump; bump_tex_mult={amt:.3f}; " if normal
@@ -3795,6 +3875,31 @@ def custom_material_block(mid: str, c: dict) -> str:
         base = f"{mid}_brdfb"
     out.append(f"MtlSingleBRDF {mid} {{ brdf={base}; double_sided=1; }}\n")
     return "".join(out)
+
+
+def cosmos_textures(folder: str) -> dict:
+    """Images d'un materiau Cosmos, rangees par role d'apres leur nom (couleur, brillance, relief, opacite)."""
+    roles = {}
+    try:
+        vrmat = sorted(Path(folder).glob("*.vrmat"), key=_lod)[0]
+        fixed, _top = vrmat_for_render(vrmat)
+        text = fixed.read_text("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return roles
+    for ref in dict.fromkeys(re.findall(r">([^<>]+?\.(?:tx|jpg|jpeg|png|tif|tiff|exr))<", text, flags=re.I)):
+        ref = ref.replace("&amp;", "&")
+        low = Path(ref).name.lower()
+        role = ("tex_relief" if any(w in low for w in ("normal", "bump", "_nrm", "height")) else
+                "tex_brillance" if any(w in low for w in ("gloss", "rough", "refl", "spec")) else
+                "tex_opacite" if any(w in low for w in ("opac", "alpha", "mask")) else
+                "tex_couleur" if any(w in low for w in ("diff", "color", "albedo", "base", "col")) else None)
+        if role and role not in roles:
+            # la visionneuse n'affiche pas les .tx : on prefere une .jpg/.png de meme nom si elle existe
+            alt = next((Path(ref).with_suffix(e_) for e_ in (".jpg", ".png") if Path(ref).with_suffix(e_).exists()), None)
+            roles[role] = str(alt or ref)
+    if "tex_relief" in roles and "normal" in Path(roles["tex_relief"]).name.lower():
+        roles["type_relief"] = "Normal map"
+    return roles
 
 
 def material_editor(root, state: dict, key: str, names: list, colors: dict, on_done) -> None:
@@ -3843,7 +3948,7 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
 
     # preset
     pr = ttk.LabelFrame(f, text="Point de départ (préréglage)", padding=8)
-    pr.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+    pr.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
     preset = tk.StringVar(value="")
     pbox = ttk.Combobox(pr, values=list(MAT_PRESETS), textvariable=preset, state="readonly", width=32)
     pbox.grid(row=0, column=0, sticky="w")
@@ -3856,7 +3961,7 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
 
     # couleur
     co = ttk.LabelFrame(f, text="Couleur / texture", padding=8)
-    co.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+    co.grid(row=1, column=0, rowspan=3, sticky="new", pady=(0, 8), padx=(0, 8))
     color = {"rgb": tuple(c0["couleur"])}
     sw = tk.Label(co, width=6, background="#%02x%02x%02x" % tuple(int(x * 255) for x in color["rgb"]), relief="groove")
     sw.grid(row=0, column=1, sticky="w", padx=6)
@@ -3873,10 +3978,37 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
     ttk.Label(co, text="Taille de l'image (m)").grid(row=2, column=0, sticky="w")
     ttk.Spinbox(co, from_=0.05, to=50, increment=0.1, textvariable=num("taille_tex", 1.0), width=6).grid(row=2, column=1, sticky="w", padx=6)
     row_slider(co, 3, "Rotation de la texture", "rotation_tex", 0.0, 0, 180)
+    row_slider(co, 4, "Décalage horizontal (m)", "decalage_u", 0.0, -2, 2)
+    row_slider(co, 5, "Décalage vertical (m)", "decalage_v", 0.0, -2, 2)
+    row_slider(co, 6, "Luminosité", "luminosite", 0.0, -1, 1, "corrige l'image")
+    row_slider(co, 7, "Contraste", "contraste_tex", 1.0, 0, 2)
+    row_slider(co, 8, "Saturation", "saturation", 1.0, 0, 2)
+    row_slider(co, 9, "Teinte (°)", "teinte", 0.0, -180, 180)
+
+    # procedural : quand on n'a pas d'image
+    pc = ttk.LabelFrame(f, text="Texture sans image (procédurale)", padding=8)
+    pc.grid(row=4, column=0, sticky="new", pady=(0, 8), padx=(0, 8))
+    v["procedural"] = tk.StringVar(value=c0.get("procedural", "Aucune"))
+    ttk.Combobox(pc, values=("Aucune", "Bruit (variation de couleur)", "Usure / saleté dans les angles"),
+                 textvariable=v["procedural"], state="readonly", width=32).grid(row=0, column=0, columnspan=2, sticky="w")
+    row_slider(pc, 1, "Variation / intensité", "proc_variation", 0.3, 0, 1)
+    row_slider(pc, 2, "Taille du motif (m)", "proc_taille", 0.3, 0.02, 3)
+    ttk.Label(pc, foreground="#777", wraplength=420, justify="left",
+              text="Bruit : enduit, béton, pierre sans texture. Usure : salit les coins et les jonctions (aspect vécu). "
+                   "Visible au rendu V-Ray.").grid(row=3, column=0, columnspan=4, sticky="w")
+    cosmos_src = ((state.get("cosmos") or {}).get(first) or {}).get("dossier")
+    if cosmos_src:
+        def from_cosmos():
+            for role, path in cosmos_textures(cosmos_src).items():
+                if role in v:
+                    v[role].set(path)
+            live()
+        ttk.Button(co, text="⇩ Reprendre les textures du matériau Cosmos", command=from_cosmos).grid(
+            row=10, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     # reflets
     rf = ttk.LabelFrame(f, text="Reflets", padding=8)
-    rf.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+    rf.grid(row=1, column=1, sticky="ew", pady=(0, 8))
     row_slider(rf, 0, "Réflexion", "reflet", 0.1, 0, 1, "0 = aucun reflet")
     row_slider(rf, 1, "Brillance", "brillance", 0.5, 0, 1, "1 = miroir net")
     row_slider(rf, 2, "Métal", "metal", 0.0, 0, 1)
@@ -3885,7 +4017,7 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
 
     # transparence
     tr = ttk.LabelFrame(f, text="Transparence", padding=8)
-    tr.grid(row=3, column=0, sticky="ew", pady=(0, 8))
+    tr.grid(row=2, column=1, sticky="ew", pady=(0, 8))
     row_slider(tr, 0, "Opacité", "opacite", 1.0, 0, 1, "0 = invisible")
     row_file(tr, 1, "Texture d'opacité", "tex_opacite")
     row_slider(tr, 2, "Réfraction (verre)", "refraction", 0.0, 0, 1)
@@ -3893,7 +4025,7 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
 
     # relief + lumiere
     re_ = ttk.LabelFrame(f, text="Relief et lumière", padding=8)
-    re_.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+    re_.grid(row=3, column=1, sticky="ew", pady=(0, 8))
     row_file(re_, 0, "Texture de relief", "tex_relief")
     v["type_relief"] = tk.StringVar(value=c0.get("type_relief", "Bump (gris)"))
     ttk.Combobox(re_, values=("Bump (gris)", "Normal map"), textvariable=v["type_relief"], state="readonly", width=14).grid(
@@ -3941,12 +4073,12 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
         win.destroy()
     win.protocol("WM_DELETE_WINDOW", cancel)
     bar = ttk.Frame(f)
-    bar.grid(row=5, column=0, sticky="ew")
+    bar.grid(row=8, column=0, columnspan=2, sticky="ew")
     ttk.Button(bar, text="Revenir au matériau d'origine", command=reset).grid(row=0, column=0)
     ttk.Button(bar, text="Annuler", command=cancel).grid(row=0, column=1, padx=(80, 4))
     ttk.Button(bar, text="OK", command=ok).grid(row=0, column=2)
     tip = ttk.Frame(f)
-    tip.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+    tip.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(8, 0))
     ttk.Label(tip, foreground="#2b5d8a", wraplength=420, justify="left",
               text="Aperçu en direct : ouvre la visionneuse 3D, chaque réglage s'y voit tout de suite sur la surface "
                    "(images .jpg / .png ; les .tx et .exr ne s'affichent qu'au rendu).").grid(row=0, column=0, sticky="w")
