@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.4 (lumières)"
+VERSION = "20/10 - v4.5 (perspective corrigée)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1053,7 +1053,9 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <button id="bApercu" style="position:absolute;right:120px;top:10px;z-index:5;background:var(--acc);border-color:var(--acc);color:#fff;padding:6px 12px">⚡ Aperçu V-Ray</button>
 <div id="apercu" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:7;background:rgba(10,11,13,.6)">
 <div style="position:relative"><img id="apImg" style="display:block;max-width:100%;max-height:100%;box-shadow:0 0 0 1px #555"><div id="apMsg" style="color:#fff;font-size:15px;padding:20px"></div>
-<button id="apClose" style="position:absolute;right:8px;top:8px">✕ Revenir à la 3D</button></div></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
+<button id="apClose" style="position:absolute;right:8px;top:8px">✕ Revenir à la 3D</button>
+<div id="apMix" style="position:absolute;left:8px;top:8px;background:rgba(20,22,26,.85);padding:5px 9px;border-radius:6px;font-size:12px;display:none">
+Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" value="1" style="width:130px;vertical-align:middle"></div></div></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
@@ -1477,9 +1479,11 @@ function showApercu(a){const box=$("apercu"); if(!apWait&&a.etat!=="calcul")retu
  box.style.display="flex"; const img=$("apImg"), m=$("apMsg");
  if(a.etat==="calcul"){img.style.display="none"; m.style.display=""; m.textContent="⚡ Calcul de l'aperçu V-Ray (petite image, ~20 à 40 s)…"}
  else if(a.etat==="pret"){fetch("/api/apercu_img").then(r=>r.json()).then(j=>{img.src="data:image/png;base64,"+j.d; img.style.display=""; m.style.display="none";
-  const st=$("stage"); img.style.width=Math.min(st.clientWidth-60,(st.clientHeight-60)*aspect)+"px"}); apWait=false}
+  const cv=renderer.domElement.getBoundingClientRect(); img.style.width=cv.width+"px"; img.style.height=cv.height+"px";   // meme cadre que la 3D
+  $("apMix").style.display=""; $("apOp").value=1; $("apOp").oninput()}); apWait=false}
  else{img.style.display="none"; m.style.display=""; m.textContent="Aperçu impossible — "+a.etat; apWait=false}}
 $("apClose").onclick=()=>{$("apercu").style.display="none"};
+$("apOp").oninput=()=>{const o=+$("apOp").value; $("apImg").style.opacity=o; $("apercu").style.background=`rgba(10,11,13,${0.6*o})`};
 $("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apImg").style.display="none"; $("apMsg").style.display=""; $("apMsg").textContent="⚡ Préparation…";
  fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apercu",eye:cam.position.toArray(),target:controls.target.toArray(),
   focale:+$("foc").value,mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
@@ -1675,7 +1679,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
          f"ISO={iso}; exposure={0 if (opts.get('hdri') and not opts.get('hdri_soleil', True)) else 1}; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
          f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
-         f"specify_focus=1; focus_distance={dist:.3f}; lens_shift={shift:.4f}; }}",
+         f"specify_focus=1; focus_distance={dist:.3f}; lens_shift=0; vertical_offset={shift:.4f}; }}",
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
          f"  intensity_multiplier={float(opts.get('soleil_intensite', 1.0)):.3f};\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
