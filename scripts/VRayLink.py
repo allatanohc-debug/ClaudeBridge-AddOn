@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.3c (V-Ray interactif)"
+VERSION = "20/10 - v6.0 (nouvelle interface)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2555,6 +2555,82 @@ def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine:
     return bat
 
 
+THEMES = {
+    "clair": dict(bg="#f4f5f7", panel="#ffffff", side="#eceef2", text="#1f2328", mute="#6b7280", border="#d9dde3",
+                  field="#ffffff", accent="#1f2a37", accent_fg="#ffffff", accent_hover="#334155", sel="#2563eb",
+                  side_on="#ffffff", report="#f7f8fa"),
+    "sombre": dict(bg="#15171b", panel="#1c1f24", side="#101215", text="#e6e8eb", mute="#9aa1ab", border="#2c3038",
+                   field="#23272d", accent="#2563eb", accent_fg="#ffffff", accent_hover="#3b82f6", sel="#60a5fa",
+                   side_on="#23272d", report="#1a1d22"),
+}
+
+
+def apply_theme(root, mode: str) -> dict:
+    """Style clair / sombre pour toute l'interface (fenetres, onglets, boutons, listes)."""
+    from tkinter import ttk
+    c = THEMES.get(mode, THEMES["clair"])
+    st = ttk.Style(root)
+    try:
+        st.theme_use("clam")
+    except Exception:  # noqa: BLE001
+        pass
+    font = ("Segoe UI", 9)
+    st.configure(".", background=c["panel"], foreground=c["text"], fieldbackground=c["field"], bordercolor=c["border"],
+                 lightcolor=c["panel"], darkcolor=c["panel"], troughcolor=c["bg"], selectbackground=c["sel"],
+                 selectforeground="#ffffff", insertcolor=c["text"], font=font)
+    st.configure("TFrame", background=c["panel"])
+    st.configure("Side.TFrame", background=c["side"])
+    st.configure("Bar.TFrame", background=c["panel"])
+    st.configure("TLabel", background=c["panel"], foreground=c["text"])
+    st.configure("Mute.TLabel", background=c["panel"], foreground=c["mute"])
+    st.configure("Title.TLabel", background=c["panel"], foreground=c["text"], font=("Segoe UI", 13, "bold"))
+    st.configure("TLabelframe", background=c["panel"], bordercolor=c["border"], relief="flat")
+    st.configure("TLabelframe.Label", background=c["panel"], foreground=c["text"], font=("Segoe UI", 10, "bold"))
+    st.configure("TButton", background=c["field"], foreground=c["text"], bordercolor=c["border"], padding=(10, 5),
+                 relief="solid", borderwidth=1, lightcolor=c["field"], darkcolor=c["field"], focusthickness=0)
+    st.map("TButton", background=[("active", c["side"])])
+    st.configure("Accent.TButton", background=c["accent"], foreground=c["accent_fg"], bordercolor=c["accent"],
+                 padding=(14, 9), font=("Segoe UI", 10, "bold"))
+    st.map("Accent.TButton", background=[("active", c["accent_hover"])], foreground=[("active", c["accent_fg"])])
+    st.configure("Side.TButton", background=c["side"], foreground=c["mute"], bordercolor=c["side"], padding=(6, 8),
+                 font=("Segoe UI", 8), anchor="center", justify="center")
+    st.map("Side.TButton", background=[("active", c["side_on"])], foreground=[("active", c["text"])])
+    for w in ("TCheckbutton", "TRadiobutton"):
+        st.configure(w, background=c["panel"], foreground=c["text"], indicatorbackground=c["field"],
+                     indicatorforeground=c["sel"])
+        st.map(w, background=[("active", c["panel"])], indicatorbackground=[("selected", c["sel"])],
+               indicatorforeground=[("selected", "#ffffff")])
+    for w in ("TCombobox", "TSpinbox", "TEntry"):
+        st.configure(w, fieldbackground=c["field"], background=c["field"], foreground=c["text"], arrowcolor=c["mute"],
+                     bordercolor=c["border"], padding=3)
+        st.map(w, fieldbackground=[("readonly", c["field"])], foreground=[("readonly", c["text"])])
+    st.configure("TNotebook", background=c["bg"], bordercolor=c["bg"], tabmargins=(6, 6, 6, 0))
+    st.configure("TNotebook.Tab", background=c["bg"], foreground=c["mute"], padding=(14, 6), bordercolor=c["bg"])
+    st.map("TNotebook.Tab", background=[("selected", c["panel"])], foreground=[("selected", c["text"])])
+    st.configure("Vertical.TScrollbar", background=c["side"], troughcolor=c["panel"], bordercolor=c["panel"], arrowcolor=c["mute"])
+    st.configure("Horizontal.TScrollbar", background=c["side"], troughcolor=c["panel"], bordercolor=c["panel"], arrowcolor=c["mute"])
+    st.configure("TScale", background=c["panel"], troughcolor=c["border"])
+    root.option_add("*Toplevel*background", c["panel"])
+    root.option_add("*TCombobox*Listbox*background", c["field"])
+    root.option_add("*TCombobox*Listbox*foreground", c["text"])
+
+    def walk(w):
+        try:
+            cls = w.winfo_class()
+            if cls == "Canvas" and getattr(w, "_theme", False):
+                w.configure(background=c["panel"])
+            elif cls == "Text":
+                w.configure(background=c["report"], foreground=c["text"], insertbackground=c["text"])
+            elif cls in ("Toplevel", "Tk"):
+                w.configure(background=c["panel"])
+            for ch in w.winfo_children():
+                walk(ch)
+        except Exception:  # noqa: BLE001
+            pass
+    walk(root)
+    return c
+
+
 def scroll_area(parent, padding=10):
     """Cadre qui defile (molette / barres) : la fenetre peut etre aussi petite qu'on veut, rien n'est coupe.
     Retourne (boite a placer, cadre interieur a remplir)."""
@@ -2562,6 +2638,7 @@ def scroll_area(parent, padding=10):
     from tkinter import ttk
     box = ttk.Frame(parent)
     cv = tk.Canvas(box, highlightthickness=0, borderwidth=0)
+    cv._theme = True
     vs = ttk.Scrollbar(box, orient="vertical", command=cv.yview)
     hs = ttk.Scrollbar(box, orient="horizontal", command=cv.xview)
     cv.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
@@ -2637,12 +2714,30 @@ def window(state: dict) -> None:
     nb.grid(sticky="nsew")
     root.columnconfigure(0, weight=1)
     root.rowconfigure(0, weight=1)
-    rendu_box, outer = scroll_area(nb, padding=12)
-    nb.add(rendu_box, text="  🎬 Rendu  ")
+    couleurs = apply_theme(root, opts.get("theme", "clair"))
+    rendu_tab = ttk.Frame(nb)
+    nb.add(rendu_tab, text="  🎬 Rendu  ")
+    rendu_tab.rowconfigure(0, weight=1)
+    rendu_tab.columnconfigure(1, weight=1)
+    side = ttk.Frame(rendu_tab, style="Side.TFrame", padding=(4, 10))
+    side.grid(row=0, column=0, rowspan=2, sticky="ns")
+    rendu_box, outer = scroll_area(rendu_tab, padding=(14, 10))
+    rendu_box.grid(row=0, column=1, sticky="nsew")
+    action_bar = ttk.Frame(rendu_tab, style="Bar.TFrame", padding=(14, 8))
+    action_bar.grid(row=1, column=1, sticky="ew")
     status = tk.StringVar(value="Choisis la vue, le soleil et la qualité, puis « Rendre cette vue ».")
     head = ttk.Frame(outer)
     head.grid(row=0, column=0, sticky="ew")
-    ttk.Label(head, text="V-Ray Link", font=("Segoe UI", 13, "bold")).grid(row=0, column=0, sticky="w")
+    ttk.Label(head, text="V-Ray Link", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+    head.columnconfigure(2, weight=1)
+
+    def bascule_theme():
+        opts["theme"] = "sombre" if opts.get("theme", "clair") == "clair" else "clair"
+        save_settings(state)
+        apply_theme(root, opts["theme"])
+        theme_btn.configure(text="☀ Clair" if opts["theme"] == "sombre" else "🌙 Sombre")
+    theme_btn = ttk.Button(head, text="☀ Clair" if opts.get("theme") == "sombre" else "🌙 Sombre", command=bascule_theme)
+    theme_btn.grid(row=0, column=3, sticky="e")
     ok = bool(state["vray"])
     ttk.Label(head, text=("● V-Ray trouvé" if ok else "● V-Ray introuvable"),
               foreground="#2f7a3e" if ok else "#a33").grid(row=0, column=1, sticky="w", padx=10)
@@ -2929,7 +3024,8 @@ def window(state: dict) -> None:
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
-    report = tk.Text(outer, width=78, height=6, wrap="word", state="disabled", background="#f6f6f6",
+    report = tk.Text(outer, width=78, height=6, wrap="word", state="disabled", background=couleurs["report"],
+                     foreground=couleurs["text"], relief="flat",
                      font=("Segoe UI", 9))
     report.grid(row=6, column=0, pady=(6, 0))
     ttk.Label(outer, textvariable=status, foreground="#555", wraplength=560).grid(row=7, column=0, sticky="w")
@@ -3351,6 +3447,32 @@ def window(state: dict) -> None:
         [n for n, v in cam_vars.items() if v.get()])).grid(row=0, column=1, padx=3)
     ttk.Button(buttons, text="▶ Rendre cette vue", command=lambda: render([current.get()] if current.get() else [])
                ).grid(row=0, column=2, padx=3)
+    buttons.grid_remove()                      # remplace par la barre d'action fixe en bas
+
+    action_bar.columnconfigure(0, weight=1)
+    ttk.Button(action_bar, text="▶  Lancer le rendu", style="Accent.TButton",
+               command=lambda: render([current.get()] if current.get() else [])).grid(row=0, column=0, sticky="ew")
+    ttk.Button(action_bar, text="⚙", width=3, command=lambda: advanced()).grid(row=0, column=1, padx=(8, 0))
+    plus_menu = tk.Menu(root, tearoff=0)
+    plus_menu.add_command(label="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen())
+    plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
+    plus_menu.add_command(label="🧭 Visionneuse 3D", command=lambda: open_viewer())
+    plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
+    plus_btn = ttk.Button(action_bar, text="⋯", width=3)
+    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 110))
+    plus_btn.grid(row=0, column=2, padx=(6, 0))
+
+    def aller(frame):
+        try:
+            root.update_idletasks()
+            tot = max(1, outer.winfo_height())
+            rendu_box.cv.yview_moveto(max(0.0, (frame.winfo_y() - 6) / tot))
+        except Exception:  # noqa: BLE001
+            pass
+    for i_, (ico, lab, fr) in enumerate((("📷", "Vues", box), ("📶", "Qualité", q), ("☀", "Soleil\n& ciel", so),
+                                          ("🎨", "Ambiance", am), ("▶", "Rendu", report))):
+        ttk.Button(side, text=f"{ico}\n{lab}", style="Side.TButton", width=8,
+                   command=lambda fr=fr: aller(fr)).grid(row=i_, column=0, pady=2)
 
     # --- visionneuse 3D (page web locale)
     import queue
@@ -3663,8 +3785,8 @@ def window(state: dict) -> None:
         try:
             root.update_idletasks()
             sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-            w = min(outer.winfo_reqwidth() + 30, int(sw * 0.9))
-            h = min(outer.winfo_reqheight() + 60, int(sh * 0.8))
+            w = min(outer.winfo_reqwidth() + side.winfo_reqwidth() + 40, int(sw * 0.9))
+            h = min(outer.winfo_reqheight() + 130, int(sh * 0.85))
             root.geometry(f"{w}x{h}")
             root.minsize(360, 260)
         except Exception:  # noqa: BLE001
