@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.2 (interface élastique)"
+VERSION = "20/10 - v6.3 (onglets élastiques, zoom vignettes)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2558,17 +2558,27 @@ def launch_batch(vray: str, jobs: list[tuple[Path, Path]], folder: Path, engine:
 THEMES = {
     "clair": dict(bg="#f4f5f7", panel="#ffffff", side="#eceef2", text="#1f2328", mute="#6b7280", border="#d9dde3",
                   field="#ffffff", accent="#1f2a37", accent_fg="#ffffff", accent_hover="#334155", sel="#2563eb",
-                  side_on="#ffffff", report="#f7f8fa"),
+                  side_on="#ffffff", report="#f7f8fa", hi="#dbeafe"),
     "sombre": dict(bg="#15171b", panel="#1c1f24", side="#101215", text="#e6e8eb", mute="#9aa1ab", border="#2c3038",
                    field="#23272d", accent="#2563eb", accent_fg="#ffffff", accent_hover="#3b82f6", sel="#60a5fa",
-                   side_on="#23272d", report="#1a1d22"),
+                   side_on="#23272d", report="#1a1d22", hi="#1e3a5f"),
 }
+
+
+COULEURS: dict = dict(THEMES["clair"])           # theme en cours (vignettes, listes)
+VIGNETTE = {"v": 96}                              # taille des vignettes Cosmos (zoom comme l'explorateur de fichiers)
+
+
+def _c(k: str) -> str:
+    return COULEURS.get(k, "#ffffff")
 
 
 def apply_theme(root, mode: str) -> dict:
     """Style clair / sombre pour toute l'interface (fenetres, onglets, boutons, listes)."""
     from tkinter import ttk
     c = THEMES.get(mode, THEMES["clair"])
+    COULEURS.clear()
+    COULEURS.update(c)
     st = ttk.Style(root)
     try:
         st.theme_use("clam")
@@ -2594,11 +2604,11 @@ def apply_theme(root, mode: str) -> dict:
                  padding=(14, 9), font=("Segoe UI", 10, "bold"))
     st.map("Accent.TButton", background=[("active", c["accent_hover"])], foreground=[("active", c["accent_fg"])])
     st.configure("Side.TButton", background=c["side"], foreground=c["mute"], bordercolor=c["side"], lightcolor=c["side"],
-                 darkcolor=c["side"], padding=(6, 9), font=("Segoe UI", 8), anchor="center", justify="center")
+                 darkcolor=c["side"], padding=(8, 10), font=("Segoe UI", 10), anchor="center", justify="center")
     st.map("Side.TButton", background=[("active", c["side_on"])], foreground=[("active", c["text"])],
            bordercolor=[("active", c["side_on"])])
     st.configure("SideOn.TButton", background=c["side_on"], foreground=c["sel"], bordercolor=c["border"],
-                 lightcolor=c["side_on"], darkcolor=c["side_on"], padding=(6, 9), font=("Segoe UI", 8, "bold"),
+                 lightcolor=c["side_on"], darkcolor=c["side_on"], padding=(8, 10), font=("Segoe UI", 10, "bold"),
                  anchor="center", justify="center")
     st.configure("Head.TFrame", background=c["panel"])
     st.configure("Logo.TLabel", background=c["panel"], foreground=c["sel"], font=("Segoe UI", 18, "bold italic"))
@@ -2625,6 +2635,12 @@ def apply_theme(root, mode: str) -> dict:
     st.configure("Vertical.TScrollbar", background=c["side"], troughcolor=c["panel"], bordercolor=c["panel"], arrowcolor=c["mute"])
     st.configure("Horizontal.TScrollbar", background=c["side"], troughcolor=c["panel"], bordercolor=c["panel"], arrowcolor=c["mute"])
     st.configure("TScale", background=c["panel"], troughcolor=c["border"])
+    st.configure("Treeview", background=c["field"], fieldbackground=c["field"], foreground=c["text"], rowheight=26,
+                 bordercolor=c["border"], font=("Segoe UI", 9))
+    st.map("Treeview", background=[("selected", c["sel"])], foreground=[("selected", "#ffffff")])
+    st.configure("Treeview.Heading", background=c["side"], foreground=c["text"], bordercolor=c["border"],
+                 font=("Segoe UI", 9, "bold"), relief="flat")
+    st.map("Treeview.Heading", background=[("active", c["side_on"])])
     root.option_add("*Toplevel*background", c["panel"])
     root.option_add("*TCombobox*Listbox*background", c["field"])
     root.option_add("*TCombobox*Listbox*foreground", c["text"])
@@ -2634,6 +2650,10 @@ def apply_theme(root, mode: str) -> dict:
             cls = w.winfo_class()
             if cls == "Canvas" and getattr(w, "_theme", False):
                 w.configure(background=c["panel"])
+            elif cls in ("Frame", "Label") and getattr(w, "_theme", False):
+                w.configure(background=c["panel"])
+                if cls == "Label":
+                    w.configure(foreground=c["text"])
             elif cls == "Text":
                 w.configure(background=c["report"], foreground=c["text"], insertbackground=c["text"])
             elif cls in ("Toplevel", "Tk"):
@@ -2644,6 +2664,36 @@ def apply_theme(root, mode: str) -> dict:
             pass
     walk(root)
     return c
+
+
+def onglet_elastique(root, tab_box, left, right, seuil: int = 820) -> None:
+    """Materiaux / Objets : cote a cote quand c'est large, l'un sous l'autre quand la fenetre est fine."""
+    etat = {"fin": None, "id": None}
+
+    garde = ("row", "column", "rowspan", "columnspan", "padx", "pady")
+    etat["gl"] = {k: left.grid_info()[k] for k in garde}
+    etat["gr"] = {k: right.grid_info()[k] for k in garde}
+
+    def go():
+        try:
+            fin = tab_box.cv.winfo_width() < seuil
+            if fin == etat["fin"]:
+                return
+            etat["fin"] = fin
+            if fin:
+                left.grid_configure(row=0, column=0, columnspan=2, rowspan=1, padx=0, pady=(0, 8))
+                right.grid_configure(row=9, column=0, columnspan=2, rowspan=1, pady=(8, 0))
+            else:
+                for w_, g_ in ((left, etat["gl"]), (right, etat["gr"])):
+                    w_.grid_configure(**g_)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def plan(_e=None):
+        if etat["id"]:
+            root.after_cancel(etat["id"])
+        etat["id"] = root.after(120, go)
+    tab_box.cv.bind("<Configure>", plan, add="+")
 
 
 def scroll_area(parent, padding=10):
@@ -3887,7 +3937,7 @@ def window(state: dict) -> None:
             root.after_cancel(planifie["id"])
         planifie["id"] = root.after(90, reflow)
     rendu_box.cv.bind("<Configure>", _sur_taille, add="+")
-    root.bind("<Configure>", _sur_taille, add="+")
+    root.bind("<Configure>", lambda e: _sur_taille() if e.widget is root else None, add="+")
     root.minsize(300, 300)
     root.mainloop()
 
@@ -4401,6 +4451,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     # ---------------- droite : bibliotheque Cosmos (modeles 3D)
     right = ttk.LabelFrame(tab, text="Objets 3D (Chaos Cosmos)", padding=6)
     right.grid(row=0, column=1, sticky="nsew")
+    onglet_elastique(root, tab_box, left, right)
     right.rowconfigure(2, weight=1)
     right.columnconfigure(0, weight=1)
     head = ttk.Frame(right)
@@ -4414,14 +4465,37 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     ttk.Entry(srch, textvariable=query, width=20).pack(side="left", padx=4)
     cat_box = ttk.Combobox(srch, textvariable=cat, state="readonly", width=16, values=["Toutes"])
     cat_box.pack(side="left", padx=4)
-    canvas = tk.Canvas(right, width=470, height=360, background="#fafafa", highlightthickness=0)
+    ttk.Label(srch, text="🔍").pack(side="left", padx=(8, 0))
+    zoom_var = tk.DoubleVar(value=VIGNETTE["v"])
+    zoom_t = {"id": None}
+
+    def _zoom(*_):
+        def go():
+            VIGNETTE["v"] = int(zoom_var.get())
+            images.clear()
+            fill_grid()
+        if zoom_t["id"]:
+            root.after_cancel(zoom_t["id"])
+        zoom_t["id"] = root.after(250, go)
+    ttk.Scale(srch, from_=56, to=220, variable=zoom_var, length=110, command=_zoom).pack(side="left", padx=4)
+    larg_t = {"w": 0}
+    canvas = tk.Canvas(right, width=320, height=360, background=_c("panel"), highlightthickness=0)
+    canvas._theme = True
     canvas.grid(row=2, column=0, sticky="nsew")
     vs = ttk.Scrollbar(right, orient="vertical", command=canvas.yview)
     vs.grid(row=2, column=1, sticky="ns")
     canvas.configure(yscrollcommand=vs.set)
-    grid = tk.Frame(canvas, background="#fafafa")
+    grid = tk.Frame(canvas, background=_c("panel"))
+    grid._theme = True
     canvas.create_window((0, 0), window=grid, anchor="nw")
     grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def _larg(e):
+        n_ = max(1, e.width // (VIGNETTE["v"] + 24))
+        if n_ != larg_t["w"]:
+            larg_t["w"] = n_
+            root.after(120, fill_grid)
+    canvas.bind("<Configure>", _larg, add="+")
     empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
         "Aucun objet Cosmos sur ce PC pour l'instant.\n\nClique « Ouvrir Chaos Cosmos », choisis un objet "
         "(meubles, plantes, voitures, personnages…) et télécharge-le : il apparaît ici tout seul."))
@@ -4433,7 +4507,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         for folder, cell in cells.items():
             on = entry is not None and folder == entry["dossier"]
             for w in (cell, *cell.winfo_children()):
-                w.configure(background="#cfe6ff" if on else "#fafafa")
+                w.configure(background=_c("hi") if on else _c("panel"))
         if entry:
             msg.set(f"Objet choisi : {entry['nom']}. Clique « Placer dans Archicad » puis clique son emplacement dans le plan.")
 
@@ -4448,10 +4522,11 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         else:
             empty.grid(row=2, column=0, sticky="nw", padx=10, pady=10)
         for k, e in enumerate(shown):
-            cell = tk.Frame(grid, background="#fafafa", padx=4, pady=4, cursor="hand2")
-            cell.grid(row=k // 4, column=k % 4, sticky="n")
-            tk.Label(cell, background="#fafafa", image=images.get(e["dossier"]) or blank).pack()
-            tk.Label(cell, text=e["nom"], background="#fafafa", wraplength=104, font=("Segoe UI", 8)).pack()
+            cell = tk.Frame(grid, background=_c("panel"), padx=4, pady=4, cursor="hand2")
+            cols_ = max(1, (canvas.winfo_width() or 320) // (VIGNETTE["v"] + 24))
+            cell.grid(row=k // cols_, column=k % cols_, sticky="n")
+            tk.Label(cell, background=_c("panel"), image=images.get(e["dossier"]) or blank).pack()
+            tk.Label(cell, text=e["nom"], background=_c("panel"), foreground=_c("text"), wraplength=VIGNETTE["v"] + 8, font=("Segoe UI", 8)).pack()
             cells[e["dossier"]] = cell
             for w in (cell, *cell.winfo_children()):
                 w.bind("<Button-1>", lambda _e, en=e: highlight(en))
@@ -4464,7 +4539,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             if not todo:
                 return
             e = todo.pop(0)
-            images[e["dossier"]] = thumbnail(e)
+            images[e["dossier"]] = thumbnail(e, VIGNETTE["v"])
             cell = cells.get(e["dossier"])
             if cell and images[e["dossier"]]:
                 cell.winfo_children()[0].configure(image=images[e["dossier"]])
@@ -4693,7 +4768,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         pick = {"e": chosen["entry"] if chosen["entry"] in plants else (plants[0] if plants else None)}
 
         ttk.Label(f, text="1.  Quelle plante ?", font=big).grid(row=0, column=0, sticky="w")
-        grid_ = tk.Frame(f, background="#fafafa")
+        grid_ = tk.Frame(f, background=_c("panel"))
         grid_.grid(row=1, column=0, sticky="w", pady=(4, 10))
         cells_ = {}
 
@@ -4702,7 +4777,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             for d, c in cells_.items():
                 on = d == e["dossier"]
                 for w in (c, *c.winfo_children()):
-                    w.configure(background="#cfe6ff" if on else "#fafafa")
+                    w.configure(background=_c("hi") if on else _c("panel"))
             what.set(f"→ {e['nom']}  ({kind_of(e).lower()})")
 
         if not plants:
@@ -4710,10 +4785,10 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             ttk.Button(grid_, text="🌐 Télécharger de l'herbe / des arbres dans Cosmos (3D Models › Plants)",
                        command=lambda: (open_cosmos(), win.destroy())).grid(row=1, column=0, sticky="w", pady=4)
         for k, e in enumerate(plants[:12]):
-            c = tk.Frame(grid_, background="#fafafa", padx=4, pady=4, cursor="hand2")
+            c = tk.Frame(grid_, background=_c("panel"), padx=4, pady=4, cursor="hand2")
             c.grid(row=k // 6, column=k % 6)
-            tk.Label(c, image=images.get(e["dossier"]) or blank, background="#fafafa").pack()
-            tk.Label(c, text=e["nom"], wraplength=96, font=("Segoe UI", 8), background="#fafafa").pack()
+            tk.Label(c, image=images.get(e["dossier"]) or blank, background=_c("panel")).pack()
+            tk.Label(c, text=e["nom"], wraplength=96, font=("Segoe UI", 8), background=_c("panel"), foreground=_c("text")).pack()
             cells_[e["dossier"]] = c
             for w in (c, *c.winfo_children()):
                 w.bind("<Button-1>", lambda _e, en=e: choose(en))
@@ -5483,6 +5558,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     # ---------------- droite : bibliotheque Cosmos
     right = ttk.LabelFrame(tab, text="Matériaux V-Ray (Chaos Cosmos)", padding=6)
     right.grid(row=0, column=1, rowspan=2, sticky="nsew")
+    onglet_elastique(root, tab_box, left, right)
     right.columnconfigure(0, weight=1)
     right.rowconfigure(2, weight=1)
     bar = ttk.Frame(right)
@@ -5498,17 +5574,40 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     ttk.Entry(srch, textvariable=query, width=20).pack(side="left", padx=4)
     cat_box = ttk.Combobox(srch, textvariable=cat, state="readonly", width=16, values=["Toutes"])
     cat_box.pack(side="left", padx=4)
+    ttk.Label(srch, text="🔍").pack(side="left", padx=(8, 0))
+    zoom_var = tk.DoubleVar(value=VIGNETTE["v"])
+    zoom_t = {"id": None}
+
+    def _zoom(*_):
+        def go():
+            VIGNETTE["v"] = int(zoom_var.get())
+            images.clear()
+            fill_grid()
+        if zoom_t["id"]:
+            root.after_cancel(zoom_t["id"])
+        zoom_t["id"] = root.after(250, go)
+    ttk.Scale(srch, from_=56, to=220, variable=zoom_var, length=110, command=_zoom).pack(side="left", padx=4)
+    larg_t = {"w": 0}
     count = ttk.Label(srch, text="", foreground="#777")
     count.pack(side="left", padx=6)
 
-    canvas = tk.Canvas(right, width=470, height=380, background="#fafafa", highlightthickness=0)
+    canvas = tk.Canvas(right, width=320, height=380, background=_c("panel"), highlightthickness=0)
+    canvas._theme = True
     canvas.grid(row=2, column=0, sticky="nsew")
     vs = ttk.Scrollbar(right, orient="vertical", command=canvas.yview)
     vs.grid(row=2, column=1, sticky="ns")
     canvas.configure(yscrollcommand=vs.set)
-    grid = tk.Frame(canvas, background="#fafafa")
+    grid = tk.Frame(canvas, background=_c("panel"))
+    grid._theme = True
     canvas.create_window((0, 0), window=grid, anchor="nw")
     grid.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+
+    def _larg(e):
+        n_ = max(1, e.width // (VIGNETTE["v"] + 24))
+        if n_ != larg_t["w"]:
+            larg_t["w"] = n_
+            root.after(120, fill_grid)
+    canvas.bind("<Configure>", _larg, add="+")
     canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
                     if str(nb.select()) == str(tab_box) else None)
     empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
@@ -5526,9 +5625,9 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         chosen["entry"] = entry
         for folder, cell in cells.items():
             on = entry is not None and folder == entry["dossier"]
-            cell.configure(background="#cfe6ff" if on else "#fafafa")
+            cell.configure(background=_c("hi") if on else _c("panel"))
             for w in cell.winfo_children():
-                w.configure(background="#cfe6ff" if on else "#fafafa")
+                w.configure(background=_c("hi") if on else _c("panel"))
         if entry:
             msg.set(f"Matériau choisi : {entry['nom']}  ({entry['categorie']}).  Clique « Associer » pour l'appliquer aux "
                     f"surfaces sélectionnées.")
@@ -5545,15 +5644,15 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             empty.grid(row=2, column=0, sticky="nw", padx=10, pady=10)
         else:
             empty.grid_forget()
-        cols = 4
+        cols = max(1, (canvas.winfo_width() or 320) // (VIGNETTE["v"] + 24))
         for k, e in enumerate(shown):
-            cell = tk.Frame(grid, background="#fafafa", padx=4, pady=4, cursor="hand2")
+            cell = tk.Frame(grid, background=_c("panel"), padx=4, pady=4, cursor="hand2")
             cell.grid(row=k // cols, column=k % cols, sticky="n")
             img = images.get(e["dossier"]) or blank()
-            pic = tk.Label(cell, background="#fafafa", image=img)
+            pic = tk.Label(cell, background=_c("panel"), image=img)
             pic.pack()
-            tk.Label(cell, text=e["nom"], background="#fafafa", wraplength=104, font=("Segoe UI", 8),
-                     justify="center").pack()
+            tk.Label(cell, text=e["nom"], background=_c("panel"), foreground=_c("text"), wraplength=VIGNETTE["v"] + 8,
+                     font=("Segoe UI", 8), justify="center").pack()
             cells[e["dossier"]] = cell
             for w in (cell, *cell.winfo_children()):
                 w.bind("<Button-1>", lambda _e, en=e: highlight(en))
@@ -5566,7 +5665,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         if not todo:
             return
         e = todo.pop(0)
-        img = thumbnail(e)
+        img = thumbnail(e, VIGNETTE["v"])
         images[e["dossier"]] = img
         cell = cells.get(e["dossier"])
         if cell and img:
