@@ -4030,7 +4030,7 @@ def grass_density(folder: str, default: float) -> float:
     try:
         mesh = sorted(Path(folder).glob("*.vrmesh"), key=_lod)[0]
         w, d_ = vrmesh_size(mesh)[:2]
-        return max(default, min(60.0, 4.5 / max(0.01, w * d_)))
+        return max(default, min(60.0, 7.0 / max(0.01, w * d_)))
     except Exception:  # noqa: BLE001
         return default
 
