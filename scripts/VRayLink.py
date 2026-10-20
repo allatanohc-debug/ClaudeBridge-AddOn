@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.3b (V-Ray interactif)"
+VERSION = "20/10 - v5.3c (V-Ray interactif)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3598,9 +3598,8 @@ def window(state: dict) -> None:
                                cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=600)
                 ok_ = image.exists()
                 fx = image.with_name(image.stem + ".effectsResult" + image.suffix)      # image debruitee
-                if ok_ and fx.exists() and fx.stat().st_mtime >= image.stat().st_mtime - 5:
-                    image = fx
-                APERCU.update(etat="pret" if ok_ else "erreur : V-Ray n'a pas produit d'image", fichier=str(image) if ok_ else "",
+                montre = fx if (ok_ and fx.exists() and fx.stat().st_mtime >= image.stat().st_mtime - 5) else image
+                APERCU.update(etat="pret" if ok_ else "erreur : V-Ray n'a pas produit d'image", fichier=str(montre) if ok_ else "",
                               rev=APERCU["rev"] + 1)
             except Exception as error:  # noqa: BLE001
                 APERCU.update(etat=f"erreur : {error}", rev=APERCU["rev"] + 1)
