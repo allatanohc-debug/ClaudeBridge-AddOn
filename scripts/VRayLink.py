@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.4 (gazon : couverture totale)"
+VERSION = "20/10 - v6.5 (bouton Lumières)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1426,7 +1426,7 @@ function addLight(p,n,surf){const t=poseType||"Dôme", off=t==="Spot"||t==="IES"
   couleur:[1,.92,.8],actif:true},JSON.parse(JSON.stringify(LTYPES[t])));
  if(t==="Maillage"){l.surface=surf||""; l.nom="Surface lumineuse "+(surf||"")}
  LUM.push(l); drawLights(); fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"lum_save",liste:LUM})});
- $("mesure").textContent=`✔ ${l.nom} posée. Règle-la dans l'Éditeur V-Ray › Lumières (couleur, intensité, angle…).`; setTimeout(()=>{if(!mesureOn)$("mesure").style.display="none"},4000)}
+ $("mesure").textContent=`✔ ${l.nom} posée. Règle-la dans V-Ray Link › barre de gauche › 💡 Lumières.`; setTimeout(()=>{if(!mesureOn)$("mesure").style.display="none"},4000)}
 renderer.domElement.addEventListener("pointerup",e=>{if(!poseType||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),vmode==="ortho"?ortho:cam);
  const hit=ray.intersectObjects([model,ground],false)[0]; if(!hit)return; const n=(hit.face?hit.face.normal.clone():new THREE.Vector3(0,0,1));
@@ -3545,6 +3545,9 @@ def window(state: dict) -> None:
         for b_ in side_btns:
             b_.configure(style="Side.TButton")
         btn.configure(style="SideOn.TButton")
+        if cible == "@lumieres":                           # liste des lumieres (comme V-Ray) : Editeur V-Ray › Lumieres
+            open_viewer("editeur#lum")
+            return
         if isinstance(cible, str):                         # onglet Materiaux / Objets
             for t_ in nb.tabs():
                 if cible in nb.tab(t_, "text"):
@@ -3553,7 +3556,8 @@ def window(state: dict) -> None:
             nb.select(rendu_tab)
             aller(cible)
     items = (("📷", "Vues", box), ("📶", "Qualité", q), ("☀", "Soleil\n& ciel", so), ("🎨", "Ambiance", am),
-             ("▶", "Rendu", report), None, ("🧱", "Matériaux", "Matériaux"), ("🌴", "Objets", "Objets"))
+             ("▶", "Rendu", report), None, ("🧱", "Matériaux", "Matériaux"), ("🌴", "Objets", "Objets"),
+             ("💡", "Lumières", "@lumieres"))
     for i_, it in enumerate(items):
         if it is None:
             ttk.Separator(side, orient="horizontal").grid(row=i_, column=0, sticky="ew", pady=8)
@@ -5100,6 +5104,7 @@ function setTab(t){tab=t; $("tMat").classList.toggle("on",t==="mat"); $("tLum").
  else{S.remove(room); if(obj)obj.visible=true; S.environment=envTex; L.intensity=2; $("shape").style.display=""; list(); if(cur)build(); else $("params").innerHTML='<div class="empty">Choisis une surface à gauche.</div>'}}
 const envTex=S.environment;
 $("tMat").onclick=()=>setTab("mat"); $("tLum").onclick=()=>setTab("lum");
+if(location.hash==="#lum")setTimeout(()=>setTab("lum"),300);
 $("lImport").onclick=async()=>{$("msg").textContent="Lecture des luminaires dans Archicad…"; await post({action:"lum_import"}); lastEdit=0};
 async function pollL(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev&&Date.now()-lastEdit>1500){lumRev=j.rev; LUM=j.liste||[];
   if(tab==="lum"){lumList(); if(curL>=LUM.length)curL=LUM.length-1; lumForm()}}}catch(_){} setTimeout(pollL,1000)}
