@@ -2998,7 +2998,7 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
         if arrow and math.dist(arrow["a"], c["c"]) < 0.05 + c["r"] * 0.1:
             rot = (math.degrees(math.atan2(arrow["b"][1] - arrow["a"][1], arrow["b"][0] - arrow["a"][0])) + 90) % 360
             traces.append(arrow["g"])
-        lab = min(labels, key=lambda t_: math.dist(t_["p"], (c["c"][0], c["c"][1] - c["r"] - 0.35)), default=None)
+        lab = min(labels, key=lambda t_: math.dist(t_["p"], c["c"]), default=None)      # le nom le plus proche du rond
         if not lab or math.dist(lab["p"], c["c"]) > c["r"] + 2.0:
             lost += 1
             continue
