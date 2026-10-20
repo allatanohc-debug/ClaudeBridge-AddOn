@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.4 (éditeur de matériaux)"
+VERSION = "20/10 - v3.5 (aperçu matériaux en direct)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -828,11 +828,14 @@ def draw_cameras_in_plan(cams: list, state: dict, key: str, current: str = "") -
 # ------------------------------------------------------------ visionneuse 3D ---
 # Une page web locale (three.js) affiche le modele du dernier export : on s'y deplace comme dans la 3D d'Archicad,
 # puis « Rendre cette vue » / « Enregistrer la vue » renvoient la camera a V-Ray Link.
+LIVE_MAT: dict = {"rev": 0, "surfaces": [], "c": {}, "tous": {}}     # reglages en cours (editeur -> visionneuse)
+
+
 def viewer_mesh(key: str) -> bytes:
     """Modele en binaire pour la visionneuse : nv, ni, positions f32, couleurs u8 (rgba), indices u32 (cache)."""
     d = data_dir() / key
     cache, out = d / "geometrie.pkl", d / "visionneuse.bin"
-    if out.exists() and out.stat().st_mtime >= cache.stat().st_mtime:
+    if out.exists() and out.stat().st_mtime >= cache.stat().st_mtime and (d / "visionneuse_groupes.json").exists():
         data = out.read_bytes()
         if _mesh_ok(data):
             return data
@@ -852,6 +855,12 @@ def viewer_mesh(key: str) -> bytes:
     if sys.byteorder != "little":
         pos.byteswap()
         idx.byteswap()
+    groups, start = [], 0
+    for name, (_v, faces) in meshes.items():
+        if faces:
+            groups.append([name, start, len(faces)])
+            start += len(faces)
+    (d / "visionneuse_groupes.json").write_text(json.dumps(groups), encoding="utf-8")
     data = struct.pack("<II", len(pos) // 3, len(idx)) + pos.tobytes() + col.tobytes() + idx.tobytes()
     if not _mesh_ok(data):
         raise RuntimeError("modèle 3D vide ou incohérent (refais un rendu pour réexporter)")
@@ -895,7 +904,21 @@ class ViewerServer:
                     if self.path.startswith("/api/geometrie"):
                         # en JSON (base64) : les gestionnaires de telechargement (IDM...) capturent les .bin
                         import base64
-                        body = b'{"d":"' + base64.b64encode(viewer_mesh(key)) + b'"}'
+                        raw = viewer_mesh(key)
+                        try:
+                            groups = (data_dir() / key / "visionneuse_groupes.json").read_text(encoding="utf-8")
+                        except OSError:
+                            groups = "[]"
+                        body = b'{"groupes":' + groups.encode("utf-8") + b',"d":"' + base64.b64encode(raw) + b'"}'
+                        self._send(body, "application/json")
+                    elif self.path.startswith("/api/mat"):
+                        self._send(json.dumps(LIVE_MAT).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/tex"):
+                        import base64
+                        from urllib.parse import parse_qs, urlparse
+                        f_ = parse_qs(urlparse(self.path).query).get("f", [""])[0]
+                        ok_ = f_ and Path(f_).suffix.lower() in (".jpg", ".jpeg", ".png", ".bmp", ".webp") and Path(f_).exists()
+                        body = b'{"d":"' + (base64.b64encode(Path(f_).read_bytes()) if ok_ else b"") + b'"}'
                         self._send(body, "application/json")
                     elif self.path.startswith("/api/etat"):
                         self._send(json.dumps(owner.etat()).encode("utf-8"), "application/json")
@@ -1060,7 +1083,7 @@ info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;
 $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
 // modele
 const r1=await fetch("/api/geometrie"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
-const b64=(await r1.json()).d; const raw=atob(b64); const u8=new Uint8Array(raw.length);
+const geoJ=await r1.json(); const b64=geoJ.d; const GROUPES=geoJ.groupes||[]; const raw=atob(b64); const u8=new Uint8Array(raw.length);
 for(let i=0;i<raw.length;i++)u8[i]=raw.charCodeAt(i);
 const buf=u8.buffer;
 if(buf.byteLength<8) throw new Error("modèle reçu vide ("+buf.byteLength+" octets)");
@@ -1071,12 +1094,57 @@ const idx=new Uint32Array(buf.slice(o,o+ni*4));
 let g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.BufferAttribute(pos,3));
 g.setAttribute("color",new THREE.BufferAttribute(col,4,true)); g.setIndex(new THREE.BufferAttribute(idx,1));
 g=g.toNonIndexed(); g.computeVertexNormals();
-const model=new THREE.Mesh(g,new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
+// coordonnees de texture en projection boite (1 unite = 1 m), comme pour V-Ray
+{const P=g.attributes.position.array, uv=new Float32Array(P.length/3*2);
+ for(let t=0;t<P.length/9;t++){const o=t*9;
+  const ux=P[o+3]-P[o],uy=P[o+4]-P[o+1],uz=P[o+5]-P[o+2],vx=P[o+6]-P[o],vy=P[o+7]-P[o+1],vz=P[o+8]-P[o+2];
+  const nx=Math.abs(uy*vz-uz*vy),ny=Math.abs(uz*vx-ux*vz),nz=Math.abs(ux*vy-uy*vx);
+  const ax=(nx>=ny&&nx>=nz)?0:(ny>=nz?1:2);
+  for(let k=0;k<3;k++){const x=P[o+3*k],y=P[o+3*k+1],z=P[o+3*k+2];const i=(t*3+k)*2;
+   if(ax===0){uv[i]=y;uv[i+1]=z}else if(ax===1){uv[i]=x;uv[i+1]=z}else{uv[i]=x;uv[i+1]=y}}}
+ g.setAttribute("uv",new THREE.BufferAttribute(uv,2))}
+const C=g.attributes.color.array, MATS=[], PAR={};
+for(const [nom,start,count] of GROUPES){const m=new THREE.MeshPhysicalMaterial({color:new THREE.Color(C[start*4]/255,C[start*4+1]/255,C[start*4+2]/255).convertSRGBToLinear(),
+  roughness:0.85,metalness:0,side:THREE.DoubleSide}); m.userData.base=m.color.clone();
+ PAR[nom]=MATS.length; g.addGroup(start,count,MATS.length); MATS.push(m)}
+if(!GROUPES.length) MATS.push(new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
+const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]);
+{const {RoomEnvironment}=await import("three/addons/environments/RoomEnvironment.js");
+ const pm=new THREE.PMREMGenerator(renderer); scene.environment=pm.fromScene(new RoomEnvironment(),0.04).texture;
+ scene.environmentIntensity=0.9; hemi.intensity=0.45}
+// reglages de materiaux (editeur V-Ray Link) appliques en direct
+const texCache={};
+async function tex(path,size,rot,srgb){if(!path)return null; const k=path+"|"+srgb;
+ if(!texCache[k]){texCache[k]=(async()=>{const r=await fetch("/api/tex?f="+encodeURIComponent(path)); const d=(await r.json()).d; if(!d)return null;
+   const t=await new THREE.TextureLoader().loadAsync("data:image/*;base64,"+d); t.wrapS=t.wrapT=THREE.RepeatWrapping;
+   t.colorSpace=srgb?THREE.SRGBColorSpace:THREE.NoColorSpace; t.anisotropy=8; return t})()}
+ const t0=await texCache[k]; if(!t0)return null; const t=t0.clone(); t.needsUpdate=true;
+ const s=1/Math.max(0.01,size||1); t.repeat.set(s,s); t.rotation=(rot||0)*Math.PI/180; return t}
+async function applyMat(nom,c){const i=PAR[nom]; if(i===undefined)return; const m=MATS[i];
+ if(!c){m.color.copy(m.userData.base);m.map=m.roughnessMap=m.alphaMap=m.bumpMap=m.normalMap=null;m.roughness=.85;m.metalness=0;
+  m.opacity=1;m.transparent=false;m.transmission=0;m.emissive.set(0);m.needsUpdate=true;return}
+ const sz=c.taille_tex||1, rot=c.rotation_tex||0;
+ if(c.couleur)m.color.setRGB(c.couleur[0],c.couleur[1],c.couleur[2],THREE.SRGBColorSpace);
+ m.map=await tex(c.tex_couleur,sz,rot,true); if(m.map)m.color.set(0xffffff);
+ m.roughness=1-(c.brillance??0.5)*(c.reflet>0.02?1:0.3); m.metalness=c.metal||0; m.ior=c.ior||1.5;
+ m.specularIntensity=Math.min(1,(c.reflet??0.1)*2);
+ m.roughnessMap=await tex(c.tex_brillance,sz,rot,false);
+ const op=c.opacite??1; m.alphaMap=await tex(c.tex_opacite,sz,rot,false); m.transparent=op<1||!!m.alphaMap; m.opacity=op;
+ m.transmission=c.refraction||0; m.thickness=0.02; if(m.transmission>0)m.roughness=Math.max(m.roughness,(c.flou_refraction||0)*0.6);
+ const rel=await tex(c.tex_relief,sz,rot,false); const normal=c.type_relief==="Normal map";
+ m.normalMap=normal?rel:null; m.bumpMap=normal?null:rel; m.bumpScale=(c.relief||0.5)*0.05; if(normal)m.normalScale.set(c.relief||0.5,c.relief||0.5);
+ const em=c.emission||0; m.emissive.setRGB(1,0.9,0.7); m.emissiveIntensity=em*0.4; if(!em)m.emissive.set(0);
+ m.needsUpdate=true}
+let matRev=-1;
+async function pollMat(){try{const L=await (await fetch("/api/mat")).json();
+  if(L.rev!==matRev){matRev=L.rev; for(const [n,c] of Object.entries(L.tous||{}))await applyMat(n,c);
+   for(const n of (L.surfaces||[]))await applyMat(n,L.c&&Object.keys(L.c).length?L.c:null)}}catch(_){}
+ setTimeout(pollMat,400)}
 for(const t of (info.arbres||[])){const k=t[3]||1;const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15*k,.2*k,2.5*k,8),new THREE.MeshLambertMaterial({color:0x6b4f35}));
  trunk.rotation.x=Math.PI/2;trunk.position.set(t[0],t[1],t[2]+1.25*k);trunk.castShadow=true;scene.add(trunk);
  const crown=new THREE.Mesh(new THREE.IcosahedronGeometry(2.2*k,1),new THREE.MeshLambertMaterial({color:0x4f7a3a,flatShading:true}));
  crown.position.set(t[0],t[1],t[2]+4.2*k);crown.castShadow=true;crown.receiveShadow=true;scene.add(crown)}
-model.castShadow=true; model.receiveShadow=true; scene.add(model);
+model.castShadow=true; model.receiveShadow=true; scene.add(model); pollMat();
 g.computeBoundingBox(); const bb=g.boundingBox, mid=bb.getCenter(new THREE.Vector3()), rad=bb.getSize(new THREE.Vector3()).length()/2+5;
 // soleil (formules NOAA, comme pour le rendu V-Ray)
 function sunDir(h,day,month){const n=Math.floor((Date.UTC(2026,month-1,day)-Date.UTC(2026,0,0))/864e5);
@@ -1093,7 +1161,7 @@ function updateSun(){const h=+$("hour").value, d=Math.max(1,Math.min(31,+$("day"
  const s=sunDir(h,d,m); const up=Math.max(s.alt,0.0);
  sun.position.copy(mid).addScaledVector(s.v,rad*2); sun.target.position.copy(mid);
  const k=+$("sunInt").value; $("intTxt").textContent=Math.round(k*100)+" %";
- sun.intensity=s.alt>0?2.2*k*Math.min(1,s.alt*4+0.15):0; hemi.intensity=s.alt>0?0.75:0.25;
+ sun.intensity=s.alt>0?2.2*k*Math.min(1,s.alt*4+0.15):0; hemi.intensity=s.alt>0?0.45:0.2;
  const hh=Math.floor(h), mm=Math.round((h%1)*60)%60;
  $("sunTxt").textContent=`${String(hh).padStart(2,"0")}:${String(mm).padStart(2,"0")} · hauteur ${(s.alt*180/Math.PI).toFixed(0)}° · ${COMPASS[Math.round(s.az/(Math.PI/4))%8]}${s.alt<=0?" (nuit)":""}`;}
 $("hour").value=info.heure; $("day").value=info.jour; $("month").value=info.mois; $("sunInt").value=info.intensite??1;
@@ -2613,6 +2681,7 @@ def window(state: dict) -> None:
         except queue.Empty:
             pass
         root.after(300, poll_viewer)
+    state["_open_viewer"] = open_viewer
 
     def open_viewer():
         collect()
@@ -2634,6 +2703,7 @@ def window(state: dict) -> None:
         except Exception as error:  # noqa: BLE001
             show([f"Modèle 3D illisible : {error}"])
             return
+        LIVE_MAT.update(tous=dict((state.get("mat_perso") or {}).get(key, {})), surfaces=[], c={}, rev=LIVE_MAT["rev"] + 1)
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
@@ -3708,6 +3778,7 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
         if res and res[0]:
             color["rgb"] = tuple(x / 255 for x in res[0])
             sw.configure(background=res[1])
+            live()
     ttk.Label(co, text="Couleur").grid(row=0, column=0, sticky="w")
     ttk.Button(co, text="Choisir…", command=choose_color).grid(row=0, column=2, sticky="w")
     row_file(co, 1, "Texture couleur", "tex_couleur")
@@ -3742,28 +3813,57 @@ def material_editor(root, state: dict, key: str, names: list, colors: dict, on_d
     row_slider(re_, 2, "Intensité du relief", "relief", 0.5, 0, 2)
     row_slider(re_, 3, "Émission (lumineux)", "emission", 0.0, 0, 20, "lampe, écran, néon")
 
-    def ok():
-        c = {"couleur": color["rgb"]}
+    def current() -> dict:
+        c = {"couleur": list(color["rgb"])}
         for k_, var in v.items():
             try:
                 c[k_] = var.get()
             except (ValueError, tk.TclError):
                 pass
+        return c
+
+    def live(*_):                               # apercu en direct dans la visionneuse 3D
+        LIVE_MAT.update(surfaces=list(names), c=current(), tous=dict(store), rev=LIVE_MAT["rev"] + 1)
+
+    def live_end():
+        LIVE_MAT.update(surfaces=[n for n in names if n not in store], c={}, tous=dict(store), rev=LIVE_MAT["rev"] + 1)
+
+    for var in v.values():
+        var.trace_add("write", live)
+    sw.bind("<Configure>", live)
+    live()
+
+    def ok():
+        c = current()
         for n in names:
             store[n] = dict(c)
+        live_end()
         on_done(f"Matériau personnalisé appliqué à {len(names)} surface(s) : visible au prochain rendu.")
         win.destroy()
 
     def reset():
         for n in names:
             store.pop(n, None)
+        live_end()
         on_done("Matériau personnalisé retiré : la surface reprend sa couleur Archicad (ou son matériau Cosmos).")
         win.destroy()
+
+    def cancel():
+        live_end()
+        win.destroy()
+    win.protocol("WM_DELETE_WINDOW", cancel)
     bar = ttk.Frame(f)
     bar.grid(row=5, column=0, sticky="ew")
     ttk.Button(bar, text="Revenir au matériau d'origine", command=reset).grid(row=0, column=0)
-    ttk.Button(bar, text="Annuler", command=win.destroy).grid(row=0, column=1, padx=(80, 4))
+    ttk.Button(bar, text="Annuler", command=cancel).grid(row=0, column=1, padx=(80, 4))
     ttk.Button(bar, text="OK", command=ok).grid(row=0, column=2)
+    tip = ttk.Frame(f)
+    tip.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+    ttk.Label(tip, foreground="#2b5d8a", wraplength=420, justify="left",
+              text="Aperçu en direct : ouvre la visionneuse 3D, chaque réglage s'y voit tout de suite sur la surface "
+                   "(images .jpg / .png ; les .tx et .exr ne s'affichent qu'au rendu).").grid(row=0, column=0, sticky="w")
+    if state.get("_open_viewer"):
+        ttk.Button(tip, text="🧭 Ouvrir la visionneuse", command=state["_open_viewer"]).grid(row=0, column=1, padx=6)
 
 
 # ---------------------------------------------------------- onglet Materiaux ---
