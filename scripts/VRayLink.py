@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v3.0b"
+VERSION = "20/10 - v3.1"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -891,6 +891,8 @@ class ViewerServer:
                         import base64
                         body = b'{"d":"' + base64.b64encode(viewer_mesh(key)) + b'"}'
                         self._send(body, "application/json")
+                    elif self.path.startswith("/api/etat"):
+                        self._send(json.dumps(owner.etat()).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/hdri"):
                         import base64
                         src = (infos() if callable(infos) else infos).get("_hdri_path", "")
@@ -918,6 +920,7 @@ class ViewerServer:
                     self.send_error(400, str(error))
 
         self.on_camera = on_camera
+        self.etat = lambda: {}
 
         class Quiet(http.server.ThreadingHTTPServer):
             daemon_threads = True
@@ -1111,6 +1114,15 @@ const sky=new THREE.Group(); scene.add(sky);
 $("hdriRot").value=info.hdri?info.hdri.rot:0;
 function setRot(){const a=+$("hdriRot").value; sky.rotation.z=a*Math.PI/180; $("rotTxt").textContent=a+"°"}
 $("hdriRot").addEventListener("input",setRot); setRot();
+let lastSent=0, busy=false;
+function pushLive(){lastSent=Date.now(); fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},
+ body:JSON.stringify({action:"reglage",hdri_rot:+$("hdriRot").value,intensite:+$("sunInt").value})}).catch(()=>{})}
+$("hdriRot").addEventListener("change",pushLive); $("sunInt").addEventListener("change",pushLive);
+setInterval(async()=>{if(busy||Date.now()-lastSent<1500)return; busy=true;
+ try{const e=await (await fetch("/api/etat")).json();
+  if(Math.abs(e.hdri_rot-(+$("hdriRot").value))>0.4){$("hdriRot").value=e.hdri_rot; setRot()}
+  if(Math.abs(e.intensite-(+$("sunInt").value))>0.01){$("sunInt").value=e.intensite; updateSun()}}catch(_){}
+ busy=false},1000);
 if(info.hdri&&info.hdri.on){$("hdriMsg").textContent="Chargement de la HDRI…";
  try{const r=await fetch("/api/hdri"); const b64=(await r.json()).d; const raw=atob(b64); const u=new Uint8Array(raw.length);
   for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);
@@ -1645,6 +1657,16 @@ def vrmesh_size(path) -> list:
             i += 1
     except Exception:  # noqa: BLE001
         return []
+
+
+def vrmat_missing(vrmat: Path) -> list:
+    """Textures referencees par un .vrmat (deja corrige) qui n'existent pas sur le disque."""
+    try:
+        text = Path(vrmat).read_text("utf-8", "replace")
+    except OSError:
+        return ["(vrmat illisible)"]
+    refs = re.findall(r">([^<>]+?\.(?:tx|jpg|jpeg|png|exr|tif|tiff|hdr|bmp))<", text, flags=re.I)
+    return [Path(r.replace("&amp;", "&")).name for r in dict.fromkeys(refs) if not Path(r.replace("&amp;", "&")).exists()]
 
 
 def cosmos_hdris() -> list[dict]:
@@ -2313,6 +2335,16 @@ def window(state: dict) -> None:
         f = ttk.Frame(win, padding=12)
         f.grid(sticky="nsew")
         v = {}
+        live["adv"] = v
+        win.bind("<Destroy>", lambda e: live.pop("adv", None) if e.widget is win else None)
+
+        def push_live(*_):                      # reglage du dialogue -> visionneuse (lu par /api/etat)
+            try:
+                opts["hdri_rot"] = float(v["hdri_rot"].get())
+                opts["hdri_mult"] = float(v["hdri_mult"].get())
+                opts["soleil_intensite"] = float(v["soleil_intensite"].get())
+            except (ValueError, tk.TclError, KeyError):
+                pass
 
         def section(title, row):
             box_ = ttk.LabelFrame(f, text=title, padding=8)
@@ -2378,6 +2410,7 @@ def window(state: dict) -> None:
         ttk.Spinbox(en, from_=0.1, to=50, increment=0.5, textvariable=v["hdri_mult"], width=6).grid(row=1, column=1, sticky="w", pady=(6, 0))
         ttk.Label(en, text="Rotation (°)").grid(row=2, column=0, sticky="w")
         v["hdri_rot"] = tk.DoubleVar(value=opts.get("hdri_rot", 0.0))
+        v["hdri_rot"].trace_add("write", push_live)
         ttk.Scale(en, from_=0, to=360, variable=v["hdri_rot"], length=200).grid(row=2, column=1, columnspan=3, sticky="w")
         v["hdri_soleil"] = tk.BooleanVar(value=opts.get("hdri_soleil", True))
         ttk.Checkbutton(en, text="Garder le soleil V-Ray (ombres nettes réglées par l'heure)", variable=v["hdri_soleil"]).grid(
@@ -2387,6 +2420,7 @@ def window(state: dict) -> None:
 
         ttk.Label(en, text="Intensité du soleil").grid(row=6, column=0, sticky="w", pady=(6, 0))
         v["soleil_intensite"] = tk.DoubleVar(value=opts.get("soleil_intensite", 1.0))
+        v["soleil_intensite"].trace_add("write", push_live)
         ttk.Spinbox(en, from_=0, to=5, increment=0.1, textvariable=v["soleil_intensite"], width=6).grid(
             row=6, column=1, sticky="w", pady=(6, 0))
         ch = section("Canaux de rendu (pour Photoshop)", 4)
@@ -2434,6 +2468,7 @@ def window(state: dict) -> None:
 
     # --- visionneuse 3D (page web locale)
     import queue
+    live: dict = {}
     viewer = {"srv": None}
     snap: dict = {}
     inbox: "queue.Queue[dict]" = queue.Queue()
@@ -2521,12 +2556,18 @@ def window(state: dict) -> None:
                     month_var.set(int(msg["mois"]))
                     show_hour()
                     collect()
-                    if "hdri_rot" in msg:
-                        opts["hdri_rot"] = float(msg["hdri_rot"]) % 360
-                        save_settings(state)
-                    if "intensite" in msg:
-                        opts["soleil_intensite"] = max(0.0, min(5.0, float(msg["intensite"])))
-                        save_settings(state)
+                if "hdri_rot" in msg:
+                    opts["hdri_rot"] = float(msg["hdri_rot"]) % 360
+                    save_settings(state)
+                    if live.get("adv"):
+                        live["adv"]["hdri_rot"].set(round(opts["hdri_rot"], 1))
+                if "intensite" in msg:
+                    opts["soleil_intensite"] = max(0.0, min(5.0, float(msg["intensite"])))
+                    save_settings(state)
+                    if live.get("adv"):
+                        live["adv"]["soleil_intensite"].set(round(opts["soleil_intensite"], 2))
+                if msg.get("action") == "reglage":
+                    continue
                 if msg.get("action") == "soleil":
                     say(f"Soleil réglé depuis la visionneuse : {opts['jour']}/{opts['mois']} à "
                         f"{int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.")
@@ -2571,6 +2612,8 @@ def window(state: dict) -> None:
             return
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
+            viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
+                                          "intensite": float(opts.get("soleil_intensite", 1.0))}
         viewer["srv"].open()
         say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
 
@@ -2788,8 +2831,10 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
                 meshes_ = sorted(folder.glob("*.vrmesh"), key=_lod)
                 lods = [m_ for m_ in meshes_ if _lod(m_) < 4] or meshes_     # jamais un fichier sans niveau de detail connu
                 mesh = lods[-1 if sc.get("leger", True) else 0]
-                vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
+                mats_ = sorted(folder.glob("*.vrmat"), key=_lod)
+                vrmat = next((m_ for m_ in mats_ if _lod(m_) == _lod(mesh)), mats_[0])   # meme niveau de detail que le maillage
                 fixed, top = vrmat_for_render(vrmat)
+                missing = vrmat_missing(fixed)
             except Exception as error:  # noqa: BLE001
                 report(f"Scatter « {sc.get('nom')} » indisponible : {error}")
                 continue
@@ -2798,8 +2843,14 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
                 report(f"Scatter « {sc.get('nom')} » limité à {SCATTER_MAX} exemplaires (baisse la densité).")
             sid = f"sc{k}"
             out.write(f"// scatter : {sc.get('nom')} sur {sc.get('surface')} ({len(pts)} exemplaires)\n"
-                      f"GeomMeshFile {sid}_geo {{\n  file=\"{str(mesh).replace(chr(92), '/')}\";\n}}\n"
-                      f"MtlVRmat {sid}_mtl {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n  mtlname=\"{top}\";\n}}\n")
+                      f"GeomMeshFile {sid}_geo {{\n  file=\"{str(mesh).replace(chr(92), '/')}\";\n}}\n")
+            if missing or sc.get("couleur_simple"):
+                report(f"Scatter « {sc.get('nom')} » : textures introuvables ({', '.join(missing[:3])}) → couleur verte simple")
+                out.write(f"BRDFVRayMtl {sid}_brdf {{ diffuse=AColor(0.06,0.16,0.03,1); reflect=AColor(0.08,0.08,0.08,1); "
+                          f"reflect_glossiness=0.45; fresnel=1; translucency_color=AColor(0.1,0.25,0.05,1); }}\n"
+                          f"MtlSingleBRDF {sid}_mtl {{ brdf={sid}_brdf; double_sided=1; }}\n")
+            else:
+                out.write(f"MtlVRmat {sid}_mtl {{\n  filename=\"{str(fixed).replace(chr(92), '/')}\";\n  mtlname=\"{top}\";\n}}\n")
             rnd = random.Random(k)
             base, var = float(sc.get("echelle", 1.0)) * ECHELLE_COSMOS, float(sc.get("variation", 30)) / 100.0
             for i, (x, y, z) in enumerate(pts):
@@ -2812,7 +2863,7 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
             if pts:
                 zs = [p_[2] for p_ in pts]
                 report(f"Scatter « {sc.get('nom')} » : {len(pts)} exemplaires, posés entre {min(zs):.2f} et {max(zs):.2f} m "
-                       f"(fichier {mesh.name})")
+                       f"(maillage {mesh.name}, matériau {vrmat.name} › {top})")
             else:
                 report(f"Scatter « {sc.get('nom')} » : 0 exemplaire (surface sans dessus horizontal ?)")
     return total
