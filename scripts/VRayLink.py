@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v4.0 (lumières)"
+VERSION = "20/10 - v4.1 (déplacer dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -934,6 +934,8 @@ class ViewerServer:
                         from urllib.parse import parse_qs, urlparse
                         nom = parse_qs(urlparse(self.path).query).get("s", [""])[0]
                         self._send(json.dumps(owner.cosmos_tex(nom)).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/api/objets"):
+                        self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
                         self._send(json.dumps(LIGHTS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/etat"):
@@ -1033,7 +1035,12 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="hud"></div><div id="updown" style="position:absolute;left:12px;top:12px;display:flex;flex-direction:column;gap:4px;z-index:5">
 <button id="bUp" class="mini" title="Monter (E / Espace)">▲</button><button id="bDown" class="mini" title="Descendre (C)">▼</button>
 <button id="bMes" class="mini" title="Mesurer une distance (M)">📏</button>
-<button id="bLum" class="mini" title="Ajouter une lumière (L)">💡</button></div>
+<button id="bLum" class="mini" title="Ajouter une lumière (L)">💡</button>
+<button id="bMove" class="mini" title="Déplacer / tourner un objet ou une lumière (G)">✋</button></div>
+<div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
+<span id="selName" style="padding:0 6px;color:var(--mute)">Clique un objet orange ou une lumière</span>
+<button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eDrop">⤓ Poser</button>
+<button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
@@ -1271,9 +1278,14 @@ const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineB
 scene.add(edges);
 $("load").remove();
 const vegGroup=new THREE.Group(); scene.add(vegGroup);
-for(const ob of (info.objets||[])){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
- const m=new THREE.Mesh(new THREE.BoxGeometry(t[0]*k,t[1]*k,t[2]*k),new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.6}));
- m.position.set(ob.x,ob.y,ob.z+(t[3]+t[2]/2)*k); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; vegGroup.add(m)}
+const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
+function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
+ const g=new THREE.BoxGeometry(t[0]*k,t[1]*k,t[2]*k); g.translate(0,0,(t[3]+t[2]/2)*k);           // origine = pied de l'objet
+ const m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.6}));
+ m.position.set(ob.x,ob.y,ob.z); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; m.userData={kind:"obj",i:ob.i,nom:ob.nom}; objGroup.add(m);
+ if(tc&&sel&&sel.userData.kind==="obj"&&sel.userData.i===ob.i){sel=m; tc.attach(m)}}}
+async function pollObjs(){try{const j=await (await fetch("/api/objets")).json(); if(j.rev!==objRev&&!tcDrag){objRev=j.rev; OBJ=j.liste||[]; drawObjs()}}catch(_){}
+ setTimeout(pollObjs,900)}
 // herbe / plantes : instances legeres (un seul objet par plante, des milliers de copies)
 let nVeg=0;
 for(const v of (info.vegetation||[])){const t=(v.taille&&v.taille.length)?v.taille:[0.4,0.4,0.1,0], k=v.echelle||1;
@@ -1353,6 +1365,7 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!mesureOn||!downAt||Math
   $("mesure").innerHTML=`<b style="color:var(--acc)">${d.toFixed(2)} m</b> &nbsp;· horizontal ${h.toFixed(2)} m · hauteur ${z>=0?"+":""}${z.toFixed(2)} m<br><span style="color:var(--mute)">Clique un nouveau point pour une autre mesure</span>`}
  else $("mesure").textContent="Mesure : clique le 2e point"});
 // ---- lumieres : affichage + pose en cliquant sur une surface
+let sel=null, tc=null, tcDrag=false;
 const lumGroup=new THREE.Group(); scene.add(lumGroup); let LUM=[], lumRev=-1, poseType=null;
 const LTYPES={"Spot":{intensite:1000,cone:45,penombre:25,rayon_ombre:.02},"IES":{intensite:1,ies:""},"Rectangle":{intensite:30,largeur:1,hauteur:.5,invisible:true},
  "Sphère":{intensite:30,rayon:.08,invisible:false},"Omni":{intensite:1000,rayon_ombre:.05},"Dôme":{intensite:1}};
@@ -1384,10 +1397,43 @@ function drawLights(){lumGroup.clear();
    giz=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); giz.position.copy(p); giz.lookAt(tg)}
   else if(l.type==="Dôme"){L=new THREE.HemisphereLight(c,0x444444,l.intensite*0.8)}
   else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),gm); giz.position.copy(p)}
-  L.position.copy(p); L.castShadow=false; lumGroup.add(L); if(giz)lumGroup.add(giz)}}
-async function pollLights(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev){lumRev=j.rev; LUM=j.liste||[]; drawLights()}}catch(_){}
+  L.position.copy(p); L.castShadow=false; lumGroup.add(L);
+  if(giz){giz.userData={kind:"lum",i:LUM.indexOf(l),nom:l.nom,light:L}; lumGroup.add(giz);
+   if(tc&&sel&&sel.userData.kind==="lum"&&sel.userData.i===giz.userData.i){sel=giz; tc.attach(giz)}}}}
+async function pollLights(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev&&!tcDrag){lumRev=j.rev; LUM=j.liste||[]; drawLights()}}catch(_){}
  setTimeout(pollLights,800)}
 pollLights();
+// ---- deplacer / tourner les objets Cosmos et les lumieres
+const {TransformControls}=await import("three/addons/controls/TransformControls.js");
+tc=new TransformControls(cam,renderer.domElement); tc.setSize(0.9); scene.add(tc); let editOn=false;
+tc.addEventListener("dragging-changed",e=>{controls.enabled=!e.value&&mode==="orbit"; tcDrag=e.value; if(!e.value)commit()});
+function setEdit(on){editOn=on; $("bMove").classList.toggle("on",on); $("editBar").style.display=on?"flex":"none"; if(!on){tc.detach(); sel=null}
+ renderer.domElement.style.cursor=on?"pointer":""}
+$("bMove").onclick=()=>setEdit(!editOn); $("eEnd").onclick=()=>setEdit(false);
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyG")setEdit(!editOn); if(e.code==="Escape"&&editOn)setEdit(false);
+ if(editOn&&sel&&(e.code==="Delete"||e.code==="Backspace"))$("eDel").click()});
+function tool(m){tc.setMode(m); $("eMove").classList.toggle("on",m==="translate"); $("eRot").classList.toggle("on",m==="rotate");
+ tc.showX=tc.showY=m==="translate"; tc.showZ=true}
+$("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); tool("translate");
+renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0];
+ if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind==="lum"?"💡 ":"📦 ")+sel.userData.nom}
+ else{tc.detach(); sel=null; $("selName").textContent="Clique un objet orange ou une lumière"}});
+const postJ=b=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+function commit(op){if(!sel)return; const u=sel.userData, p=sel.position;
+ if(u.kind==="obj"){postJ({action:"obj_edit",op:op||"move",i:u.i,x:+p.x.toFixed(3),y:+p.y.toFixed(3),z:+p.z.toFixed(3),rot:+(sel.rotation.z*180/Math.PI).toFixed(1)})}
+ else{const l=LUM[u.i]; if(!l)return; const d=[p.x-l.pos[0],p.y-l.pos[1],p.z-l.pos[2]];
+  l.pos=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); if(l.cible)l.cible=l.cible.map((v,k)=>+(v+d[k]).toFixed(3));
+  if(op==="dup"){const c=JSON.parse(JSON.stringify(l)); c.nom=l.nom+" copie"; c.pos[0]+=0.5; if(c.cible)c.cible[0]+=0.5; LUM.push(c)}
+  if(op==="delete"){LUM.splice(u.i,1); tc.detach(); sel=null}
+  drawLights(); postJ({action:"lum_save",liste:LUM})}}
+$("eDrop").onclick=()=>{if(!sel)return; ray.set(sel.position.clone().add(new THREE.Vector3(0,0,0.01)),new THREE.Vector3(0,0,-1));
+ const hit=ray.intersectObjects([model,ground],false)[0]; if(hit){sel.position.z=hit.point.z; commit()}};
+$("eDup").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){sel.position.x+=0.6; commit("dup"); sel.position.x-=0.6} else commit("dup")};
+$("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("delete"); tc.detach(); sel=null} else commit("delete");
+ $("selName").textContent="Supprimé"};
+pollObjs();
 const clock=new THREE.Clock();
 function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
@@ -1424,7 +1470,8 @@ TYPES_LUMIERE = {   # type : reglages par defaut (comme V-Ray pour SketchUp)
     "Omni": {"intensite": 1000.0, "rayon_ombre": 0.05},
     "Dôme": {"intensite": 1.0},
 }
-LIGHTS: dict = {"rev": 0, "liste": []}      # copie partagee avec les pages web (visionneuse / editeur)
+LIGHTS: dict = {"rev": 0, "liste": []}
+OBJS: dict = {"rev": 0, "liste": []}        # objets Cosmos places (visionneuse : deplacer / tourner)      # copie partagee avec les pages web (visionneuse / editeur)
 
 
 def _light_frame(l: dict):
@@ -2949,6 +2996,33 @@ def window(state: dict) -> None:
                             ("Images", "*.jpg *.jpeg *.png *.tif *.tiff *.exr *.tx *.bmp"), ("Tous", "*.*")])
                     CHOIX[str(msg.get("id"))] = path or ""
                     continue
+                if msg.get("action") == "obj_edit":
+                    lst = state.setdefault("objets", {}).setdefault(key, [])
+                    i = int(msg.get("i", -1))
+                    if 0 <= i < len(lst):
+                        o = lst[i]
+                        op = msg.get("op")
+                        if op == "delete":
+                            delete_elements(o.get("traces", []))
+                            lst.pop(i)
+                        else:
+                            if op == "dup":
+                                o = {k_: v_ for k_, v_ in o.items() if k_ != "traces"}
+                                lst.append(o)
+                            for k_ in ("x", "y", "z"):
+                                if k_ in msg:
+                                    o[k_] = float(msg[k_])
+                            if "rot" in msg:
+                                o["rotation"] = round(float(msg["rot"]) % 360, 1)
+                            delete_elements(o.get("traces", []))
+                            try:
+                                o["traces"] = draw_object_marker(o)
+                            except Exception:  # noqa: BLE001
+                                o["traces"] = []
+                        save_settings(state)
+                        OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
+                        say(f"Objet « {o['nom']} » {'supprimé' if op == 'delete' else 'mis à jour'} (plan et rendu).")
+                    continue
                 if msg.get("action") in ("lum_save", "lum_import"):
                     lst = state.setdefault("lumieres", {}).setdefault(key, [])
                     if msg["action"] == "lum_save":
@@ -3028,6 +3102,17 @@ def window(state: dict) -> None:
         return [{"nom": n, "rgb": list(c)[:3], "perso": perso.get(n), "cosmos": bool((cos.get(n) or {}).get("dossier"))}
                 for n, c in sorted(cols.items())]
 
+    sizes: dict = {}
+
+    def objs_payload() -> list:
+        out = []
+        for i, o in enumerate((state.get("objets") or {}).get(key, [])):
+            if o["dossier"] not in sizes:
+                sizes[o["dossier"]] = obj_size(o["dossier"])
+            out.append({"i": i, "nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "rot": o.get("rotation", 0.0),
+                        "echelle": o.get("echelle", 1.0), "taille": sizes[o["dossier"]]})
+        return out
+
     def open_viewer(page: str = ""):
         collect()
         if not (data_dir() / key / "geometrie.pkl").exists():
@@ -3051,6 +3136,7 @@ def window(state: dict) -> None:
         LIVE_MAT.update(tous=dict((state.get("mat_perso") or {}).get(key, {})), surfaces=[], c={}, rev=LIVE_MAT["rev"] + 1)
         snap["_surfaces"] = surfaces_info()
         LIGHTS.update(liste=[dict(l_) for l_ in (state.get("lumieres") or {}).get(key, [])], rev=LIGHTS["rev"] + 1)
+        OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
