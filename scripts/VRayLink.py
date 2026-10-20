@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "19/10 - v2.9 (gazon sélection, intensité soleil)"
+VERSION = "19/10 - v3.0 (visionneuse : HDRI + végétation)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -891,6 +891,11 @@ class ViewerServer:
                         import base64
                         body = b'{"d":"' + base64.b64encode(viewer_mesh(key)) + b'"}'
                         self._send(body, "application/json")
+                    elif self.path.startswith("/api/hdri"):
+                        import base64
+                        src = (infos() if callable(infos) else infos).get("_hdri_path", "")
+                        body = b'{"d":"' + (base64.b64encode(Path(src).read_bytes()) if src else b"") + b'"}'
+                        self._send(body, "application/json")
                     elif self.path.startswith("/infos"):
                         self._send(json.dumps(infos() if callable(infos) else infos).encode("utf-8"), "application/json")
                     else:
@@ -980,6 +985,12 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <input id="sunInt" type="range" min="0" max="3" step="0.05" style="padding:0"></div>
 <div class="row" style="margin-top:6px"><button id="play">▶ Course du soleil</button></div>
 <button id="useSun" style="width:100%;margin-top:6px">Utiliser cette heure pour les rendus</button></div>
+<div id="hdriBox"><label>Ciel HDRI : <span id="rotTxt"></span></label>
+<input id="hdriRot" type="range" min="0" max="360" step="1" style="padding:0">
+<label style="margin-top:6px;display:flex;gap:6px;align-items:center"><input id="hdriShow" type="checkbox" checked style="width:auto"> Afficher la HDRI</label>
+<div id="hdriMsg" style="color:var(--mute);font-size:12px"></div></div>
+<div><label>Végétation : <span id="vegTxt"></span></label>
+<label style="display:flex;gap:6px;align-items:center"><input id="vegShow" type="checkbox" checked style="width:auto"> Afficher herbe / plantes / objets</label></div>
 <div><label>Nom de la vue</label><input id="name" value="Vue 3D"></div>
 <button id="save">Enregistrer la vue</button>
 <button id="render" class="main">Rendre cette vue</button>
@@ -999,6 +1010,8 @@ setTimeout(()=>{const l=document.getElementById("load");if(l&&!window.__three)l.
 import * as THREE from "three";
 window.__three=true;
 import {OrbitControls} from "three/addons/controls/OrbitControls.js";
+import {RGBELoader} from "three/addons/loaders/RGBELoader.js";
+import {EXRLoader} from "three/addons/loaders/EXRLoader.js";
 const $=id=>document.getElementById(id);
 const r0=await fetch("/infos"); if(!r0.ok) throw new Error("infos : "+r0.status+" "+(await r0.text()).slice(0,200));
 const info=await r0.json(); $("load").textContent="Chargement du modèle…";
@@ -1071,13 +1084,48 @@ updateSun();
 let playing=null; $("play").onclick=()=>{if(playing){clearInterval(playing);playing=null;$("play").textContent="▶ Course du soleil";return}
  $("play").textContent="■ Arrêter"; playing=setInterval(()=>{let h=+$("hour").value+0.05; if(h>19.5)h=5.5; $("hour").value=h; updateSun()},40)};
 $("useSun").onclick=async()=>{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},
- body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value})});
+ body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})});
  $("msg").textContent="Heure et date envoyées à V-Ray Link : les rendus utiliseront ce soleil."};
 const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
 scene.add(edges);
 $("load").remove();
-for(const ob of (info.objets||[])){const r=0.4*(ob.echelle||1);const m=new THREE.Mesh(new THREE.CylinderGeometry(r,r,1.0*(ob.echelle||1),16),
- new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.75}));m.rotation.x=Math.PI/2;m.position.set(ob.x,ob.y,ob.z+0.5*(ob.echelle||1));m.castShadow=true;scene.add(m)}
+const vegGroup=new THREE.Group(); scene.add(vegGroup);
+for(const ob of (info.objets||[])){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
+ const m=new THREE.Mesh(new THREE.BoxGeometry(t[0]*k,t[1]*k,t[2]*k),new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.6}));
+ m.position.set(ob.x,ob.y,ob.z+(t[3]+t[2]/2)*k); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; vegGroup.add(m)}
+// herbe / plantes : instances legeres (un seul objet par plante, des milliers de copies)
+let nVeg=0;
+for(const v of (info.vegetation||[])){const t=(v.taille&&v.taille.length)?v.taille:[0.4,0.4,0.1,0], k=v.echelle||1;
+ const grass=v.type.startsWith("Herbe"); const geo=grass?new THREE.ConeGeometry(Math.max(t[0],t[1])*k/2,Math.max(t[2],0.05)*k,5)
+   :new THREE.IcosahedronGeometry(Math.max(t[0],t[1],t[2])*k/2,0);
+ if(grass)geo.rotateX(Math.PI/2);
+ const mat=new THREE.MeshLambertMaterial({color:grass?0x5f8f3a:0x4a7d3c,flatShading:true});
+ const n=v.pts.length/3, im=new THREE.InstancedMesh(geo,mat,n); const M=new THREE.Matrix4(), q=new THREE.Quaternion(), S=new THREE.Vector3(1,1,1);
+ for(let i=0;i<n;i++){q.setFromAxisAngle(new THREE.Vector3(0,0,1),i*2.399);
+  M.compose(new THREE.Vector3(v.pts[3*i],v.pts[3*i+1],v.pts[3*i+2]+(grass?Math.max(t[2],0.05)*k/2:Math.max(t[0],t[1],t[2])*k/2)),q,S);im.setMatrixAt(i,M)}
+ im.castShadow=!grass; im.receiveShadow=true; vegGroup.add(im); nVeg+=n}
+$("vegTxt").textContent=nVeg?nVeg.toLocaleString("fr-FR")+" touffes (aperçu)":"aucune";
+$("vegShow").onchange=()=>{vegGroup.visible=$("vegShow").checked};
+// ciel HDRI : sphere autour de la scene, tournee comme dans V-Ray
+const sky=new THREE.Group(); scene.add(sky);
+$("hdriRot").value=info.hdri?info.hdri.rot:0;
+function setRot(){const a=+$("hdriRot").value; sky.rotation.z=a*Math.PI/180; $("rotTxt").textContent=a+"°"}
+$("hdriRot").addEventListener("input",setRot); setRot();
+if(info.hdri&&info.hdri.on){$("hdriMsg").textContent="Chargement de la HDRI…";
+ try{const r=await fetch("/api/hdri"); const b64=(await r.json()).d; const raw=atob(b64); const u=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)u[i]=raw.charCodeAt(i);
+  let tex;
+  if(info.hdri.ext===".hdr"){tex=new RGBELoader().parse(u.buffer); const t2=new THREE.DataTexture(tex.data,tex.width,tex.height,THREE.RGBAFormat,tex.type);
+   t2.colorSpace=THREE.LinearSRGBColorSpace; t2.flipY=true; t2.needsUpdate=true; tex=t2}
+  else if(info.hdri.ext===".exr"){const e=new EXRLoader().parse(u.buffer); tex=new THREE.DataTexture(e.data,e.width,e.height,THREE.RGBAFormat,e.type); tex.needsUpdate=true}
+  else{tex=await new THREE.TextureLoader().loadAsync(URL.createObjectURL(new Blob([u]))); tex.colorSpace=THREE.SRGBColorSpace}
+  tex.minFilter=THREE.LinearFilter; tex.magFilter=THREE.LinearFilter; tex.generateMipmaps=false;
+  const sph=new THREE.Mesh(new THREE.SphereGeometry(1800,64,32),new THREE.MeshBasicMaterial({map:tex,side:THREE.BackSide,fog:false,depthWrite:false}));
+  sph.rotation.x=Math.PI/2; sky.add(sph); scene.fog=null;
+  $("hdriShow").onchange=()=>{sky.visible=$("hdriShow").checked; scene.background=new THREE.Color(sky.visible?0x000000:0xbcd3e6)};
+  $("hdriMsg").textContent="Tourne le curseur : le ciel tourne comme dans le rendu. « Rendre cette vue » garde cette rotation.";
+ }catch(e){$("hdriMsg").textContent="HDRI non affichable ici ("+e.message+"), mais elle sera utilisée au rendu."}}
+else{$("hdriMsg").textContent="Aucune HDRI .hdr/.exr choisie (⚙ Réglages V-Ray avancés › Environnement)."}
 goTo(info.cameras.find(c=>c.nom===info.courante)||info.cameras[0]);
 // marcher
 let mode="orbit"; const keys={};
@@ -1109,7 +1157,7 @@ $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new TH
  if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
 async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
  eye:cam.position.toArray(),target:controls.target.toArray(),
- heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value};
+ heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value};
  $("msg").textContent=action==="rendre"?"Rendu demandé : la fenêtre V-Ray va s'ouvrir…":"Vue enregistrée dans V-Ray Link.";
  try{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
  catch(e){$("msg").textContent="V-Ray Link est fermé : relance-le."}}
@@ -1570,6 +1618,33 @@ def cosmos_library(kind: str = "Materials") -> list[dict]:
                     "apercu": str(prev[0]) if prev else "", "date": folder.stat().st_mtime})
     out.sort(key=lambda e: -e["date"])
     return out
+
+
+def vrmesh_size(path) -> list:
+    """Dimensions (m) d'un proxy .vrmesh Cosmos : [largeur x, largeur y, hauteur, z mini] (lecture du 1er bloc de sommets)."""
+    import zlib
+    try:
+        d = Path(path).read_bytes()[:4_000_000]
+        i = 0
+        while True:
+            i = d.find(b"x", i)
+            if i < 0 or i > 4096:
+                return []
+            if d[i + 1] in (0x01, 0x5E, 0x9C, 0xDA):
+                try:
+                    r = zlib.decompressobj().decompress(d[i:])
+                    if len(r) >= 36 and len(r) % 12 == 0:
+                        v = struct.unpack(f"<{len(r) // 4}f", r)
+                        xs, ys, zs = v[0::3], v[1::3], v[2::3]
+                        k = ECHELLE_COSMOS
+                        size = [(max(xs) - min(xs)) * k, (max(ys) - min(ys)) * k, (max(zs) - min(zs)) * k, min(zs) * k]
+                        if all(0 < c < 200 for c in size[:3]):
+                            return size
+                except Exception:  # noqa: BLE001
+                    pass
+            i += 1
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def cosmos_hdris() -> list[dict]:
@@ -2377,12 +2452,49 @@ def window(state: dict) -> None:
                 "lat": proj["lat"], "lon": proj["lon"], "fuseau": float(proj.get("fuseau", 0.0)), "north": proj["north"],
                 "heure": float(opts["heure"]), "jour": int(opts["jour"]), "mois": int(opts["mois"]),
                 "intensite": float(opts.get("soleil_intensite", 1.0)),
-                "objets": [{"nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "echelle": o.get("echelle", 1.0)}
+                "objets": [{"nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "echelle": o.get("echelle", 1.0),
+                            "rot": o.get("rotation", 0.0), "taille": obj_size(o["dossier"])}
                            for o in (state.get("objets") or {}).get(key, [])],
+                "vegetation": vegetation(),
+                "hdri": hdri_info(),
                 "arbres": tree_points(),
                 "courante": current.get(),
                 "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
                              "auto": bool(c.get("auto"))} for c in all_cams()]}
+
+    def obj_size(folder: str) -> list:
+        try:
+            return vrmesh_size(sorted(Path(folder).glob("*.vrmesh"), key=_lod)[-1])
+        except Exception:  # noqa: BLE001
+            return []
+
+    def hdri_info() -> dict:
+        path = str(opts.get("hdri") or "")
+        ok = bool(path) and Path(path).suffix.lower() in (".hdr", ".exr", ".jpg", ".jpeg", ".png") and Path(path).exists()
+        snap["_hdri_path"] = path if ok else ""
+        return {"on": ok, "rot": float(opts.get("hdri_rot", 0.0)), "mult": float(opts.get("hdri_mult", 1.0)),
+                "ext": Path(path).suffix.lower() if ok else "", "soleil": bool(opts.get("hdri_soleil", True))}
+
+    def vegetation() -> list:
+        """Herbe / fleurs du scatter, en version legere pour la visionneuse (echantillon de points + taille reelle)."""
+        out, budget = [], 20000
+        scs = [sc for sc in (state.get("scatter") or {}).get(key, []) if sc.get("type") != "Arbres"]
+        if not scs:
+            return out
+        try:
+            meshes, _m, offset, ground = pickle.loads((data_dir() / key / "geometrie.pkl").read_bytes())
+        except Exception:  # noqa: BLE001
+            meshes, offset, ground = {}, (0.0, 0.0, 0.0), 0.0
+        import random
+        for sc in scs:
+            pts = scatter_points(sc, meshes, offset, ground, key)
+            n = min(len(pts), budget // len(scs))
+            if not n:
+                continue
+            pts = random.Random(2).sample(pts, n) if len(pts) > n else pts
+            out.append({"nom": sc["nom"], "type": sc.get("type", ""), "taille": obj_size(sc["dossier"]),
+                        "echelle": float(sc.get("echelle", 1.0)), "pts": [round(c, 2) for p_ in pts for c in p_]})
+        return out
 
     def tree_points() -> list:
         """Arbres du scatter, pour les montrer (avec leur ombre) dans la visionneuse."""
@@ -2406,6 +2518,9 @@ def window(state: dict) -> None:
                     month_var.set(int(msg["mois"]))
                     show_hour()
                     collect()
+                    if "hdri_rot" in msg:
+                        opts["hdri_rot"] = float(msg["hdri_rot"]) % 360
+                        save_settings(state)
                     if "intensite" in msg:
                         opts["soleil_intensite"] = max(0.0, min(5.0, float(msg["intensite"])))
                         save_settings(state)
@@ -2662,7 +2777,9 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
         for k, sc in enumerate(scatters):
             try:
                 folder = Path(sc["dossier"])
-                mesh = sorted(folder.glob("*.vrmesh"), key=_lod)[-1 if sc.get("leger", True) else 0]
+                meshes_ = sorted(folder.glob("*.vrmesh"), key=_lod)
+                lods = [m_ for m_ in meshes_ if _lod(m_) < 4] or meshes_     # jamais un fichier sans niveau de detail connu
+                mesh = lods[-1 if sc.get("leger", True) else 0]
                 vrmat = sorted(folder.glob("*.vrmat"), key=_lod)[0]
                 fixed, top = vrmat_for_render(vrmat)
             except Exception as error:  # noqa: BLE001
