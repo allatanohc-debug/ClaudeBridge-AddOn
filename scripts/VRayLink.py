@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.2 (Light Gen + réglages conseillés)"
+VERSION = "20/10 - v5.3 (V-Ray interactif)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1068,6 +1068,10 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
 <div id="cadre" style="position:absolute;left:50%;transform:translateX(-50%);top:10px;color:var(--mute);font-size:12px;background:rgba(0,0,0,.35);padding:3px 10px;border-radius:10px"></div>
+<button id="bLive" title="V-Ray recalcule une petite image à chaque fois que tu t'arrêtes de bouger (comme le rendu interactif / V-Ray Vision)" style="position:absolute;right:270px;top:10px;z-index:5;padding:6px 10px">🔄 V-Ray interactif</button>
+<div id="pip" style="position:absolute;right:12px;bottom:34px;width:38%;display:none;z-index:6;background:#111;border:1px solid #555;border-radius:6px;overflow:hidden;box-shadow:0 4px 18px #000a">
+<div id="pipMsg" style="position:absolute;left:8px;top:6px;color:#fff;font-size:12px;text-shadow:0 1px 2px #000">V-Ray interactif : arrête-toi pour calculer…</div>
+<img id="pipImg" style="display:block;width:100%"></div>
 <button id="bApercu" style="position:absolute;right:120px;top:10px;z-index:5;background:var(--acc);border-color:var(--acc);color:#fff;padding:6px 12px">⚡ Aperçu V-Ray</button>
 <div id="apercu" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:7;background:rgba(10,11,13,.6)">
 <div style="position:relative"><img id="apImg" style="display:block;max-width:100%;max-height:100%;box-shadow:0 0 0 1px #555"><div id="apMsg" style="color:#fff;font-size:15px;padding:20px"></div>
@@ -1500,7 +1504,20 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const mov
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
-function showApercu(a){const box=$("apercu"); if(!apWait&&a.etat!=="calcul")return;
+let liveOn=false, liveSig="", liveSent="", liveT=0, liveBusy=false;
+function liveSignature(){return [cam.position.toArray().map(v=>v.toFixed(2)),controls.target.toArray().map(v=>v.toFixed(2)),$("foc").value,vmode,$("shift").value,$("coupe").value,$("ev").value,$("hour").value,$("sunInt").value,$("hdriRot").value].join("|")}
+$("bLive").onclick=()=>{liveOn=!liveOn; $("bLive").classList.toggle("on",liveOn); $("bLive").textContent=liveOn?"⏹ Arrêter l'interactif":"🔄 V-Ray interactif";
+ $("pip").style.display=liveOn?"":"none"; liveSent=""; if(liveOn){const r=renderer.domElement.getBoundingClientRect(); $("pipImg").style.aspectRatio=(r.width/r.height)}};
+setInterval(()=>{if(!liveOn)return; const sg=liveSignature(); if(sg!==liveSig){liveSig=sg; liveT=Date.now(); $("pipMsg").textContent="V-Ray interactif : arrête-toi pour calculer…"; return}
+ if(liveBusy||sg===liveSent||Date.now()-liveT<1200)return; liveSent=sg; liveBusy=true; $("pipMsg").textContent="⚡ V-Ray calcule…";
+ fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apercu",rapide:true,eye:cam.position.toArray(),target:controls.target.toArray(),
+  focale:+$("foc").value,mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
+  heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})}).catch(()=>{liveBusy=false})},400);
+function showApercu(a){if(liveOn&&!apWait){if(a.etat==="pret"){fetch("/api/apercu_img").then(r=>r.json()).then(j=>{$("pipImg").src="data:image/png;base64,"+j.d;
+   $("pipMsg").textContent=liveSent===liveSignature()?"✔ À jour":"V-Ray interactif : arrête-toi pour calculer…"})}
+  else if(a.etat!=="calcul") $("pipMsg").textContent="Aperçu impossible — "+a.etat;
+  if(a.etat!=="calcul")liveBusy=false; return}
+ const box=$("apercu"); if(!apWait&&a.etat!=="calcul")return;
  box.style.display="flex"; const img=$("apImg"), m=$("apMsg");
  if(a.etat==="calcul"){img.style.display="none"; m.style.display=""; m.textContent="⚡ Calcul de l'aperçu V-Ray (petite image, ~20 à 40 s)…"}
  else if(a.etat==="pret"){fetch("/api/apercu_img").then(r=>r.json()).then(j=>{img.src="data:image/png;base64,"+j.d; img.style.display=""; m.style.display="none";
@@ -1745,7 +1762,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     vr = TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0)
     minutes, thr = QUALITES.get(opts["qualite"], QUALITES["Haute"])
     if opts.get("_apercu"):
-        minutes, thr = 0.35, 0.08
+        minutes, thr = float(opts.get("_apercu_min", 0.35)), 0.08
     fnum, shutter, iso = AMBIANCES.get(opts["ambiance"], AMBIANCES["Extérieur jour"])
     inside = interieur(opts)
     if inside and not opts.get("_apercu"):
@@ -3552,6 +3569,8 @@ def window(state: dict) -> None:
                "decentrement": float(msg.get("decentrement", 0.0)), "ortho_largeur": float(msg.get("ortho_largeur", 20.0)),
                "coupe": float(msg.get("coupe", 0.0)), "ev": float(msg.get("ev", 0.0))}
         o2 = dict(opts, _apercu=True, reutiliser=True)
+        if msg.get("rapide"):                 # rendu interactif : petite image tres rapide, recalculee a chaque arret
+            o2.update(_apercu_px=420, _apercu_min=0.15)
         if "heure" in msg:
             o2.update(heure=float(msg["heure"]), jour=int(msg["jour"]), mois=int(msg["mois"]))
         if "intensite" in msg:
