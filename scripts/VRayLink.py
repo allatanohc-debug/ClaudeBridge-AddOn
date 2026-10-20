@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.2 (objets suivis dans le plan)"
+VERSION = "20/10 - v3.3"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -954,6 +954,10 @@ VIEWER_HTML = r"""<!doctype html>
 :root{--bg:#16181c;--panel:#20232a;--line:#30343d;--txt:#e8e6e1;--mute:#9aa0aa;--acc:#e0702a}
 *{box-sizing:border-box}html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);font:13px "Segoe UI",system-ui,sans-serif}
 #app{display:grid;grid-template-columns:1fr 270px;height:100%}
+#app.ferme{grid-template-columns:1fr 0}#app.ferme aside{display:none}
+#toggle{position:absolute;top:10px;right:10px;z-index:5;background:rgba(32,35,42,.85);color:var(--txt);border:1px solid var(--line);
+ border-radius:7px;padding:6px 10px;cursor:pointer;font:13px "Segoe UI",sans-serif}
+#toggle:hover{border-color:#4a505c}
 #stage{position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden}
 #frame{position:relative;box-shadow:0 0 0 1px var(--line),0 0 0 9999px rgba(0,0,0,.55)}
 canvas{display:block}
@@ -972,7 +976,7 @@ button:hover{border-color:#4a505c}button.main{background:var(--acc);border-color
 kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 4px;font-size:11px}
 </style></head><body>
 <div id="app"><div id="stage"><div id="frame"><div id="load">Chargement du modèle…</div></div>
-<div id="hud"></div></div>
+<div id="hud"></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
@@ -1036,6 +1040,11 @@ const controls=new OrbitControls(cam,renderer.domElement); controls.enableDampin
 function fit(){const W=stage.clientWidth-24,H=stage.clientHeight-24;let w=W,h=W/aspect;if(h>H){h=H;w=H*aspect}
  renderer.setSize(Math.floor(w),Math.floor(h)); cam.aspect=aspect; cam.updateProjectionMatrix();}
 addEventListener("resize",fit); fit();
+function setPanel(open){$("app").classList.toggle("ferme",!open); $("toggle").textContent=open?"Réglages ▶":"◀ Réglages";
+ try{localStorage.setItem("vrl_panneau",open?"1":"0")}catch(_){} requestAnimationFrame(fit)}
+$("toggle").onclick=()=>setPanel($("app").classList.contains("ferme"));
+addEventListener("keydown",e=>{if(e.target.tagName!=="INPUT"&&e.code==="KeyP")setPanel($("app").classList.contains("ferme"))});
+try{if(localStorage.getItem("vrl_panneau")==="0")setPanel(false)}catch(_){}
 function setFocal(f){const hf=2*Math.atan(18/f); cam.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(hf/2)/aspect)); cam.updateProjectionMatrix();}
 for(const f of info.focales){const o=document.createElement("option");o.value=f;o.textContent=f+" mm";$("foc").appendChild(o)}
 $("foc").value=24; setFocal(24); $("foc").onchange=()=>setFocal(+$("foc").value);
