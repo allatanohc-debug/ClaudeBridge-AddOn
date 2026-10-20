@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v5.0 (préréglages, fenêtres compactes)"
+VERSION = "20/10 - v5.1 (ciel généré : nuages, lune, étoiles)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -91,17 +91,17 @@ CANAUX = {
 # Prereglages (d'apres les reglages conseilles pour V-Ray : soleil + ciel physique ou HDRI, Brute force + Light cache,
 # debruiteur, exposition auto pour la nuit / HDRI seule, protection des hautes lumieres en interieur et au couchant).
 PREREGLAGES = {
-    "☀ Extérieur plein jour (net, lumineux)": dict(ambiance="Extérieur jour", heure=10.5, hdri="", hdri_soleil=True,
+    "☀ Extérieur plein jour (net, lumineux)": dict(ambiance="Extérieur jour", heure=10.5, ciel="Quelques nuages", hdri="", hdri_soleil=True,
                                                   zones_claires=0, balance=0.0, vignettage=0.2, contraste=1.0),
-    "🌤 Extérieur fin d'après-midi (ombres longues)": dict(ambiance="Extérieur jour", heure=16.5, hdri="", hdri_soleil=True,
+    "🌤 Extérieur fin d'après-midi (ombres longues)": dict(ambiance="Extérieur jour", heure=16.5, ciel="Nuageux", hdri="", hdri_soleil=True,
                                                           zones_claires=25, balance=0.15, vignettage=0.3, contraste=1.1),
     "🌇 Coucher de soleil (HDRI, ambiance chaude)": dict(ambiance="Extérieur jour", heure=18.0, hdri="@couchant", hdri_soleil=False,
                                                        hdri_mult=1.0, zones_claires=75, balance=0.3, vignettage=0.35, contraste=1.1),
     "🛋 Intérieur de jour (pièce lumineuse)": dict(ambiance="Intérieur lumineux", heure=11.0, hdri="", hdri_soleil=True,
                                                    zones_claires=60, balance=0.0, vignettage=0.2, contraste=1.0),
-    "🕯 Intérieur cosy (fin de journée)": dict(ambiance="Intérieur sombre", heure=17.5, hdri="", hdri_soleil=True,
+    "🕯 Intérieur cosy (fin de journée)": dict(ambiance="Intérieur lumineux", heure=17.0, hdri="", hdri_soleil=True,
                                               zones_claires=60, balance=0.35, vignettage=0.35, contraste=1.1),
-    "🌙 Nuit (lumières allumées)": dict(ambiance="Nuit", heure=20.5, hdri="", hdri_soleil=True, zones_claires=50,
+    "🌙 Nuit (lumières allumées)": dict(ambiance="Nuit", heure=20.5, ciel="Dégagé", hdri="", hdri_soleil=True, zones_claires=50,
                                        balance=0.2, vignettage=0.3, contraste=1.0),
     "⚡ Test rapide (brouillon, 1280 px)": dict(qualite="Brouillon", taille="1280 × 720 (16:9)"),
     "🏆 Image finale pour le client (4K)": dict(qualite="Finale", taille="3840 × 2160 (4K)"),
@@ -1714,6 +1714,28 @@ def zones_claires(opts: dict) -> float:
     return (0.6 if interieur(opts) or opts.get("hdri") else 0.0) if v in (None, "", "auto") else max(0.0, min(1.0, float(v) / 100.0))
 
 
+CIELS = {"Dégagé": 0.0, "Quelques nuages": 0.25, "Nuageux": 0.5, "Très nuageux": 0.8}
+
+
+def ciel_params(opts: dict, proj: dict, alt: float) -> str:
+    """Ciel genere par V-Ray (comme V-Ray 7 pour SketchUp) : nuages proceduraux + lune et etoiles la nuit."""
+    out = []
+    dens = CIELS.get(opts.get("ciel", "Dégagé"), 0.0)
+    if dens > 0:
+        out.append(f"  clouds_on=1;\n  clouds_ground_shadows=1;\n  clouds_density={dens:.2f};\n  clouds_variety=0.4;\n"
+                   f"  clouds_cirrus_amount=0.2;\n  clouds_seed={int(opts.get('ciel_graine', 7))};\n")
+    if math.degrees(alt) < 2.0 or opts.get("ambiance") == "Nuit":    # nuit : lune + etoiles + voie lactee placees selon lieu / date / heure
+        h = float(opts.get("heure", 20.0))
+        nth = float(proj.get("north", math.pi / 2))
+        out.append(f"  moon_on=1;\n  stars_on=1;\n  stars_latitude={float(proj.get('lat', 5.36)):.4f};\n"
+                   f"  stars_longitude={float(proj.get('lon', -4.01)):.4f};\n  stars_date_day={int(opts.get('jour', 1))};\n"
+                   f"  stars_date_month={int(opts.get('mois', 1))};\n  stars_date_year={dt.date.today().year};\n"
+                   f"  stars_time_hours={int(h)};\n  stars_time_minutes={int(round(h % 1 * 60)) % 60};\n"
+                   f"  stars_time_zone={int(round(float(proj.get('fuseau', 0.0))))};\n"
+                   f"  stars_north_vector=Vector({math.cos(nth):.4f},{math.sin(nth):.4f},0);\n")
+    return "".join(out)
+
+
 def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, ground_z: float) -> None:
     W, H = render_size(opts)
     vr = TYPES_CAMERA.get(opts.get("type_camera", "Standard"), 0)
@@ -1764,7 +1786,7 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"specify_focus=1; focus_distance={dist:.3f}; lens_shift=0; vertical_offset={-shift * H / W:.4f}; }}",   # unite = largeur image, + = cadre vers le bas (mesure sur V-Ray)
          f"SunLight sun {{\n  transform=Transform(Matrix({vec(sx)},{vec(sy)},{vec(sz)}),{vec([c * 1000 for c in sd])});\n"
          f"  intensity_multiplier={float(opts.get('soleil_intensite', 1.0)):.3f};\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
-         f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
+         f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n{ciel_params(opts, proj, alt)}}}",
          "TexSky sky { sun=sun; }"]
     if vr:                                    # panorama / cubemap VR : camera horizontale, sans appareil physique
         s = [l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
@@ -2319,7 +2341,7 @@ def load_settings() -> dict:
             "dof": False, "dof_f": 2.8, "hdri": "", "hdri_mult": 1.0, "hdri_rot": 0.0, "hdri_soleil": True, "soleil_intensite": 1.0,
             "type_camera": "Standard", "taille_perso": False, "largeur": 3000, "hauteur": 2000,
             "balance": 0.0, "vignettage": 0.3, "contraste": 1.0,
-            "trouble": 3.0, "taille_soleil": 3.0, "zones_claires": "auto", "portails": True, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
+            "trouble": 3.0, "taille_soleil": 3.0, "ciel": "Dégagé", "zones_claires": "auto", "portails": True, "lieu": "Abidjan", "reutiliser": False, "oeil": 1.6, "cible": 1.4, "focale": 24}
     opts.update({k: v for k, v in (saved.get("options") or {}).items() if k in opts})
     return {"options": opts, "cameras": saved.get("cameras") or {}, "bibliotheque": saved.get("bibliotheque") or {},
             "vray": saved.get("vray", ""), "coches": saved.get("coches") or {},
@@ -2843,6 +2865,12 @@ def window(state: dict) -> None:
     ttk.Scale(so, from_=5.5, to=20.0, variable=hour_var, command=show_hour, length=260
               ).grid(row=2, column=1, columnspan=3, sticky="w", pady=(4, 0))
     ttk.Label(so, textvariable=hour_lbl).grid(row=3, column=1, columnspan=3, sticky="w")
+    ttk.Label(so, text="☁ Ciel").grid(row=4, column=0, sticky="w", pady=(4, 0))
+    ciel_var = tk.StringVar(value=opts.get("ciel", "Dégagé"))
+    ttk.Combobox(so, values=list(CIELS), textvariable=ciel_var, state="readonly", width=16).grid(
+        row=4, column=1, columnspan=2, sticky="w", pady=(4, 0))
+    ttk.Label(so, foreground="#777", text="nuages générés par V-Ray ; la nuit : lune + étoiles").grid(
+        row=4, column=3, columnspan=2, sticky="w", padx=6, pady=(4, 0))
     show_hour()
     place_box.bind("<<ComboboxSelected>>", show_hour)
 
@@ -2886,7 +2914,7 @@ def window(state: dict) -> None:
         try:
             opts.update(qualite=qual_var.get(), taille=size_var.get(), ambiance=amb_var.get(), sol=sol_var.get(),
                         jour=int(day_var.get()), mois=int(month_var.get()), heure=round(float(hour_var.get()), 2),
-                        verticales=bool(vert_var.get()), lieu=place_var.get(), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()),
+                        verticales=bool(vert_var.get()), lieu=place_var.get(), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()), ciel=ciel_var.get(),
                         zones_claires=(zc_var.get().strip() if zc_var.get().strip() in ("auto", "") else float(zc_var.get())),
                         cible=float(tgt_var.get()), focale=int(foc_var.get()))
         except (ValueError, tk.TclError):
@@ -2909,7 +2937,7 @@ def window(state: dict) -> None:
             if not p["hdri"]:
                 p["hdri_soleil"] = True
                 say("Aucune HDRI Cosmos : ciel V-Ray au coucher du soleil à la place (télécharge « Sunset » dans Cosmos pour mieux).")
-        for k_, var_ in (("qualite", qual_var), ("taille", size_var), ("ambiance", amb_var)):
+        for k_, var_ in (("qualite", qual_var), ("taille", size_var), ("ambiance", amb_var), ("ciel", ciel_var)):
             if k_ in p:
                 var_.set(p[k_])
         if "heure" in p:
@@ -2917,7 +2945,7 @@ def window(state: dict) -> None:
             show_hour()
         if "zones_claires" in p:
             zc_var.set(str(int(p["zones_claires"])))
-        opts.update({k_: v_ for k_, v_ in p.items() if k_ not in ("qualite", "taille", "ambiance", "heure", "zones_claires")})
+        opts.update({k_: v_ for k_, v_ in p.items() if k_ not in ("qualite", "taille", "ambiance", "heure", "zones_claires", "ciel")})
         collect()
         say(f"Préréglage « {pre_var.get()} » appliqué (tu peux encore tout modifier).")
     pre_box.bind("<<ComboboxSelected>>", apply_preset)
