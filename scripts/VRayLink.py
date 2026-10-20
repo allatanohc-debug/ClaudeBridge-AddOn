@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.1 (interface variante 3)"
+VERSION = "20/10 - v6.2 (interface élastique)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3016,7 +3016,8 @@ def window(state: dict) -> None:
     ciel_var = tk.StringVar(value=opts.get("ciel", "Dégagé"))
     ttk.Combobox(so, values=list(CIELS), textvariable=ciel_var, state="readonly", width=16).grid(
         row=4, column=1, columnspan=2, sticky="w", pady=(4, 0))
-    ttk.Label(so, foreground="#777", text="nuages générés par V-Ray (avec leurs ombres)").grid(
+    ciel_note = ttk.Label(so, foreground="#777", text="nuages générés par V-Ray (avec leurs ombres)")
+    ciel_note.grid(
         row=4, column=3, columnspan=2, sticky="w", padx=6, pady=(4, 0))
     show_hour()
     place_box.bind("<<ComboboxSelected>>", show_hour)
@@ -3034,10 +3035,11 @@ def window(state: dict) -> None:
     zc_var = tk.StringVar(value=str(opts.get("zones_claires", "auto")))
     ttk.Combobox(am, values=["auto", "0", "25", "50", "75", "100"], textvariable=zc_var, width=6).grid(
         row=2, column=2, sticky="w", pady=(6, 0))
-    ttk.Label(am, foreground="#777", wraplength=430, justify="left",
+    am_note = ttk.Label(am, foreground="#777", wraplength=430, justify="left",
               text="« auto » = 60 % en intérieur (on voit encore le jardin par la fenêtre), 0 % dehors. "
                    "En intérieur, V-Ray Link éclaire aussi la pièce avec la lumière du ciel « intelligente » de V-Ray "
-                   "(elle passe par les fenêtres) : image moins granuleuse.").grid(row=3, column=0, columnspan=4, sticky="w")
+                   "(elle passe par les fenêtres) : image moins granuleuse.")
+    am_note.grid(row=3, column=0, columnspan=4, sticky="w")
     reuse_var = tk.BooleanVar(value=opts["reutiliser"])
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -3825,12 +3827,68 @@ def window(state: dict) -> None:
             root.update_idletasks()
             sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
             w = min(outer.winfo_reqwidth() + side.winfo_reqwidth() + 40, int(sw * 0.9))
-            h = min(outer.winfo_reqheight() + 130, int(sh * 0.85))
-            root.geometry(f"{w}x{h}")
-            root.minsize(360, 260)
+            h = min(outer.winfo_reqheight() + 130, int(sh * 0.8))
+            root.geometry(f"{w}x{h}+{max(0, (sw - w) // 2)}+20")
+            root.minsize(300, 260)
         except Exception:  # noqa: BLE001
             pass
     root.after(80, _taille_depart)
+
+    # --- fenetre « elastique » : large ou fine, les options se replacent toutes seules
+    def _ordre(fr):
+        if not hasattr(fr, "_ordre"):
+            fr._ordre = sorted(fr.grid_slaves(), key=lambda w_: (int(w_.grid_info()["row"]), int(w_.grid_info()["column"])))
+            for w_ in fr._ordre:
+                w_.grid_forget()
+        return fr._ordre
+
+    def flow(fr, largeur):
+        """Place les elements comme du texte : a la ligne quand la largeur manque."""
+        x_, y_, h_ = 0, 0, 0
+        for w_ in _ordre(fr):
+            lw, lh = w_.winfo_reqwidth(), w_.winfo_reqheight()
+            if x_ and x_ + lw > largeur:
+                x_, y_, h_ = 0, y_ + h_ + 6, 0
+            w_.place(x=x_, y=y_)
+            x_ += lw + 8
+            h_ = max(h_, lh)
+        fr.configure(width=max(60, min(largeur, max((w_.winfo_x() + w_.winfo_reqwidth()) for w_ in _ordre(fr)) + 4
+                                       if y_ == 0 else largeur)), height=y_ + h_ + 2)
+
+    etat_large = {"w": 0}
+
+    def reflow():
+        try:
+            w = rendu_box.cv.winfo_width() - 36
+            if w < 50 or abs(w - etat_large["w"]) < 8:
+                return
+            etat_large["w"] = w
+            flow(row, w)
+            flow(pr, w)
+            if listf.winfo_reqwidth() + plan.winfo_reqwidth() + 30 > w:      # fine : le plan passe sous la liste
+                plan.grid_configure(row=4, column=0, columnspan=4, rowspan=1, padx=0, pady=(8, 0), sticky="w")
+            else:
+                plan.grid_configure(row=0, column=4, rowspan=3, padx=(12, 0), pady=0, sticky="n")
+            am_note.configure(wraplength=max(220, min(560, w - 30)))
+            ciel_note.grid_configure(row=5 if w < 560 else 4, column=1 if w < 560 else 3)
+            fin = root.winfo_width() < 640                                    # tres fine : barre de gauche en icones
+            for b_ in side_btns:
+                t_ = b_.cget("text")
+                ico, _, lab = t_.partition("\n")
+                if not hasattr(b_, "_lab"):
+                    b_._lab = lab
+                b_.configure(text=ico if fin else f"{ico}\n{b_._lab}", width=4 if fin else 9)
+        except Exception:  # noqa: BLE001
+            pass
+    planifie = {"id": None}
+
+    def _sur_taille(_e=None):
+        if planifie["id"]:
+            root.after_cancel(planifie["id"])
+        planifie["id"] = root.after(90, reflow)
+    rendu_box.cv.bind("<Configure>", _sur_taille, add="+")
+    root.bind("<Configure>", _sur_taille, add="+")
+    root.minsize(300, 300)
     root.mainloop()
 
 
