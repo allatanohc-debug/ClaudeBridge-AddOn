@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v3.6 (cadrage)"
+VERSION = "20/10 - v3.7 (vues intérieures + orthogonale)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -95,7 +95,7 @@ AMBIANCES = {                              # f/, 1/vitesse, ISO
 }
 SOLS = {"Gazon": (0.26, 0.36, 0.16), "Latérite (terre rouge)": (0.55, 0.32, 0.20), "Béton gris": (0.55, 0.55, 0.53),
         "Sable": (0.78, 0.70, 0.55), "Aucun": None}
-FOCALES = (14, 18, 24, 28, 35, 50)
+FOCALES = (12, 14, 16, 18, 20, 24, 28, 35, 50)
 
 # reglages de materiau devines d'apres le nom de la surface Archicad
 FAMILLES = [
@@ -1012,10 +1012,22 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
-<div><label>Type de vue</label><div class="seg"><button id="vPersp">Perspective libre</button><button id="v2pf">2 points de fuite</button></div>
+<div><label>Type de vue</label><div class="seg"><button id="vPersp">Perspective libre</button><button id="v2pf">2 points de fuite</button><button id="vOrtho">Orthogonale</button></div>
+<div id="orthoBox" style="margin-top:6px"><label>Largeur visible : <span id="owTxt"></span></label>
+<input id="ow" type="range" min="2" max="120" step="0.5" value="20" style="padding:0">
+<div style="color:var(--mute);font-size:12px">Sans perspective (axonométrie, élévation, plan) : place-toi face à la façade ou au-dessus, puis règle la largeur.</div></div>
 <div id="shiftBox" style="margin-top:6px"><label>Décentrement vertical : <span id="shiftTxt"></span></label>
 <input id="shift" type="range" min="-0.6" max="0.6" step="0.01" value="0" style="padding:0">
 <div style="color:var(--mute);font-size:12px">Monte / descend le cadre sans pencher la caméra (verticales toujours droites).</div></div></div>
+<div><label>Vue intérieure</label>
+<div class="row"><button id="hAssis" title="Hauteur d'œil assis">Assis 1,2 m</button><button id="hDebout" title="Hauteur d'œil debout">Debout 1,6 m</button></div>
+<label style="margin-top:6px">Traverser les murs (plan de coupe) : <span id="coupeTxt"></span></label>
+<input id="coupe" type="range" min="0" max="6" step="0.05" value="0" style="padding:0">
+<label style="margin-top:6px">Masquer au-dessus de : <span id="cutTxt"></span></label>
+<input id="cut" type="range" min="0" max="30" step="0.1" value="30" style="padding:0">
+<label style="margin-top:6px">Exposition de la vue : <span id="evTxt"></span></label>
+<input id="ev" type="range" min="-3" max="5" step="0.25" value="0" style="padding:0">
+<div style="color:var(--mute);font-size:12px">Plan de coupe : ce qui est à moins de X m de la caméra est ignoré (rendu compris) ⇒ on peut se placer « dans » un mur pour cadrer une petite pièce. « Masquer au-dessus » sert seulement à naviguer.</div></div>
 <div><label>Aides au cadrage</label><div class="aides">
 <label><input type="checkbox" id="gTiers" checked> Tiers</label><label><input type="checkbox" id="gHorizon" checked> Horizon</label>
 <label><input type="checkbox" id="gCroix"> Centre</label><label><input type="checkbox" id="gDiag"> Diagonales</label>
@@ -1066,7 +1078,7 @@ const aspect=info.largeur/info.hauteur;
 const frame=$("frame"), stage=$("stage");
 const renderer=new THREE.WebGLRenderer({antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio,2));
-renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap; renderer.localClippingEnabled=true;
 frame.appendChild(renderer.domElement);
 const scene=new THREE.Scene(); scene.background=new THREE.Color(0xbcd3e6);
 scene.fog=new THREE.Fog(0xbcd3e6,400,2000);
@@ -1103,14 +1115,35 @@ try{if(localStorage.getItem("vrl_panneau")==="0")setPanel(false)}catch(_){}
 function setFocal(f){const hf=2*Math.atan(18/f); cam.fov=THREE.MathUtils.radToDeg(2*Math.atan(Math.tan(hf/2)/aspect)); cam.updateProjectionMatrix();}
 for(const f of info.focales){const o=document.createElement("option");o.value=f;o.textContent=f+" mm";$("foc").appendChild(o)}
 $("foc").value=24; setFocal(24); $("foc").onchange=()=>setFocal(+$("foc").value);
+const ortho=new THREE.OrthographicCamera(-10,10,5,-5,-2000,5000); ortho.up.set(0,0,1);
+function syncOrtho(){const w=+$("ow").value; ortho.left=-w/2; ortho.right=w/2; ortho.top=w/aspect/2; ortho.bottom=-w/aspect/2;
+ ortho.position.copy(cam.position); ortho.quaternion.copy(cam.quaternion); ortho.updateProjectionMatrix(); $("owTxt").textContent=w+" m"}
+$("ow").addEventListener("input",syncOrtho);
+renderer.domElement.addEventListener("wheel",e=>{if(vmode!=="ortho")return; e.preventDefault(); e.stopImmediatePropagation();
+ const w=Math.min(120,Math.max(2,+$("ow").value*(e.deltaY>0?1.1:0.9))); $("ow").value=w; syncOrtho()},{capture:true,passive:false});
 function setMode(m){vmode=m; $("vPersp").classList.toggle("on",m==="persp"); $("v2pf").classList.toggle("on",m==="2pf");
+ $("vOrtho").classList.toggle("on",m==="ortho"); $("orthoBox").style.display=m==="ortho"?"":"none";
  $("shiftBox").style.display=m==="2pf"?"":"none";
  if(m==="2pf"){controls.minPolarAngle=controls.maxPolarAngle=Math.PI/2; controls.target.z=cam.position.z} else {controls.minPolarAngle=0; controls.maxPolarAngle=Math.PI}
  controls.update(); applyShift()}
-$("vPersp").onclick=()=>setMode("persp"); $("v2pf").onclick=()=>setMode("2pf");
+$("vPersp").onclick=()=>setMode("persp"); $("v2pf").onclick=()=>setMode("2pf"); $("vOrtho").onclick=()=>setMode("ortho");
+function eyeAt(hh){const h=info.sol+hh; const d=new THREE.Vector3().subVectors(controls.target,cam.position); d.z=0; if(d.length()<0.3)d.set(3,0,0);
+ cam.position.z=h; controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h); controls.update()}
+$("hAssis").onclick=()=>eyeAt(1.2); $("hDebout").onclick=()=>eyeAt(1.6);
+function setCoupe(){const c=+$("coupe").value; cam.near=c>0?c:0.05; cam.updateProjectionMatrix(); $("coupeTxt").textContent=c>0?c.toFixed(2)+" m":"non"}
+$("coupe").addEventListener("input",setCoupe);
+const cutPlane=new THREE.Plane(new THREE.Vector3(0,0,-1),0);
+function setCut(){const v=+$("cut").value; cutPlane.constant=info.sol+v;
+ for(const m of (window.__mats||[])){m.clippingPlanes=v>=30?null:[cutPlane]; m.needsUpdate=true}
+ $("cutTxt").textContent=v>=30?"rien":v.toFixed(1)+" m"}
+$("cut").addEventListener("input",setCut);
+function setEv(){const e=+$("ev").value; renderer.toneMappingExposure=Math.pow(2,e); $("evTxt").textContent=(e>0?"+":"")+e+" EV"}
+$("ev").addEventListener("input",setEv);
+renderer.toneMapping=THREE.ACESFilmicToneMapping; setCoupe(); setCut(); setEv();
 $("shift").addEventListener("input",applyShift);
 function goTo(c){cam.position.set(...c.eye); controls.target.set(...c.target); $("foc").value=c.focale||24; setFocal(+$("foc").value);
- $("shift").value=c.decentrement||0; setMode(c.mode||"persp");
+ $("shift").value=c.decentrement||0; $("ow").value=c.ortho_largeur||20; setMode(c.mode||"persp");
+ $("coupe").value=c.coupe||0; setCoupe(); $("ev").value=c.ev||0; setEv();
  if(!c.auto) $("name").value=c.nom; controls.update();}
 info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;o.textContent=c.nom;$("cams").appendChild(o)});
 $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
@@ -1141,7 +1174,7 @@ for(const [nom,start,count] of GROUPES){const m=new THREE.MeshPhysicalMaterial({
   roughness:0.85,metalness:0,side:THREE.DoubleSide}); m.userData.base=m.color.clone();
  PAR[nom]=MATS.length; g.addGroup(start,count,MATS.length); MATS.push(m)}
 if(!GROUPES.length) MATS.push(new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
-const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]);
+const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]); window.__mats=MATS; setCut();
 {const {RoomEnvironment}=await import("three/addons/environments/RoomEnvironment.js");
  const pm=new THREE.PMREMGenerator(renderer); scene.environment=pm.fromScene(new RoomEnvironment(),0.04).texture;
  scene.environmentIntensity=0.9; hemi.intensity=0.45}
@@ -1282,12 +1315,12 @@ function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft|
  drawGuides(); {const d=new THREE.Vector3().subVectors(controls.target,cam.position); const t=Math.asin(THREE.MathUtils.clamp(d.z/d.length(),-1,1))*180/Math.PI;
   $("tilt").textContent=vmode==="2pf"?"verticales droites":`inclinaison ${t>0?"+":""}${t.toFixed(1)}°`}
  const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${$("foc").value} mm`;
- renderer.render(scene,cam);requestAnimationFrame(loop)}
+ if(vmode==="ortho"){syncOrtho(); renderer.render(scene,ortho)} else renderer.render(scene,cam);requestAnimationFrame(loop)}
 loop();
 $("eyeBtn").onclick=()=>{const h=info.sol+(+$("eyeh").value||1.6);const d=new THREE.Vector3().subVectors(controls.target,cam.position);d.z=0;
  if(d.length()<0.5)d.set(5,0,0);cam.position.z=h;controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h);controls.update()};
 async function send(action){const body={action,nom:$("name").value.trim()||"Vue 3D",focale:+$("foc").value,
- eye:cam.position.toArray(),target:controls.target.toArray(),mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,
+ eye:cam.position.toArray(),target:controls.target.toArray(),mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
  heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value};
  $("msg").textContent=action==="rendre"?"Rendu demandé : la fenêtre V-Ray va s'ouvrir…":"Vue enregistrée dans V-Ray Link.";
  try{await fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)})}
@@ -1313,6 +1346,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
     if mode == "2pf" or (mode is None and opts.get("verticales") and not cam.get("nom", "").startswith("Vue aérienne")):
         target[2] = eye[2]                    # camera horizontale : les verticales restent droites
     shift = float(cam.get("decentrement", 0.0)) if mode == "2pf" else 0.0
+    shutter = shutter / (2.0 ** float(cam.get("ev", 0.0)))          # correction d'exposition propre a la vue (+1 = 2x plus clair)
+    clip = float(cam.get("coupe", 0.0))                               # plan de coupe : traverse les murs devant la camera
     x, y, z = frame([t - e for t, e in zip(target, eye)])
     hfov = 2 * math.atan(18.0 / float(cam.get("focale", 24)))
     day = dt.date(dt.date.today().year, int(opts["mois"]), int(opts["jour"]))
@@ -1336,7 +1371,8 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          "SettingsColorMapping { type=6; dark_mult=1; bright_mult=1; gamma=2.2; subpixel_mapping=0; clamp_output=0; "
          f"burn_value={max(0.2, min(1.0, 2.0 - float(opts.get('contraste', 1.0)))):.2f}; }}",
          "RenderChannelDenoiser denoiser { enabled=1; name=\"VRayDenoiser\"; }",
-         f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n}}",
+         f"RenderView view {{\n  transform=Transform(Matrix({vec(x)},{vec(y)},{vec(z)}),{vec(eye)});\n  fov={hfov:.6f};\n"
+         + (f"  clipping=1;\n  clipping_near={clip:.3f};\n  clipping_far=100000;\n" if clip > 0 else "") + "}",
          f"CameraPhysical cam {{ type=0; specify_fov=1; fov={hfov:.6f}; f_number={fnum}; shutter_speed={shutter}; "
          f"ISO={iso}; exposure={0 if (opts.get('hdri') and not opts.get('hdri_soleil', True)) else 1}; white_balance=Color({wb[0]:.3f},{wb[1]:.3f},{wb[2]:.3f}); "
          f"vignetting={float(opts.get('vignettage', 0.3)):.2f}; use_dof={1 if opts.get('dof') else 0}; "
@@ -1345,6 +1381,14 @@ def write_scene(path: Path, geometry: Path, cam: dict, opts: dict, proj: dict, g
          f"  intensity_multiplier={float(opts.get('soleil_intensite', 1.0)):.3f};\n  size_multiplier={float(opts.get('taille_soleil', 3.0))};\n"
          f"  turbidity={float(opts.get('trouble', 3.0))};\n  ozone=0.35;\n  sky_model=3;\n}}",
          "TexSky sky { sun=sun; }"]
+    if mode == "ortho":                      # vue orthogonale : pas d'appareil photo physique, exposition reportee sur le soleil
+        k = 320.0 * (float(iso) / 100.0) / (float(shutter) * float(fnum) ** 2)
+        width = max(1.0, float(cam.get("ortho_largeur", 20.0)))
+        s = [l_.replace("  fov=", f"  orthographic=1;\n  orthographicWidth={width:.3f};\n  fov=") if l_.startswith("RenderView view")
+             else l_ for l_ in s if not l_.startswith("CameraPhysical cam")]
+        s = [re.sub(r"intensity_multiplier=([0-9.]+);", lambda m_: f"intensity_multiplier={float(m_.group(1)) * k:.5f};", l_)
+             if l_.startswith("SunLight sun") else l_ for l_ in s]
+        s = [f"TexSky sky {{ sun=sun; intensity_multiplier={k:.5f}; }}" if l_.startswith("TexSky sky") else l_ for l_ in s]
     hdri = str(opts.get("hdri") or "")
     env = "sky"
     if hdri and Path(hdri).exists():
@@ -2629,7 +2673,9 @@ def window(state: dict) -> None:
                 "courante": current.get(),
                 "cameras": [{"nom": c["nom"], "eye": c["eye"], "target": c["target"], "focale": c.get("focale", 24),
                              "auto": bool(c.get("auto")), "mode": c.get("mode") or ("2pf" if opts.get("verticales") else "persp"),
-                             "decentrement": c.get("decentrement", 0.0)} for c in all_cams()]}
+                             "decentrement": c.get("decentrement", 0.0), "coupe": c.get("coupe", 0.0),
+                             "ortho_largeur": c.get("ortho_largeur", 20.0),
+                             "ev": c.get("ev", 0.0)} for c in all_cams()]}
 
     def obj_size(folder: str) -> list:
         try:
@@ -2706,7 +2752,9 @@ def window(state: dict) -> None:
                 name = str(msg.get("nom") or "Vue 3D")[:60]
                 cam = {"nom": name, "focale": int(msg.get("focale", 24)),
                        "eye": [float(v) for v in msg["eye"]][:3], "target": [float(v) for v in msg["target"]][:3],
-                       "mode": "2pf" if msg.get("mode") == "2pf" else "persp", "decentrement": float(msg.get("decentrement", 0.0))}
+                       "mode": msg.get("mode") if msg.get("mode") in ("2pf", "ortho") else "persp",
+                       "decentrement": float(msg.get("decentrement", 0.0)), "ortho_largeur": float(msg.get("ortho_largeur", 20.0)),
+                       "coupe": max(0.0, float(msg.get("coupe", 0.0))), "ev": float(msg.get("ev", 0.0))}
                 cams = [c for c in state["cameras"].get(key, []) if c["nom"] != name]
                 state["cameras"][key] = cams + [cam]
                 save_settings(state)
