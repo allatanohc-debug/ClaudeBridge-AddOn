@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.6b (peupler vite : rangee, pinceau, copier-coller)"
+VERSION = "21/10 - v7.6c (reperes : corbeille masquee)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5034,12 +5034,45 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
     return out, note
 
 
-def delete_elements(guids: list) -> None:
-    for i in range(0, len(guids or []), 300):
+CALQUE_CORBEILLE = "V-Ray Link - Corbeille (masqué)"
+
+
+def _calque_corbeille() -> int:
+    rows = tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+    found = next((r for r in rows if r.get("name") == CALQUE_CORBEILLE), None)
+    if not found:
         try:
-            tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in guids[i:i + 300]]})
+            tapir("CreateLayers", {"layerDataArray": [{"name": CALQUE_CORBEILLE, "isHidden": True}]})
         except Exception:  # noqa: BLE001
-            pass
+            tapir("CreateLayers", {"layerDataArray": [{"name": CALQUE_CORBEILLE}]})
+        rows = tapir("GetAttributesByType", {"attributeType": "Layer"}).get("attributes", [])
+        found = next((r for r in rows if r.get("name") == CALQUE_CORBEILLE), None)
+    return int(found["index"]) if found else 0
+
+
+def delete_elements(guids: list) -> None:
+    """Efface des reperes du plan. Si Archicad refuse l'effacement (cas de Tapir sur certaines versions),
+    ils partent sur un calque « corbeille » masque : invisibles, et jamais relus comme des objets."""
+    reste = []
+    for i in range(0, len(guids or []), 300):
+        part = guids[i:i + 300]
+        try:
+            res = tapir("DeleteElements", {"elements": [{"elementId": {"guid": g}} for g in part]})
+            rows = res.get("executionResults", []) if isinstance(res, dict) else []
+            reste += [g for g, r in zip(part, rows) if isinstance(r, dict) and not r.get("success", True)]
+            if not rows:
+                reste += part
+        except Exception:  # noqa: BLE001
+            reste += part
+    if not reste:
+        return
+    try:
+        lay = _calque_corbeille()
+        for i in range(0, len(reste), 300):
+            tapir("SetDetailsOfElements", {"elementsWithDetails": [
+                {"elementId": {"guid": g}, "details": {"layerIndex": lay}} for g in reste[i:i + 300]]})
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
