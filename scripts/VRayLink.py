@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.6b (verifications)"
+VERSION = "21/10 - v8.7 (reperes en arriere-plan)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4402,6 +4402,7 @@ def window(state: dict) -> None:
         if not check_vray():
             return
         try:
+            reperes_attendre()
             try:                                  # copies / deplacements faits dans Archicad sur les reperes d'objets
                 objs_, note_ = sync_objects_from_plan((state.get("objets") or {}).get(key, []))
                 if note_:
@@ -4913,6 +4914,7 @@ def window(state: dict) -> None:
         return [list(p) + [float(sc.get("echelle", 1.0))] for sc in trees
                 for p in scatter_points(sc, meshes, offset, ground, key)][:3000]
 
+    REPERES["apres"] = lambda: ui_call(lambda: save_settings(state))   # traces des reperes enregistrees une fois dessines
     histo = {"passe": [], "futur": []}            # Ctrl+Z / Ctrl+Y dans la visionneuse (objets et lumieres)
 
     def _instantane():
@@ -4929,13 +4931,11 @@ def window(state: dict) -> None:
     def _restaure(snap):
         objs = state.setdefault("objets", {}).setdefault(key, [])
         for o_ in objs:
-            delete_elements(o_.get("traces", []))
+            reperes_suppr(o_)
         objs[:] = [dict(o_) for o_ in snap["objets"]]
         for o_ in objs:
-            try:
-                o_["traces"] = draw_object_marker(o_)
-            except Exception:  # noqa: BLE001
-                o_["traces"] = []
+            o_["traces"] = []
+            reperes_maj(o_)
         OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
         inbox.put({"action": "lum_save", "liste": snap["lumieres"], "_histo": False})
 
@@ -4981,10 +4981,8 @@ def window(state: dict) -> None:
                                 o["rotation"] = round(float(p_[3]) % 360, 1)
                             if len(p_) > 4:
                                 o["echelle"] = round(float(base.get("echelle", 1.0)) * float(p_[4]), 3)
-                            try:
-                                o["traces"] = draw_object_marker(o)
-                            except Exception:  # noqa: BLE001
-                                o["traces"] = []
+                            o["traces"] = []
+                            reperes_maj(o)
                             lst.append(o)
                             n_ += 1
                         save_settings(state)
@@ -4998,22 +4996,19 @@ def window(state: dict) -> None:
                         o = lst[i]
                         op = msg.get("op")
                         if op == "delete":
-                            delete_elements(o.get("traces", []))
+                            reperes_suppr(o)
                             lst.pop(i)
                         else:
                             if op == "dup":
                                 o = {k_: v_ for k_, v_ in o.items() if k_ != "traces"}
+                                o["traces"] = []
                                 lst.append(o)
                             for k_ in ("x", "y", "z"):
                                 if k_ in msg:
                                     o[k_] = float(msg[k_])
                             if "rot" in msg:
                                 o["rotation"] = round(float(msg["rot"]) % 360, 1)
-                            delete_elements(o.get("traces", []))
-                            try:
-                                o["traces"] = draw_object_marker(o)
-                            except Exception:  # noqa: BLE001
-                                o["traces"] = []
+                            reperes_maj(o)
                         save_settings(state)
                         OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
                         say(f"Objet « {o['nom']} » {'supprimé' if op == 'delete' else 'mis à jour'} (plan et rendu).")
@@ -5798,6 +5793,55 @@ def _ajoute_morts(guids: list) -> None:
         pass
 
 
+import queue as _queue_mod
+REPERES = {"q": _queue_mod.Queue(), "fil": None, "apres": None}
+
+
+def _reperes_fil():
+    q = REPERES["q"]
+    while True:
+        op, o = q.get()
+        try:
+            if op == "suppr":
+                delete_elements(o.get("traces", []))
+                o["traces"] = []
+            elif op == "maj" and not o.get("_supprime"):
+                delete_elements(o.get("traces", []))
+                o["traces"] = draw_object_marker(o)
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            q.task_done()
+        if q.unfinished_tasks == 0 and REPERES["apres"]:
+            try:
+                REPERES["apres"]()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def reperes_maj(o: dict) -> None:
+    """Redessine le repere d'un objet dans le plan, en arriere-plan (la visionneuse n'attend pas Archicad)."""
+    if REPERES["fil"] is None:
+        REPERES["fil"] = threading.Thread(target=_reperes_fil, daemon=True)
+        REPERES["fil"].start()
+    REPERES["q"].put(("maj", o))
+
+
+def reperes_suppr(o: dict) -> None:
+    o["_supprime"] = True
+    if REPERES["fil"] is None:
+        REPERES["fil"] = threading.Thread(target=_reperes_fil, daemon=True)
+        REPERES["fil"].start()
+    REPERES["q"].put(("suppr", o))
+
+
+def reperes_attendre(max_s: float = 60.0) -> None:
+    """Avant de relire le plan (rendu) : laisse finir les reperes en cours."""
+    fin = time.time() + max_s
+    while REPERES["q"].unfinished_tasks and time.time() < fin:
+        time.sleep(0.1)
+
+
 def delete_elements(guids: list) -> None:
     """Efface des reperes du plan. Si Archicad refuse l'effacement (cas de Tapir sur certaines versions),
     ils partent sur un calque « corbeille » masque : invisibles, et jamais relus comme des objets."""
@@ -5888,13 +5932,11 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             return
         anciens, sc_ = passe.pop()
         for o_ in objs:
-            delete_elements(o_.get("traces", []))
+            reperes_suppr(o_)
         objs[:] = [dict(o_) for o_ in anciens]
         for o_ in objs:
-            try:
-                o_["traces"] = draw_object_marker(o_)
-            except Exception:  # noqa: BLE001
-                o_["traces"] = []
+            o_["traces"] = []
+            reperes_maj(o_)
         scats[:] = sc_
         save_settings(state)
         refresh_tree()
@@ -5927,8 +5969,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     def redraw(o):
         if o in scats:
             return
-        delete_elements(o.get("traces", []))
-        o["traces"] = draw_object_marker(o)
+        reperes_maj(o)
 
     def rotate(deg):
         memo()
@@ -5963,7 +6004,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 delete_elements(o.get("traces", []))
                 scats.remove(o)
                 continue
-            delete_elements(o.get("traces", []))
+            reperes_suppr(o)
             objs.remove(o)
         save_settings(state)
         refresh_tree()
@@ -6098,8 +6139,9 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         if p is None:
             msg.set(f"Placement annulé. {why}")
             return
-        o = {"nom": e["nom"], "dossier": e["dossier"], "x": p["x"], "y": p["y"], "z": z0, "rotation": 0.0, "echelle": 1.0}
-        o["traces"] = draw_object_marker(o)
+        o = {"nom": e["nom"], "dossier": e["dossier"], "x": p["x"], "y": p["y"], "z": z0, "rotation": 0.0, "echelle": 1.0,
+             "traces": []}
+        reperes_maj(o)
         objs.append(o)
         save_settings(state)
         refresh_tree()
