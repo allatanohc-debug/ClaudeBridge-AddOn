@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.2 (troncs visibles)"
+VERSION = "21/10 - v8.2b (troncs visibles, arbustes aussi)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1468,10 +1468,11 @@ function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1
  const fg=ob.d?forme(ob.d):false; let m;
  if(fg){m=new THREE.Mesh(fg,ob.veg?MAT_VEG:MAT_OBJ); m.scale.setScalar(k);
   const u=fg.userData||{};
-  if(ob.veg&&u.haut>1.2){const h=Math.max(0.3,u.tronc-u.base);           // tronc bien visible jusqu'au feuillage
-   if(u.tronc-u.base>0.3){const r=Math.max(0.12,Math.min(0.35,u.larg*0.035)), tr=new THREE.Mesh(new THREE.CylinderGeometry(r*0.8,r,h,10),MAT_TRONC);
-    tr.rotation.x=Math.PI/2; tr.position.z=u.base+h/2; m.add(tr)}
-   const pied=new THREE.Mesh(new THREE.RingGeometry(Math.max(0.25,u.larg*0.08),Math.max(0.35,u.larg*0.11),24),MAT_PIED);
+  if(ob.veg){const h=u.tronc-u.base, petit=u.haut<=1.2;     // arbres ET arbustes : pied visible jusqu'au feuillage
+   if(h>0.03){const r=petit?Math.max(0.03,Math.min(0.08,u.larg*0.05)):Math.max(0.12,Math.min(0.35,u.larg*0.035)),
+    tr=new THREE.Mesh(new THREE.CylinderGeometry(r*0.8,r,h,8),MAT_TRONC); tr.rotation.x=Math.PI/2; tr.position.z=u.base+h/2; m.add(tr)}
+   const pied=new THREE.Mesh(new THREE.RingGeometry(petit?Math.max(0.08,u.larg*0.3):Math.max(0.25,u.larg*0.08),
+    petit?Math.max(0.12,u.larg*0.4):Math.max(0.35,u.larg*0.11),24),MAT_PIED);
    pied.position.z=u.base+0.02; m.add(pied)}}
  else{const g=new THREE.BoxGeometry(t[0]*k*0.35,t[1]*k*0.35,t[2]*k); g.translate(0,0,(t[3]+t[2]/2)*k);   // en attendant la forme : silhouette fine
   m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.5}))}
