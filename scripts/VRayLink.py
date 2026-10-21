@@ -25,6 +25,7 @@ import json
 import math
 import os
 import pickle
+import shutil
 import re
 import ssl
 import struct
@@ -57,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.7 (partage visite 360)"
+VERSION = "21/10 - v7.8 (360 dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1041,6 +1042,18 @@ class ViewerServer:
                         f_ = APERCU.get("fichier", "")
                         body = b'{"d":"' + (base64.b64encode(Path(f_).read_bytes()) if f_ and Path(f_).exists() else b"") + b'"}'
                         self._send(body, "application/json")
+                    elif self.path.startswith("/api/panos"):
+                        self._send(json.dumps([{"nom": f"{p_.parent.name} · {p_.stem}", "f": str(p_)}
+                                               for p_ in panoramas(PANO_PROJET.get("nom", ""))]).encode("utf-8"), "application/json")
+                    elif self.path.startswith("/pano360"):
+                        f_ = parse_qs(urlparse(self.path).query).get("f", [""])[0]
+                        if f_ == "apercu":
+                            f_ = APERCU.get("fichier", "")
+                        ok_ = f_ and Path(f_).exists() and (f_ == APERCU.get("fichier") or
+                                                            Path(f_) in panoramas(PANO_PROJET.get("nom", "")))
+                        body = panorama_page(Path(f_), PANO_PROJET.get("nom", "").replace("_", " "),
+                                             Path(f_).stem.replace("_", " ")) if ok_ else "<p>Panorama introuvable</p>"
+                        self._send(body.encode("utf-8"), "text/html; charset=utf-8")
                     elif self.path.startswith("/api/objets"):
                         self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
@@ -1157,6 +1170,12 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="pipMsg" style="position:absolute;left:8px;top:6px;color:#fff;font-size:12px;text-shadow:0 1px 2px #000">V-Ray interactif : arrête-toi pour calculer…</div>
 <img id="pipImg" style="display:block;width:100%"></div>
 <button id="bApercu" style="position:absolute;right:120px;top:10px;z-index:5;background:var(--acc);border-color:var(--acc);color:#fff;padding:6px 12px">⚡ Aperçu V-Ray</button>
+<button id="bPano" title="Rendu V-Ray 360° depuis l'endroit où tu es, puis visite à la souris (~1 min)" style="position:absolute;right:262px;top:10px;z-index:5;padding:6px 12px">🌐 360° d'ici</button>
+<button id="bPanos" title="Revoir tes panoramas 360°" style="position:absolute;right:378px;top:10px;z-index:5;padding:6px 12px">🖼 Mes 360°</button>
+<div id="pano" style="position:absolute;inset:0;z-index:20;display:none;background:#111">
+<iframe id="panoF" style="border:0;width:100%;height:100%"></iframe>
+<div id="panoL" style="position:absolute;left:50%;top:60px;transform:translateX(-50%);background:rgba(32,35,42,.96);border:1px solid var(--line);border-radius:10px;padding:12px;display:none;min-width:320px;max-height:70%;overflow:auto"></div>
+<button id="panoX" style="position:absolute;right:12px;top:10px;background:var(--acc);border-color:var(--acc);color:#fff">✕ Revenir à la 3D</button></div>
 <div id="apercu" style="position:absolute;inset:0;display:none;align-items:center;justify-content:center;z-index:7;background:rgba(10,11,13,.6)">
 <div style="position:relative"><img id="apImg" style="display:block;max-width:100%;max-height:100%;box-shadow:0 0 0 1px #555"><div id="apMsg" style="color:#fff;font-size:15px;padding:20px"></div>
 <button id="apClose" style="position:absolute;right:8px;top:8px">✕ Revenir à la 3D</button>
@@ -1663,11 +1682,24 @@ function showApercu(a){if(liveOn&&!apWait){if(a.etat==="pret"){fetch("/api/aperc
  const box=$("apercu"); if(!apWait&&a.etat!=="calcul")return;
  box.style.display="flex"; const img=$("apImg"), m=$("apMsg");
  if(a.etat==="calcul"){img.style.display="none"; m.style.display=""; m.textContent="⚡ Calcul de l'aperçu V-Ray (petite image, ~20 à 40 s)…"}
+ else if(a.etat==="pret"&&a.pano&&panoAttente){panoAttente=false; apWait=false; $("apercu").style.display="none"; ouvrePano("apercu")}
  else if(a.etat==="pret"){fetch("/api/apercu_img").then(r=>r.json()).then(j=>{img.src="data:image/png;base64,"+j.d; img.style.display=""; m.style.display="none";
   const cv=renderer.domElement.getBoundingClientRect(); img.style.width=cv.width+"px"; img.style.height=cv.height+"px";   // meme cadre que la 3D
   $("apMix").style.display=""; $("apOp").value=1; $("apOp").oninput()}); apWait=false}
  else{img.style.display="none"; m.style.display=""; m.textContent="Aperçu impossible — "+a.etat; apWait=false}}
 $("apClose").onclick=()=>{$("apercu").style.display="none"};
+let panoAttente=false;
+function ouvrePano(f){$("pano").style.display="block"; $("panoL").style.display="none"; $("panoF").src="/pano360?f="+encodeURIComponent(f)+"&t="+Date.now()}
+$("panoX").onclick=()=>{$("pano").style.display="none"; $("panoF").src="about:blank"};
+$("bPanos").onclick=async()=>{const l=await (await fetch("/api/panos")).json(); const box=$("panoL"); $("pano").style.display="block"; $("panoF").src="about:blank";
+ box.style.display="block"; box.innerHTML=l.length?"<b>Tes panoramas 360°</b><br><br>":"Aucun panorama pour l'instant : clique « 🌐 360° d'ici ».";
+ for(const p of l){const b=document.createElement("button"); b.textContent="🌐 "+p.nom; b.style.cssText="display:block;width:100%;text-align:left;margin:4px 0";
+  b.onclick=()=>ouvrePano(p.f); box.appendChild(b)}};
+$("bPano").onclick=()=>{panoAttente=true; apWait=true; $("apercu").style.display="flex"; $("apImg").style.display="none"; $("apMsg").style.display="";
+ $("apMsg").textContent="🌐 Calcul du 360° V-Ray depuis ta position (~1 min)…";
+ fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apercu",pano:true,eye:cam.position.toArray(),
+  target:[controls.target.x,controls.target.y,cam.position.z],focale:+$("foc").value,mode:"persp",ev:+$("ev").value,
+  heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})})};
 $("apOp").oninput=()=>{const o=+$("apOp").value; $("apImg").style.opacity=o; $("apercu").style.background=`rgba(10,11,13,${0.6*o})`};
 $("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apImg").style.display="none"; $("apMsg").style.display=""; $("apMsg").textContent="⚡ Préparation…";
  fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"apercu",eye:cam.position.toArray(),target:controls.target.toArray(),
@@ -3234,8 +3266,7 @@ document.getElementById('gyro').onclick=async()=>{gyroOn=!gyroOn;a0=null;
 </script></body></html>"""
 
 
-def panorama_html(img: Path, titre: str, sous: str = "") -> Path:
-    """Page web autonome (image incluse) pour visiter un panorama 360° : souris, doigt, zoom, gyroscope."""
+def panorama_page(img: Path, titre: str, sous: str = "") -> str:
     import base64
     import io
     ensure_pillow()
@@ -3245,8 +3276,30 @@ def panorama_html(img: Path, titre: str, sous: str = "") -> Path:
         im = im.resize((4096, 2048), Image.LANCZOS)
     buf = io.BytesIO()
     im.save(buf, "JPEG", quality=86, optimize=True)
-    page = (PANO_HTML.replace("__TITRE__", titre.replace("<", "")).replace("__SOUS__", sous.replace("<", ""))
+    return (PANO_HTML.replace("__TITRE__", titre.replace("<", "")).replace("__SOUS__", sous.replace("<", ""))
             .replace("__IMAGE__", base64.b64encode(buf.getvalue()).decode()))
+
+
+def panoramas(project: str) -> list:
+    out = []
+    try:
+        ensure_pillow()
+        from PIL import Image
+    except Exception:  # noqa: BLE001
+        return out
+    for p_ in rendus_recents(project, 120):
+        try:
+            with Image.open(p_) as im:
+                if abs(im.width / max(1, im.height) - 2.0) < 0.05:
+                    out.append(p_)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def panorama_html(img: Path, titre: str, sous: str = "") -> Path:
+    """Page web autonome (image incluse) pour visiter un panorama 360° : souris, doigt, zoom, gyroscope."""
+    page = panorama_page(img, titre, sous)
     out = data_dir() / "partage" / f"{safe(titre)}_360.html"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page, encoding="utf-8")
@@ -3259,6 +3312,7 @@ def panorama_html(img: Path, titre: str, sous: str = "") -> Path:
 
 
 PARTAGE = {"srv": None, "port": 0}
+PANO_PROJET = {"nom": ""}
 
 
 def ip_locale() -> str:
@@ -4676,13 +4730,16 @@ def window(state: dict) -> None:
         o2 = dict(opts, _apercu=True, reutiliser=True)
         if msg.get("rapide"):                 # rendu interactif : petite image tres rapide, recalculee a chaque arret
             o2.update(_apercu_px=420, _apercu_min=0.15)
+        pano = bool(msg.get("pano"))
+        if pano:                              # 360° depuis l'endroit ou l'on se trouve dans la visionneuse
+            o2.update(type_camera="Panorama 360° sphérique (VR)", _apercu_px=2400, _apercu_min=0.8)
         if "heure" in msg:
             o2.update(heure=float(msg["heure"]), jour=int(msg["jour"]), mois=int(msg["mois"]))
         if "intensite" in msg:
             o2["soleil_intensite"] = float(msg["intensite"])
         if "hdri_rot" in msg:
             o2["hdri_rot"] = float(msg["hdri_rot"])
-        APERCU.update(etat="calcul", rev=APERCU["rev"] + 1)
+        APERCU.update(etat="calcul", pano=pano, rev=APERCU["rev"] + 1)
         st2 = dict(state, options=o2)
         try:
             geo, ground, _info = prepare_geometry(st2, proj, lambda *_: None)
@@ -4703,6 +4760,13 @@ def window(state: dict) -> None:
                 ok_ = image.exists()
                 fx = image.with_name(image.stem + ".effectsResult" + image.suffix)      # image debruitee
                 montre = fx if (ok_ and fx.exists() and fx.stat().st_mtime >= image.stat().st_mtime - 5) else image
+                if ok_ and pano:                  # le 360° est garde dans les rendus (partage, liste « Mes 360° »)
+                    try:
+                        garde = renders_dir(proj["name"]) / f"Panorama_visionneuse_{time.strftime('%Hh%M')}.png"
+                        shutil.copy(montre, garde)
+                        montre = garde
+                    except Exception:  # noqa: BLE001
+                        pass
                 APERCU.update(etat="pret" if ok_ else "erreur : V-Ray n'a pas produit d'image", fichier=str(montre) if ok_ else "",
                               rev=APERCU["rev"] + 1)
             except Exception as error:  # noqa: BLE001
@@ -4742,6 +4806,7 @@ def window(state: dict) -> None:
         snap["_surfaces"] = surfaces_info()
         LIGHTS.update(liste=[dict(l_) for l_ in (state.get("lumieres") or {}).get(key, [])], rev=LIGHTS["rev"] + 1)
         OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
+        PANO_PROJET["nom"] = proj["name"]
         if viewer["srv"] is None:
             viewer["srv"] = ViewerServer(key, lambda: dict(snap), inbox.put)
             viewer["srv"].etat = lambda: {"hdri_rot": float(opts.get("hdri_rot", 0.0)),
