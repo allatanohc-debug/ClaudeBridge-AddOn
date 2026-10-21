@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.6 (lumières visibles et orientables)"
+VERSION = "20/10 - v6.7 (HDRI dans Soleil et ciel)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3078,6 +3078,40 @@ def window(state: dict) -> None:
     ciel_note = ttk.Label(so, foreground="#777", text="nuages générés par V-Ray (avec leurs ombres)")
     ciel_note.grid(
         row=4, column=3, columnspan=2, sticky="w", padx=6, pady=(4, 0))
+    # --- HDRI directement ici (avant : seulement dans Reglages avances)
+    ttk.Label(so, text="🖼 Ciel HDRI").grid(row=6, column=0, sticky="w", pady=(6, 0))
+    hd_list = {"Aucun (ciel V-Ray)": ""}
+    hdri_var = tk.StringVar()
+    hdri_box = ttk.Combobox(so, textvariable=hdri_var, state="readonly", width=26)
+    hdri_box.grid(row=6, column=1, columnspan=3, sticky="w", pady=(6, 0))
+
+    def hdri_maj(*_):
+        hd_list.clear()
+        hd_list["Aucun (ciel V-Ray)"] = ""
+        for e_ in cosmos_hdris():
+            hd_list[f"{e_['nom']} (Cosmos)"] = e_["fichier"]
+        cur = str(opts.get("hdri") or "")
+        if cur and cur not in hd_list.values():
+            hd_list[Path(cur).stem] = cur
+        hd_list["Parcourir… (fichier .hdr / .exr)"] = "@parcourir"
+        hdri_box.configure(values=list(hd_list))
+        hdri_var.set(next((k_ for k_, v_ in hd_list.items() if v_ == cur), "Aucun (ciel V-Ray)"))
+
+    def hdri_choisi(_e=None):
+        f_ = hd_list.get(hdri_var.get(), "")
+        if f_ == "@parcourir":
+            from tkinter import filedialog
+            f_ = filedialog.askopenfilename(parent=root, title="Image HDRI",
+                                            filetypes=[("HDRI", "*.hdr *.exr"), ("Images", "*.jpg *.png *.tif"), ("Tous", "*.*")]) or str(opts.get("hdri") or "")
+        opts["hdri"] = f_
+        if f_:
+            opts["hdri_soleil"] = False
+        save_settings(state)
+        hdri_maj()
+        say(("Ciel HDRI : " + Path(f_).stem + " (soleil V-Ray coupé ; rotation et intensité : ⚙).") if f_ else "Ciel V-Ray (sans HDRI).")
+    hdri_box.bind("<<ComboboxSelected>>", hdri_choisi)
+    hdri_box.bind("<Button-1>", lambda _e: hdri_maj(), add="+")
+    hdri_maj()
     show_hour()
     place_box.bind("<<ComboboxSelected>>", show_hour)
 
