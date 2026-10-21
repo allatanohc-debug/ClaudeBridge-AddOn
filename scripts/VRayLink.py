@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.7b (deplacement comme SketchUp)"
+VERSION = "21/10 - v8.8 (pose sur dalle ou au sol)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1187,7 +1187,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
 <span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
 <button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eScale" title="Agrandir / réduire une lumière rectangle ou sphère">⤡ Taille</button><button id="eDrop">⤓ Poser</button>
-<button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
+<button id="ePose" title="Où poser les objets : sur la dalle (terrasse, étage, intérieur) ou toujours au sol">⬓ Sur dalle</button><button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
@@ -1685,9 +1685,24 @@ $("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("del
  $("selName").textContent="Supprimé"};
 // ---- peupler vite : rangee, pinceau, copier / coller
 let popMode=null, stroke=null, clip=null, lastGround=null; const popGroup=new THREE.Group(); scene.add(popGroup);
+// pose : "dalle" = premiere surface horizontale tournee vers le haut (dalle, terrasse, plancher d'etage), sinon le sol ; "sol" = toujours au niveau du sol
+let pose="dalle"; try{pose=localStorage.getItem("vrl_pose")||"dalle"}catch(_){}
+function majPose(){$("ePose").textContent=pose==="dalle"?"⬓ Sur dalle":"⛰ Au sol"; $("ePose").classList.toggle("on",pose==="dalle")}
+$("ePose").onclick=()=>{pose=pose==="dalle"?"sol":"dalle"; try{localStorage.setItem("vrl_pose",pose)}catch(_){} majPose();
+ $("mesure").style.display=""; $("mesure").textContent=pose==="dalle"?"Les objets se posent sur la dalle sous la souris (terrasse, étage…) — « Masquer au-dessus » pour viser un étage sous un toit":"Les objets se posent toujours au niveau du sol";
+ setTimeout(()=>{if(!popMode&&!mesureOn)$("mesure").style.display="none"},2500)}; majPose();
+function posePoint(){const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-info.sol), pt=new THREE.Vector3();
+ if(pose==="dalle"){const cut=+$("cut").value, haut=cut>=30?Infinity:info.sol+cut, near=+$("coupe").value||0;
+  const h=ray.intersectObject(model,false).find(h=>h.face&&h.face.normal.z>0.6&&h.point.z<=haut+0.01&&h.distance>=near);
+  if(h&&h.point.z>=info.sol-0.05)return [h.point.x,h.point.y,+h.point.z.toFixed(3)]}
+ return ray.ray.intersectPlane(pl,pt)?[pt.x,pt.y,info.sol]:null}
+const rayV=new THREE.Raycaster();
+function solEn(x,y,zRef){if(pose!=="dalle")return info.sol;           // hauteur de la surface sous (x,y), en partant un peu au-dessus de zRef (evite le toit)
+ rayV.set(new THREE.Vector3(x,y,Math.max(zRef,info.sol)+1.5),new THREE.Vector3(0,0,-1));
+ const h=rayV.intersectObject(model,false).find(h=>h.face&&h.face.normal.z>0.6); return h&&h.point.z>=info.sol-0.05?+h.point.z.toFixed(3):info.sol}
+window.__vrl.solEn=solEn; window.__vrl.model=model; Object.defineProperty(window.__vrl,"pose",{get:()=>pose});
 function sol3(e){const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const h=ray.intersectObjects([model,ground],false).find(h=>!h.face||Math.abs(h.face.normal.z)>0.6); if(!h)return null;
- return [h.point.x,h.point.y,h.object===ground?info.sol:h.point.z]}
+ return posePoint()}
 function varie(base){const v=$("eVar").checked; return [v?Math.random()*360:base.rot, v?+(0.85+Math.random()*0.3).toFixed(2):1]}
 function envoie(pts){if(!pts.length||!sel||sel.userData.kind!=="obj")return; const o=OBJ[sel.userData.i]||{};
  postJ({action:"obj_multi",i:sel.userData.i,pts:pts.slice(0,300).map(p=>{const [r,k]=varie(o); return [+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),+r.toFixed(1),k]})});
@@ -1703,7 +1718,7 @@ function pastille(p){const m=new THREE.Mesh(new THREE.SphereGeometry(0.25,10,8),
  m.position.set(p[0],p[1],p[2]+0.2); m.renderOrder=9; popGroup.add(m)}
 function ligne(e){const end=sol3(e); popGroup.clear(); if(!end||!sel)return [];
  const a=sel.position, gap=Math.max(0.3,+$("eGap").value||4), d=Math.hypot(end[0]-a.x,end[1]-a.y), n=Math.floor(d/gap), pts=[];
- for(let k=1;k<=n;k++){const t=k*gap/d; pts.push([a.x+(end[0]-a.x)*t,a.y+(end[1]-a.y)*t,a.z+(end[2]-a.z)*t])}
+ for(let k=1;k<=n;k++){const t=k*gap/d, x=a.x+(end[0]-a.x)*t, y=a.y+(end[1]-a.y)*t; pts.push([x,y,solEn(x,y,Math.max(a.z,end[2]))])}
  for(const p of pts)pastille(p); $("mesure").textContent=`Rangée : ${pts.length} copie(s) tous les ${gap} m — clique pour poser`; return pts}
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||!popMode||e.button!==0)return; e.stopImmediatePropagation(); controls.enabled=false;
  if(popMode==="rangee"){envoie(ligne(e)); setPop("rangee"); controls.enabled=mode==="orbit"; return}
@@ -1737,11 +1752,11 @@ renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; d
   const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}
   $("mesure").textContent=`x ${sel.position.x.toFixed(2)} · y ${sel.position.y.toFixed(2)} · hauteur ${sel.position.z.toFixed(2)} m (Maj = monter / descendre)`; return}
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=ray.intersectObjects([model,ground],false).find(h=>!h.face||Math.abs(h.face.normal.z)>0.6);
- if(hit){sel.position.x=hit.point.x; sel.position.y=hit.point.y; if(sel.userData.kind==="obj")sel.position.z=hit.object===ground?info.sol:hit.point.z}
+ const pp=posePoint();
+ if(pp){sel.position.x=pp[0]; sel.position.y=pp[1]; sel.position.z=pp[2]; $("mesure").style.display=""; $("mesure").textContent=(pose==="dalle"&&pp[2]>info.sol+0.05?"⬓ Sur dalle":"⛰ Au sol")+` — hauteur ${(pp[2]-info.sol).toFixed(2)} m`}
  else{const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}}},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const moved=dragO.moved; dragO=null; tcDrag=false; controls.enabled=mode==="orbit";
- if(sel&&sel.userData.kind!=="obj")setTimeout(()=>{if(!mesureOn&&!popMode)$("mesure").style.display="none"},1500);
+ if(sel)setTimeout(()=>{if(!mesureOn&&!popMode&&!dragO)$("mesure").style.display="none"},1500);
  if(moved)commit()},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
