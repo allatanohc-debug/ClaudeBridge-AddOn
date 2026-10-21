@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.5 (rechargement auto, onglet Objets)"
+VERSION = "21/10 - v8.5b (verifications)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1640,10 +1640,16 @@ function tool(m){tc.setMode(m); $("eMove").classList.toggle("on",m==="translate"
 $("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); $("eScale").onclick=()=>tool("scale"); tool("translate");
 renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0];
+ const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]);
  if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom}
  else{tc.detach(); sel=null; $("selName").textContent="Clique un objet orange ou une lumière"}});
+// clic sur un objet : le tronc / l'anneau au sol selectionnent l'arbre entier
+function pickHit(list){const h=ray.intersectObjects(list,true)[0]; if(!h)return null; let o=h.object;
+ while(o.parent&&!o.userData.kind&&o.parent!==scene)o=o.parent; return o.userData.kind?{object:o,point:h.point,face:h.face}:null}
 const postJ=b=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+window.__vrl={cam,controls,THREE,objGroup,lumGroup,get OBJ(){return OBJ},get LUM(){return LUM},get edit(){return editOn},
+ get sel(){return sel&&sel.userData},ecran(x,y,z){const v=new THREE.Vector3(x,y,z).project(cam), r=renderer.domElement.getBoundingClientRect();
+  return [r.left+(v.x+1)/2*r.width, r.top+(1-v.y)/2*r.height, v.z<1]}};          // aide aux tests automatiques
 function histo(a){try{tc.detach()}catch(_){} sel=null; $("selName").textContent=a==="annuler"?"Annulé (Ctrl+Y pour rétablir)":"Rétabli"; postJ({action:a})}
 $("eUndo").onclick=()=>histo("annuler"); $("eRedo").onclick=()=>histo("retablir");
 addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||!(e.ctrlKey||e.metaKey))return;
@@ -1709,7 +1715,7 @@ addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||!editOn)return;
 let dragO=null;
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||(tc&&tc.axis))return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0]; if(!hit)return;
+ const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]); if(!hit)return;
  sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom;
  dragO={x:e.clientX,y:e.clientY,z0:sel.position.z,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
  if(sel.userData.kind!=="obj")$("mesure").style.display="", $("mesure").textContent="Lumière : glisse pour la déplacer à la même hauteur · Maj + glisser = monter / descendre · ⟳ Tourner pour l'orienter";
@@ -1730,7 +1736,7 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const mov
  if(moved)commit()},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=ray.intersectObjects([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children],false)[0]; if(!hit)return;
+ const hit=pickHit([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children]); if(!hit)return;
  setEdit(true); sel=hit.object; tc.attach(sel); tool("translate"); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom});
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
