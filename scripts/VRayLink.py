@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v9.0 (rendu = visionneuse : formes reelles, plan fusionne)"
+VERSION = "21/10 - v9.0b (formes reelles, feuilles entieres)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2680,7 +2680,7 @@ def vrmesh_apercu(folder: str) -> dict:
     """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
     Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
     import zlib
-    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v6.json")
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v8.json")
     try:
         return json.loads(cache.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -2727,11 +2727,15 @@ def vrmesh_apercu(folder: str) -> dict:
         while len(reelles) > 1 and len(reelles[-1][0]) // 3 < 0.05 * mx:
             reelles.pop()
         ntri = sum(len(q[1]) // 3 for q in reelles)
-        pas = max(1, -(-ntri // 30000))           # au plus ~30 000 triangles dans la visionneuse
+        plafond_ = 30000 if "vegetation" in folder.lower() else 60000     # plantes legeres, objets (voiture...) complets
+        pas = max(1, -(-ntri // plafond_))
         verts, faces, base = [], [], 0
         for v_, f_ in reelles:
             garde = {}
-            for k in range(0, len(f_) - 2, 3 * pas):
+            bloc = 120                             # on garde des feuilles entieres (paquets de triangles voisins), pas des miettes
+            for k in range(0, len(f_) - 2, 3):
+                if (k // 3 // bloc) % pas:
+                    continue
                 for ix in f_[k:k + 3]:
                     if ix not in garde:
                         garde[ix] = base + len(garde)
