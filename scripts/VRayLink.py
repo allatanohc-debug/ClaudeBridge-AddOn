@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.3 (lumieres a la SketchUp)"
+VERSION = "21/10 - v8.4 (reglage de chaque lumiere apres rendu)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3126,6 +3126,57 @@ def ensure_pillow() -> None:
     import PIL  # noqa: F401
 
 
+def ajoute_light_mix(scene: Path, lights: list) -> list:
+    """Une image par lumiere (V-Ray « Light Select », eclairage complet) pour regler chaque lumiere APRES le rendu
+    dans la Retouche. Renvoie les noms des canaux ajoutes."""
+    noms = {f"lum{k}": str(l_.get("nom") or f"Lumière {k + 1}") for k, l_ in enumerate(lights)}
+    noms.update(sun="Soleil", ciel_dome="Ciel")
+    motif = re.compile(r"^(SunLight|LightSpot|LightIES|LightRectangle|LightOmni|LightMesh|LightDome|LightSphere) (\w+) \{", re.M)
+    canaux, vus = [], set()
+    for f_ in (scene, scene.parent / "lumieres.vrscene"):
+        if not f_.exists():
+            continue
+        txt = f_.read_text(encoding="utf-8")
+        if "channels_full=List(lm_" in txt:
+            continue
+
+        def sub(m):
+            pid = m.group(2)
+            cid = "lm_" + pid
+            if cid not in vus:
+                vus.add(cid)
+                canaux.append((cid, "LM_" + safe(noms.get(pid, pid))))
+            return m.group(0) + f" channels_full=List({cid});"
+        f_.write_text(motif.sub(sub, txt), encoding="utf-8")
+    if canaux:
+        with scene.open("a", encoding="utf-8") as out:
+            out.write("\n// Light Mix : une image par lumiere (reglage apres rendu dans la Retouche)\n")
+            for cid, nom in canaux:
+                out.write(f'RenderChannelLightSelect {cid} {{ name="{nom}"; light_select_mode=4; color_mapping=1; denoise=1; }}\n')
+    return [n for _c, n in canaux]
+
+
+def couches_lumieres(img: Path) -> list:
+    """Images « une par lumiere » rendues avec cette image : [(nom lisible, chemin)]."""
+    out = []
+    for p_ in sorted(img.parent.glob(img.stem + ".LM_*" + img.suffix)):
+        nom = p_.name[len(img.stem) + 4:-len(img.suffix)].replace("_", " ")
+        out.append((nom, p_))
+    return out
+
+
+def recompose_lumieres(beauty, couches: list, gains: list):
+    """beauty + somme (gain - 1) x couche, en lumiere lineaire. Tableaux numpy 0..1 (sRGB)."""
+    import numpy as np
+    if not couches or all(abs(g_ - 1.0) < 1e-3 for g_ in gains):
+        return beauty
+    lin = np.power(np.clip(beauty, 0, 1), 2.2)
+    for c_, g_ in zip(couches, gains):
+        if abs(g_ - 1.0) > 1e-3:
+            lin = lin + (g_ - 1.0) * np.power(np.clip(c_, 0, 1), 2.2)
+    return np.power(np.clip(lin, 0, None), 1 / 2.2)
+
+
 def retouche_calc(a, r: dict):
     """a : tableau numpy float32 (h, w, 3) en 0..1 (sRGB). Renvoie l'image retouchee (0..1)."""
     import numpy as np
@@ -3161,7 +3212,13 @@ def retouche_enregistre(src: Path, r: dict) -> Path:
     import numpy as np
     from PIL import Image, ImageFilter
     im = Image.open(src).convert("RGB")
-    out = retouche_calc(np.asarray(im, dtype=np.float32) / 255.0, r)
+    a = np.asarray(im, dtype=np.float32) / 255.0
+    lum = couches_lumieres(src)
+    gains = [float((r.get("lumieres") or {}).get(n_, 1.0)) for n_, _p in lum]
+    if lum and any(abs(g_ - 1) > 1e-3 for g_ in gains):
+        cs = [np.asarray(Image.open(p_).convert("RGB").resize(im.size), dtype=np.float32) / 255.0 for _n, p_ in lum]
+        a = recompose_lumieres(a, cs, gains)
+    out = retouche_calc(a, r)
     res = Image.fromarray((out * 255 + 0.5).astype(np.uint8))
     n = float(r.get("nettete", 0))
     if n > 0:
@@ -3255,6 +3312,9 @@ def retouche_window(root, proj: dict, say=print) -> None:
     avant.bind("<ButtonPress-1>", lambda _e: (etat.update(orig=True), dessine()))
     avant.bind("<ButtonRelease-1>", lambda _e: (etat.update(orig=False), dessine()))
     ttk.Button(bas, text="Auto", command=lambda: auto()).grid(row=0, column=1, padx=6)
+    lum_box = ttk.Frame(cote)
+    lum_box.grid(row=29, column=0, columnspan=3, sticky="ew", pady=(4, 0))
+    lum_vars: dict = {}
     ttk.Button(cote, text="💾 Enregistrer l'image retouchée", style="Accent.TButton",
                command=lambda: enregistre()).grid(row=32, column=0, columnspan=3, sticky="ew", pady=(10, 4))
     ttk.Button(cote, text="⧉ Appliquer à toutes les images du même jour",
@@ -3263,11 +3323,35 @@ def retouche_window(root, proj: dict, say=print) -> None:
     info.grid(row=34, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def lit():
-        return {k_: float(v_[0].get()) for k_, v_ in vars_.items()}
+        r_ = {k_: float(v_[0].get()) for k_, v_ in vars_.items()}
+        r_["lumieres"] = {n_: float(v_.get()) / 100 for n_, v_ in lum_vars.items()}
+        return r_
 
     def pose(valeurs: dict):
         for k_, (v_, _l) in vars_.items():
             v_.set(float(valeurs.get(k_, 0.0)))
+        for n_, v_ in lum_vars.items():
+            v_.set(100 * float((valeurs.get("lumieres") or {}).get(n_, 1.0)))
+
+    def prepare_lumieres(p_: Path):
+        for w_ in lum_box.winfo_children():
+            w_.destroy()
+        lum_vars.clear()
+        etat["couches"] = []
+        lum = couches_lumieres(p_)
+        if not lum:
+            ttk.Label(lum_box, foreground="#888", wraplength=250, justify="left",
+                      text="💡 Réglage de chaque lumière : disponible sur les prochains rendus finaux (▶ Lancer le rendu).").grid(sticky="w")
+            return
+        ttk.Label(lum_box, text="💡 Lumières (sans recalcul)", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        w_, h_ = etat["petit"].shape[1], etat["petit"].shape[0]
+        for k_, (n_, f_) in enumerate(lum):
+            v = tk.DoubleVar(value=100.0)
+            lum_vars[n_] = v
+            ttk.Label(lum_box, text=n_[:22]).grid(row=1 + k_, column=0, sticky="w")
+            ttk.Scale(lum_box, from_=0, to=300, variable=v, length=150).grid(row=1 + k_, column=1, sticky="e")
+            v.trace_add("write", lambda *_a: maj())
+            etat["couches"].append(np.asarray(Image.open(f_).convert("RGB").resize((w_, h_)), dtype=np.float32) / 255.0)
 
     def maj():
         for k_, (v_, l_) in vars_.items():
@@ -3286,6 +3370,7 @@ def retouche_window(root, proj: dict, say=print) -> None:
         w_, h_ = max(200, cv.winfo_width()), max(150, cv.winfo_height())
         im.thumbnail((w_, h_))
         etat["petit"] = np.asarray(im, dtype=np.float32) / 255.0
+        prepare_lumieres(p_)
         js = p_.with_name(p_.stem + "_retouche.json")       # reglages deja faits sur cette image
         try:
             pose(json.loads(js.read_text(encoding="utf-8")) if js.exists() else {})
@@ -3298,7 +3383,13 @@ def retouche_window(root, proj: dict, say=print) -> None:
         etat["id"] = None
         if etat["petit"] is None:
             return
-        a_ = etat["petit"] if etat["orig"] else retouche_calc(etat["petit"], lit())
+        if etat["orig"]:
+            a_ = etat["petit"]
+        else:
+            r_ = lit()
+            base = recompose_lumieres(etat["petit"], etat.get("couches") or [],
+                                      [float(r_["lumieres"].get(n_, 1.0)) for n_ in lum_vars])
+            a_ = retouche_calc(base, r_)
         etat["photo"] = ImageTk.PhotoImage(Image.fromarray((a_ * 255 + 0.5).astype(np.uint8)))
         cv.delete("all")
         cv.create_image(cv.winfo_width() // 2, cv.winfo_height() // 2, image=etat["photo"])
@@ -4293,6 +4384,10 @@ def window(state: dict) -> None:
                 cam = next(c for c in all_cams() if c["nom"] == name)
                 scene = geo.parent / f"scene_{safe(name)}.vrscene"
                 write_scene(scene, geo, cam, opts, proj, ground)
+                try:
+                    ajoute_light_mix(scene, (state.get("lumieres") or {}).get(key, []))
+                except Exception:  # noqa: BLE001
+                    pass
                 jobs.append((scene, folder / f"{safe(name)}_{stamp}{FORMATS.get(opts.get('format'), '.png')}"))
             if len(jobs) == 1:
                 launch(state["vray"], *jobs[0], engine=MOTEURS.get(opts.get("moteur"), ""))
