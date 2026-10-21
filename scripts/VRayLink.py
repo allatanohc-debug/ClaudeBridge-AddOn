@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.0 (raccourcis, fin de rendu, avant/apres)"
+VERSION = "21/10 - v8.1 (vraie forme des objets dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1065,6 +1065,11 @@ class ViewerServer:
                         body = panorama_page(Path(f_), PANO_PROJET.get("nom", "").replace("_", " "),
                                              Path(f_).stem.replace("_", " ")) if ok_ else "<p>Panorama introuvable</p>"
                         self._send(body.encode("utf-8"), "text/html; charset=utf-8")
+                    elif self.path.startswith("/api/objmesh"):
+                        from urllib.parse import parse_qs, urlparse
+                        f_ = parse_qs(urlparse(self.path).query).get("d", [""])[0]
+                        connus = {o_.get("d") for o_ in OBJS.get("liste", [])}
+                        self._send(json.dumps(vrmesh_apercu(f_) if f_ in connus else {}).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/objets"):
                         self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
@@ -1443,9 +1448,18 @@ scene.add(edges);
 $("load").remove();
 const vegGroup=new THREE.Group(); scene.add(vegGroup);
 const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
+// vraie forme simplifiee des objets Cosmos (preview du proxy V-Ray), une geometrie partagee par modele
+const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THREE.DoubleSide}),
+ MAT_VEG=new THREE.MeshLambertMaterial({color:0x5b8a3c,side:THREE.DoubleSide});
+function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
+ fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){FORMES[d]=false;return}
+  const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(j.v,3)); g.setIndex(j.f);
+  g.computeVertexNormals(); g.computeBoundingSphere(); FORMES[d]=g; drawObjs()}).catch(()=>{FORMES[d]=false}); return null}
 function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
- const g=new THREE.BoxGeometry(t[0]*k,t[1]*k,t[2]*k); g.translate(0,0,(t[3]+t[2]/2)*k);           // origine = pied de l'objet
- const m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.6}));
+ const fg=ob.d?forme(ob.d):false; let m;
+ if(fg){m=new THREE.Mesh(fg,ob.veg?MAT_VEG:MAT_OBJ); m.scale.setScalar(k)}
+ else{const g=new THREE.BoxGeometry(t[0]*k*0.35,t[1]*k*0.35,t[2]*k); g.translate(0,0,(t[3]+t[2]/2)*k);   // en attendant la forme : silhouette fine
+  m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.5}))}
  m.position.set(ob.x,ob.y,ob.z); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; m.userData={kind:"obj",i:ob.i,nom:ob.nom}; objGroup.add(m);
  if(tc&&sel&&sel.userData.kind==="obj"&&sel.userData.i===ob.i){sel=m; tc.attach(m)}}}
 async function pollObjs(){try{const j=await (await fetch("/api/objets")).json(); if(j.rev!==objRev&&!tcDrag){objRev=j.rev; OBJ=j.liste||[]; drawObjs()}}catch(_){}
@@ -2452,6 +2466,58 @@ def vrmesh_size(path) -> list:
             i += 1
     except Exception:  # noqa: BLE001
         return []
+
+
+def vrmesh_apercu(folder: str) -> dict:
+    """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
+    Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
+    import zlib
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + ".json")
+    try:
+        return json.loads(cache.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
+    res: dict = {}
+    try:
+        meshes = sorted(Path(folder).glob("*.vrmesh"), key=lambda p_: p_.stat().st_size)
+        d = meshes[0].read_bytes() if meshes else b""
+        flux, i = [], 0
+        while i < len(d) - 2 and len(flux) < 40:
+            j = d.find(b"x", i)
+            if j < 0:
+                break
+            if d[j + 1] in (0x01, 0x5E, 0x9C, 0xDA):
+                try:
+                    o = zlib.decompressobj()
+                    r = o.decompress(d[j:])
+                    if len(r) >= 12:
+                        flux.append(r)
+                        i = len(d) - len(o.unused_data)
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass
+            i = j + 1
+        best = None
+        for a, b in zip(flux, flux[1:]):      # (sommets flottants, faces entieres) qui se suivent
+            if len(a) % 12 or len(b) % 12:
+                continue
+            nv = len(a) // 12
+            f_ = struct.unpack(f"<{len(b) // 4}i", b)
+            if not f_ or min(f_) < 0 or max(f_) >= nv or nv < 30:
+                continue
+            if best is None or nv < best[0]:
+                best = (nv, a, f_)
+        if best:
+            v = struct.unpack(f"<{len(best[1]) // 4}f", best[1])
+            res = {"v": [round(c * ECHELLE_COSMOS, 3) for c in v], "f": list(best[2])}
+    except Exception:  # noqa: BLE001
+        res = {}
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(res), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    return res
 
 
 def vrmat_missing(vrmat: Path) -> list:
@@ -4926,7 +4992,8 @@ def window(state: dict) -> None:
             if o["dossier"] not in sizes:
                 sizes[o["dossier"]] = obj_size(o["dossier"])
             out.append({"i": i, "nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "rot": o.get("rotation", 0.0),
-                        "echelle": o.get("echelle", 1.0), "taille": sizes[o["dossier"]]})
+                        "echelle": o.get("echelle", 1.0), "taille": sizes[o["dossier"]], "d": o["dossier"],
+                        "veg": "vegetation" in o["dossier"].lower() or "plant" in o["dossier"].lower()})
         return out
 
     def open_viewer(page: str = ""):
