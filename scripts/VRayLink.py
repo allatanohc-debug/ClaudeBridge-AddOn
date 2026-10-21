@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.5 (bouton Lumières)"
+VERSION = "20/10 - v6.6 (lumières visibles et orientables)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1440,15 +1440,23 @@ function drawLights(){lumGroup.clear();
   m.emissive.setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace); m.emissiveIntensity=Math.min(4,l.intensite*0.15); m.userData.lumMesh=true; m.needsUpdate=true}
  for(const l of LUM){if(l.actif===false)continue; const c=new THREE.Color().setRGB(...(l.couleur||[1,.92,.8]),THREE.SRGBColorSpace);
   const p=new THREE.Vector3(...l.pos), tg=new THREE.Vector3(...(l.cible||[l.pos[0],l.pos[1],l.pos[2]-1])); let L, giz;
-  const gm=new THREE.MeshBasicMaterial({color:c}); 
+  const gm=new THREE.MeshBasicMaterial({color:c,depthTest:false,transparent:true,opacity:.95});   // visible meme derriere un mur
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.22,.27,32),new THREE.MeshBasicMaterial({color:0xffb020,depthTest:false,transparent:true,side:THREE.DoubleSide}));
+  ring.position.copy(p); ring.lookAt(cam.position); ring.renderOrder=998; lumGroup.add(ring);
   if(l.type==="Spot"||l.type==="IES"){L=new THREE.SpotLight(c,(l.type==="IES"?800*l.intensite:l.intensite)*0.03,0,(l.cone||60)*Math.PI/360,Math.min(1,(l.penombre||25)/(l.cone||45)),2);
-   L.target.position.copy(tg); lumGroup.add(L.target); giz=new THREE.Mesh(new THREE.ConeGeometry(.08,.15,16,1,true),gm); giz.position.copy(p);
-   giz.lookAt(tg); giz.rotateX(-Math.PI/2)}
+   L.target.position.copy(tg); lumGroup.add(L.target); giz=new THREE.Mesh(new THREE.ConeGeometry(.18,.32,20,1,false),gm); giz.position.copy(p);
+   giz.lookAt(tg); giz.rotateX(-Math.PI/2);
+   const beam=new THREE.Line(new THREE.BufferGeometry().setFromPoints([p,tg]),new THREE.LineDashedMaterial({color:0xffb020,dashSize:.12,gapSize:.08,depthTest:false}));
+   beam.computeLineDistances(); beam.renderOrder=997; lumGroup.add(beam);
+   const tgt=new THREE.Mesh(new THREE.SphereGeometry(.1,16,10),new THREE.MeshBasicMaterial({color:0xffb020,depthTest:false,transparent:true}));
+   tgt.position.copy(tg); tgt.renderOrder=999; tgt.userData={kind:"lumcible",i:LUM.indexOf(l),nom:l.nom+" › point visé"}; lumGroup.add(tgt);
+   if(tc&&sel&&sel.userData.kind==="lumcible"&&sel.userData.i===tgt.userData.i){sel=tgt; tc.attach(tgt)}}
   else if(l.type==="Rectangle"){L=new THREE.PointLight(c,l.intensite*(l.largeur||1)*(l.hauteur||.5)*1.2,0,2);
    giz=new THREE.Mesh(new THREE.PlaneGeometry(l.largeur||1,l.hauteur||.5),new THREE.MeshBasicMaterial({color:c,side:THREE.DoubleSide})); giz.position.copy(p); giz.lookAt(tg)}
   else if(l.type==="Dôme"){L=new THREE.HemisphereLight(c,0x444444,l.intensite*0.8)}
   else if(l.type==="Maillage"){continue}
-  else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.04,l.rayon||.08),16,10),gm); giz.position.copy(p)}
+  else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.14,l.rayon||.08),16,10),gm); giz.position.copy(p)}
+  if(giz)giz.renderOrder=999;
   L.position.copy(p); L.castShadow=false; lumGroup.add(L);
   if(giz){giz.userData={kind:"lum",i:LUM.indexOf(l),nom:l.nom,light:L}; lumGroup.add(giz);
    if(tc&&sel&&sel.userData.kind==="lum"&&sel.userData.i===giz.userData.i){sel=giz; tc.attach(giz)}}}}
@@ -1470,11 +1478,12 @@ $("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); 
 renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0];
- if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind==="lum"?"💡 ":"📦 ")+sel.userData.nom}
+ if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom}
  else{tc.detach(); sel=null; $("selName").textContent="Clique un objet orange ou une lumière"}});
 const postJ=b=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
 function commit(op){if(!sel)return; const u=sel.userData, p=sel.position;
  if(u.kind==="obj"){postJ({action:"obj_edit",op:op||"move",i:u.i,x:+p.x.toFixed(3),y:+p.y.toFixed(3),z:+p.z.toFixed(3),rot:+(sel.rotation.z*180/Math.PI).toFixed(1)})}
+ else if(u.kind==="lumcible"){const l=LUM[u.i]; if(!l)return; l.cible=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); drawLights(); postJ({action:"lum_save",liste:LUM})}
  else{const l=LUM[u.i]; if(!l)return; const d=[p.x-l.pos[0],p.y-l.pos[1],p.z-l.pos[2]];
   l.pos=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); if(l.cible)l.cible=l.cible.map((v,k)=>+(v+d[k]).toFixed(3));
   if(op==="dup"){const c=JSON.parse(JSON.stringify(l)); c.nom=l.nom+" copie"; c.pos[0]+=0.5; if(c.cible)c.cible[0]+=0.5; LUM.push(c)}
@@ -1490,7 +1499,7 @@ let dragO=null;
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||(tc&&tc.axis))return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0]; if(!hit)return;
- sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind==="lum"?"💡 ":"📦 ")+sel.userData.nom;
+ sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom;
  dragO={x:e.clientX,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
  renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation()},{capture:true});
 renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; dragO.moved=true;
@@ -2369,11 +2378,11 @@ def load_settings() -> dict:
             "cosmos": saved.get("cosmos") or {}, "selection": saved.get("selection") or {},
             "traces": saved.get("traces") or {}, "objets": saved.get("objets") or {},
             "scatter": saved.get("scatter") or {}, "mat_perso": saved.get("mat_perso") or {},
-            "lumieres": saved.get("lumieres") or {}}
+            "lumieres": saved.get("lumieres") or {}, "lum_traces": saved.get("lum_traces") or {}}
 
 
 def save_settings(state: dict) -> None:
-    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter", "mat_perso", "lumieres")}
+    out = {k: state.get(k) or {} for k in ("options", "cameras", "bibliotheque", "coches", "cosmos", "selection", "traces", "objets", "scatter", "mat_perso", "lumieres", "lum_traces")}
     out["vray"] = state.get("vray") or ""
     save_json(REGLAGES, out)
 
@@ -3710,6 +3719,21 @@ def window(state: dict) -> None:
                             say(f"Lecture des luminaires impossible : {error}")
                     save_settings(state)
                     LIGHTS.update(liste=[dict(l_) for l_ in lst], rev=LIGHTS["rev"] + 1)
+                    try:                                      # reperes des lumieres dans le plan Archicad
+                        traces = state.setdefault("lum_traces", {}).setdefault(key, [])
+                        delete_elements(traces)
+                        traces.clear()
+                        for l_ in lst:
+                            if l_.get("type") in ("Dôme", "Maillage") or not l_.get("pos"):
+                                continue
+                            px, py = l_["pos"][0], l_["pos"][1]
+                            cx, cy = (l_.get("cible") or l_["pos"])[0], (l_.get("cible") or l_["pos"])[1]
+                            rot = math.degrees(math.atan2(cy - py, cx - px)) + 90 if abs(cx - px) + abs(cy - py) > 0.05 else 0
+                            traces += draw_object_marker({"x": px, "y": py, "nom": "Lumière " + str(l_.get("nom", "")),
+                                                          "rotation": rot, "echelle": 0.6})
+                        save_settings(state)
+                    except Exception:  # noqa: BLE001
+                        pass
                     continue
                 if msg.get("action") == "mat_save":
                     store = state.setdefault("mat_perso", {}).setdefault(key, {})
