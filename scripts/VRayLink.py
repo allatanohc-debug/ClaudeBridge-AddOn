@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.6d (reperes fiables)"
+VERSION = "21/10 - v7.7 (partage visite 360)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3180,6 +3180,220 @@ def retouche_window(root, proj: dict, say=print) -> None:
     maj()
 
 
+# ---------------------------------------------------------------- partage 360 ---
+PANO_HTML = r"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>__TITRE__ — visite 360°</title>
+<style>html,body{margin:0;height:100%;background:#111;overflow:hidden;font:14px system-ui,-apple-system,Segoe UI,sans-serif;color:#fff}
+canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+#bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;justify-content:space-between;padding:10px 14px;
+background:linear-gradient(transparent,rgba(0,0,0,.65))}
+#t{font-weight:600}#s{opacity:.75;font-size:12px}
+button{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:18px;padding:7px 12px;font:inherit}
+#aide{position:fixed;top:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:6px 12px;border-radius:14px;font-size:12px;transition:opacity 1s}
+img{display:none}</style></head><body>
+<canvas id="c"></canvas><img id="src" alt="" src="data:image/jpeg;base64,__IMAGE__">
+<div id="aide">Glisse pour regarder autour · pince ou molette pour zoomer</div>
+<div id="bar"><div><div id="t">__TITRE__</div><div id="s">__SOUS__</div></div><div><button id="gyro">📱 Bouger le téléphone</button> <button id="fs">⛶</button></div></div>
+<script>
+const c=document.getElementById('c'),gl=c.getContext('webgl'),img=document.getElementById('src');
+let yaw=0,pitch=0,fov=75,gyroOn=false;
+if(!gl){img.style.display='block';img.style.width='100%';c.remove()}
+const vs='attribute vec2 p;varying vec2 q;void main(){q=p;gl_Position=vec4(p,0.,1.);}';
+const fs='precision highp float;varying vec2 q;uniform sampler2D t;uniform float yaw,pitch,f,asp;'+
+'void main(){vec3 d=normalize(vec3(q.x*f*asp,q.y*f,-1.));float cp=cos(pitch),sp=sin(pitch);'+
+'d=vec3(d.x,d.y*cp-d.z*sp,d.y*sp+d.z*cp);float cy=cos(yaw),sy=sin(yaw);d=vec3(d.x*cy+d.z*sy,d.y,-d.x*sy+d.z*cy);'+
+'float u=atan(d.x,-d.z)/6.2831853+.5,v=.5-asin(clamp(d.y,-1.,1.))/3.1415927;gl_FragColor=texture2D(t,vec2(u,v));}';
+function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s}
+let pr,U={};
+if(gl){pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(pr);gl.useProgram(pr);
+ const b=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,b);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+ const l=gl.getAttribLocation(pr,'p');gl.enableVertexAttribArray(l);gl.vertexAttribPointer(l,2,gl.FLOAT,false,0,0);
+ for(const n of ['yaw','pitch','f','asp'])U[n]=gl.getUniformLocation(pr,n);
+ const go=()=>{const tx=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,tx);
+  for(const [k,v] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]])gl.texParameteri(gl.TEXTURE_2D,k,v);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGB,gl.RGB,gl.UNSIGNED_BYTE,img);draw()};
+ img.complete?go():img.onload=go}
+function draw(){if(!gl)return;const r=devicePixelRatio||1,w=c.clientWidth*r,h=c.clientHeight*r;if(c.width!==w||c.height!==h){c.width=w;c.height=h}
+ gl.viewport(0,0,w,h);gl.uniform1f(U.yaw,yaw);gl.uniform1f(U.pitch,pitch);gl.uniform1f(U.f,Math.tan(fov*Math.PI/360));gl.uniform1f(U.asp,w/h);gl.drawArrays(gl.TRIANGLE_STRIP,0,4)}
+addEventListener('resize',draw);
+const pts=new Map();let last=null,pinch=0;
+c.addEventListener('pointerdown',e=>{c.setPointerCapture(e.pointerId);pts.set(e.pointerId,[e.clientX,e.clientY]);document.getElementById('aide').style.opacity=0});
+c.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId))return;const o=pts.get(e.pointerId);pts.set(e.pointerId,[e.clientX,e.clientY]);
+ if(pts.size===2){const [a,b]=[...pts.values()],d=Math.hypot(a[0]-b[0],a[1]-b[1]);if(pinch)fov=Math.min(100,Math.max(30,fov*pinch/d));pinch=d}
+ else{const k=fov/c.clientHeight*Math.PI/180;yaw+=(e.clientX-o[0])*k;pitch=Math.max(-1.5,Math.min(1.5,pitch+(e.clientY-o[1])*k))}draw()});
+const fin=e=>{pts.delete(e.pointerId);pinch=0};c.addEventListener('pointerup',fin);c.addEventListener('pointercancel',fin);
+c.addEventListener('wheel',e=>{e.preventDefault();fov=Math.min(100,Math.max(30,fov*(e.deltaY>0?1.08:0.92)));draw()},{passive:false});
+document.getElementById('fs').onclick=()=>{const d=document.documentElement;(document.fullscreenElement?document.exitFullscreen():(d.requestFullscreen||d.webkitRequestFullscreen||(()=>{})).call(d))};
+let a0=null;
+function ori(e){if(e.alpha==null)return;if(a0===null)a0=e.alpha+yaw*180/Math.PI;yaw=(a0-e.alpha)*Math.PI/180;pitch=Math.max(-1.5,Math.min(1.5,(e.beta-90)*Math.PI/180));draw()}
+document.getElementById('gyro').onclick=async()=>{gyroOn=!gyroOn;a0=null;
+ if(gyroOn&&window.DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission){try{await DeviceOrientationEvent.requestPermission()}catch(_){}}
+ gyroOn?addEventListener('deviceorientation',ori):removeEventListener('deviceorientation',ori);
+ document.getElementById('gyro').style.background=gyroOn?'rgba(232,112,42,.8)':''};
+</script></body></html>"""
+
+
+def panorama_html(img: Path, titre: str, sous: str = "") -> Path:
+    """Page web autonome (image incluse) pour visiter un panorama 360° : souris, doigt, zoom, gyroscope."""
+    import base64
+    import io
+    ensure_pillow()
+    from PIL import Image
+    im = Image.open(img).convert("RGB")
+    if im.width > 4096:                      # limite des cartes graphiques de telephone
+        im = im.resize((4096, 2048), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=86, optimize=True)
+    page = (PANO_HTML.replace("__TITRE__", titre.replace("<", "")).replace("__SOUS__", sous.replace("<", ""))
+            .replace("__IMAGE__", base64.b64encode(buf.getvalue()).decode()))
+    out = data_dir() / "partage" / f"{safe(titre)}_360.html"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page, encoding="utf-8")
+    copie = img.with_name(img.stem + "_360.html")      # une copie a cote du rendu, a envoyer par WhatsApp / mail
+    try:
+        copie.write_text(page, encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        copie = out
+    return copie
+
+
+PARTAGE = {"srv": None, "port": 0}
+
+
+def ip_locale() -> str:
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(("8.8.8.8", 80))
+        return s.getsockname()[0]
+    except Exception:  # noqa: BLE001
+        return "127.0.0.1"
+    finally:
+        s.close()
+
+
+def serveur_partage() -> int:
+    """Petit serveur web sur le reseau local (meme Wi-Fi) pour ouvrir la visite 360° sur un telephone."""
+    if PARTAGE["srv"]:
+        return PARTAGE["port"]
+    import functools
+    import http.server
+    dossier = data_dir() / "partage"
+    dossier.mkdir(parents=True, exist_ok=True)
+
+    class Calme(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, *_a):
+            pass
+    h = functools.partial(Calme, directory=str(dossier))
+    for port in (8765, 8766, 8767, 0):
+        try:
+            srv = http.server.ThreadingHTTPServer(("0.0.0.0", port), h)
+            break
+        except OSError:
+            continue
+    PARTAGE.update(srv=srv, port=srv.server_address[1])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return PARTAGE["port"]
+
+
+def qr_matrice(texte: str) -> list:
+    mods = str(data_dir().parent / "modules")
+    if mods not in sys.path:
+        sys.path.insert(0, mods)
+    try:
+        import qrcode
+    except ModuleNotFoundError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "--target", mods, "--no-deps", "qrcode"],
+                       capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=300)
+        import importlib
+        importlib.invalidate_caches()
+        import qrcode
+    q = qrcode.QRCode(border=2, error_correction=qrcode.constants.ERROR_CORRECT_M)
+    q.add_data(texte)
+    q.make(fit=True)
+    return q.get_matrix()
+
+
+def partage_window(root, proj: dict, say=print) -> None:
+    import tkinter as tk
+    from tkinter import filedialog, ttk
+    win = tk.Toplevel(root)
+    win.title("📱 Partager une visite 360°")
+    win.attributes("-topmost", True)
+    win.resizable(True, True)
+    f = ttk.Frame(win, padding=14)
+    f.grid(sticky="nsew")
+    win.columnconfigure(0, weight=1)
+    tous = rendus_recents(proj["name"], 80)
+    panos = []
+    for p_ in tous:
+        try:
+            ensure_pillow()
+            from PIL import Image
+            with Image.open(p_) as im:
+                if abs(im.width / max(1, im.height) - 2.0) < 0.05:
+                    panos.append(p_)
+        except Exception:  # noqa: BLE001
+            continue
+    ttk.Label(f, text="Panorama 360° à partager", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+    noms = {f"{p_.parent.name} · {p_.name}": p_ for p_ in panos}
+    var = tk.StringVar(value=next(iter(noms), ""))
+    box = ttk.Combobox(f, values=list(noms), textvariable=var, state="readonly", width=48)
+    box.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+
+    def parcourir():
+        p_ = filedialog.askopenfilename(parent=win, title="Panorama 360° (image 2:1)",
+                                        filetypes=[("Images", "*.png *.jpg *.jpeg"), ("Tous", "*.*")])
+        if p_:
+            p_ = Path(p_)
+            noms[f"{p_.parent.name} · {p_.name}"] = p_
+            box.configure(values=list(noms))
+            var.set(f"{p_.parent.name} · {p_.name}")
+    ttk.Button(f, text="Parcourir…", command=parcourir).grid(row=1, column=1, padx=(6, 0), pady=(4, 0))
+    if not panos:
+        ttk.Label(f, foreground="#a55", wraplength=420, justify="left",
+                  text="Aucun panorama dans tes rendus. Fais d'abord un rendu en « Panorama 360° sphérique (VR) » "
+                       "(⚙ Réglages avancés → Type de caméra), ou choisis une image 2:1 avec « Parcourir… ».").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    cv = tk.Canvas(f, width=260, height=260, background="#ffffff", highlightthickness=0)
+    cv.grid(row=4, column=0, columnspan=2, pady=(12, 6))
+    lien = tk.StringVar(value="")
+    ttk.Entry(f, textvariable=lien, width=56, state="readonly").grid(row=5, column=0, columnspan=2, sticky="ew")
+    note = ttk.Label(f, foreground="#777", wraplength=440, justify="left")
+    note.grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+    etat = {"html": None}
+
+    def creer():
+        p_ = noms.get(var.get())
+        if not p_:
+            return
+        html = panorama_html(p_, proj["name"].replace("_", " ").strip(), p_.stem.replace("_", " "))
+        etat["html"] = html
+        port = serveur_partage()
+        url = f"http://{ip_locale()}:{port}/{html.name.replace(' ', '%20')}"
+        lien.set(url)
+        m = qr_matrice(url)
+        cv.delete("all")
+        k = 256 / len(m)
+        for y, row in enumerate(m):
+            for x, on in enumerate(row):
+                if on:
+                    cv.create_rectangle(2 + x * k, 2 + y * k, 2 + (x + 1) * k, 2 + (y + 1) * k, fill="#000", outline="")
+        note.configure(text="① Scanne le QR code avec un téléphone connecté au même Wi-Fi que ce PC (si Windows demande "
+                            "l'autorisation réseau pour Python, accepte « Réseaux privés »).\n② Ou envoie le fichier "
+                            f"« {html.name} » (dossier ouvert avec 📂) par WhatsApp ou mail : il s'ouvre dans le navigateur, "
+                            "sans internet ni application.")
+        say(f"Visite 360° prête : {url}")
+    bar = ttk.Frame(f)
+    bar.grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+    ttk.Button(bar, text="✨ Créer la visite 360°", style="Accent.TButton", command=creer).grid(row=0, column=0)
+    ttk.Button(bar, text="🌐 Voir", command=lambda: etat["html"] and os.startfile(str(etat["html"]))).grid(row=0, column=1, padx=6)  # type: ignore[attr-defined]
+    ttk.Button(bar, text="📂 Dossier", command=lambda: etat["html"] and subprocess.Popen(
+        ["explorer", "/select,", str(etat["html"])])).grid(row=0, column=2)
+    box.bind("<<ComboboxSelected>>", lambda _e: (cv.delete("all"), lien.set(""), note.configure(text="")))
+
+
 # ---------------------------------------------------------------- fenetre ---
 def window(state: dict) -> None:
     import tkinter as tk
@@ -4121,11 +4335,12 @@ def window(state: dict) -> None:
     plus_menu.add_command(label="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen())
     plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
     plus_menu.add_command(label="🎚 Retoucher un rendu (sans recalcul)", command=lambda: retouche_window(root, proj, say))
+    plus_menu.add_command(label="📱 Partager une visite 360° (QR code, WhatsApp)", command=lambda: partage_window(root, proj, say))
     plus_menu.add_command(label="🧭 Visionneuse 3D", command=lambda: open_viewer())
     plus_menu.add_command(label="🎥 Ouvrir dans Chaos Vantage (vidéo, visite)", command=lambda: vers_vantage())
     plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
     plus_btn = ttk.Button(action_bar, text="⋯", width=3)
-    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 160))
+    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 185))
     plus_btn.grid(row=0, column=6, padx=(6, 0))
 
     def aller(frame):
