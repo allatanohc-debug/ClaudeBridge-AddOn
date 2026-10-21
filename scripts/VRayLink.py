@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.1e (vraie forme des objets dans la visionneuse)"
+VERSION = "21/10 - v8.2 (troncs visibles)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1454,10 +1454,25 @@ const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THRE
 function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
  fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){FORMES[d]=false;return}
   const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(j.v,3)); g.setIndex(j.f);
-  g.computeVertexNormals(); g.computeBoundingSphere(); FORMES[d]=g; drawObjs()}).catch(()=>{FORMES[d]=false}); return null}
+  g.computeVertexNormals(); g.computeBoundingSphere(); g.computeBoundingBox();
+  // ou commence le feuillage : plus basse hauteur ou la plante s'etale (> 25 % de sa largeur)
+  const b=g.boundingBox, W=Math.max(b.max.x-b.min.x,b.max.y-b.min.y), H=b.max.z-b.min.z, n=24, bins=[];
+  for(let k=0;k<n;k++)bins.push([1e9,-1e9,1e9,-1e9]);
+  for(let i=0;i<j.v.length;i+=3){const k=Math.min(n-1,Math.max(0,Math.floor((j.v[i+2]-b.min.z)/H*n))), q=bins[k];
+   q[0]=Math.min(q[0],j.v[i]);q[1]=Math.max(q[1],j.v[i]);q[2]=Math.min(q[2],j.v[i+1]);q[3]=Math.max(q[3],j.v[i+1])}
+  let kc=0; for(;kc<n;kc++){const q=bins[kc]; if(q[1]>q[0]&&Math.max(q[1]-q[0],q[3]-q[2])>0.25*W)break}
+  g.userData={tronc:b.min.z+kc/n*H, base:b.min.z, larg:W, haut:H};
+  FORMES[d]=g; drawObjs()}).catch(()=>{FORMES[d]=false}); return null}
+const MAT_TRONC=new THREE.MeshLambertMaterial({color:0x7a5a3a}), MAT_PIED=new THREE.MeshBasicMaterial({color:0x5b8a3c,transparent:true,opacity:.55,side:THREE.DoubleSide});
 function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
  const fg=ob.d?forme(ob.d):false; let m;
- if(fg){m=new THREE.Mesh(fg,ob.veg?MAT_VEG:MAT_OBJ); m.scale.setScalar(k)}
+ if(fg){m=new THREE.Mesh(fg,ob.veg?MAT_VEG:MAT_OBJ); m.scale.setScalar(k);
+  const u=fg.userData||{};
+  if(ob.veg&&u.haut>1.2){const h=Math.max(0.3,u.tronc-u.base);           // tronc bien visible jusqu'au feuillage
+   if(u.tronc-u.base>0.3){const r=Math.max(0.12,Math.min(0.35,u.larg*0.035)), tr=new THREE.Mesh(new THREE.CylinderGeometry(r*0.8,r,h,10),MAT_TRONC);
+    tr.rotation.x=Math.PI/2; tr.position.z=u.base+h/2; m.add(tr)}
+   const pied=new THREE.Mesh(new THREE.RingGeometry(Math.max(0.25,u.larg*0.08),Math.max(0.35,u.larg*0.11),24),MAT_PIED);
+   pied.position.z=u.base+0.02; m.add(pied)}}
  else{const g=new THREE.BoxGeometry(t[0]*k*0.35,t[1]*k*0.35,t[2]*k); g.translate(0,0,(t[3]+t[2]/2)*k);   // en attendant la forme : silhouette fine
   m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.5}))}
  m.position.set(ob.x,ob.y,ob.z); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; m.userData={kind:"obj",i:ob.i,nom:ob.nom}; objGroup.add(m);
