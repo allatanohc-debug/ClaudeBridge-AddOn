@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.9 (materiaux automatiques)"
+VERSION = "21/10 - v7.9b (materiaux automatiques)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -6554,7 +6554,7 @@ FAMILLES_MAT = [   # (famille, mots Archicad (fr/en/de), mots a chercher dans le
     ("Pierre", ["stone", "pierre", "stein", "granite", "granit", "slate", "ardoise", "limestone", "calcaire", "travertin"],
      ["stone", "granite", "slate", "travertine", "limestone"]),
     ("Enduit / peinture", ["plaster", "platre", "plâtre", "enduit", "stucco", "crepi", "crépi", "paint", "peinture",
-                           "putz", "render", "rendering", "wall finish", "gypsum"], ["plaster", "paint", "stucco", "render"]),
+                           "putz", "render", "rendering", "wall finish", "gypsum", "ral", "farbe", "kling", "lacquer", "laque"], ["plaster", "paint", "stucco", "render"]),
     ("Toiture", ["roof", "toit", "tuile", "shingle", "dach", "couverture"], ["roof", "shingle"]),
     ("Gazon", ["grass", "gazon", "herbe", "lawn", "rasen", "pelouse"], ["grass", "lawn"]),
     ("Gravier", ["gravel", "gravier", "kies", "pebble", "galet"], ["gravel", "pebble"]),
@@ -6586,7 +6586,7 @@ def _contient(texte: str, cle: str) -> int:
     t, c = _norm(texte), _norm(cle)
     if len(c) >= 5:
         return t.find(c)
-    m = re.search(rf"(?<![a-z]){re.escape(c)}(?![a-z])", t)
+    m = re.search(rf"(?<![a-z]){re.escape(c)}s?(?![a-z])", t)
     return m.start() if m else -1
 
 
@@ -6599,9 +6599,30 @@ def famille_de(nom_surface: str):
     return (meilleur[1], meilleur[2]) if meilleur else (None, [])
 
 
-def suggestions_materiaux(surfaces: list, deja: dict, biblio: list) -> list:
+COULEURS_NOMS = {"white": (0.72, 1.01), "blanc": (0.72, 1.01), "weiss": (0.72, 1.01), "black": (0.0, 0.22),
+                 "noir": (0.0, 0.22), "dark": (0.0, 0.35), "fonce": (0.0, 0.35), "light": (0.55, 1.01), "clair": (0.55, 1.01)}
+
+
+def _couleur_compatible(nom_cosmos: str, rgb) -> bool:
+    """Un materiau Cosmos « White... » ne va pas sur une surface Archicad anthracite (et inversement)."""
+    if not rgb:
+        return True
+    try:
+        lum = 0.2126 * float(rgb[0]) + 0.7152 * float(rgb[1]) + 0.0722 * float(rgb[2])
+        if max(float(v) for v in rgb[:3]) > 1.5:
+            lum /= 255.0
+    except Exception:  # noqa: BLE001
+        return True
+    for mot, (lo, hi) in COULEURS_NOMS.items():
+        if _contient(nom_cosmos, mot) >= 0 and not (lo <= lum <= hi):
+            return False
+    return True
+
+
+def suggestions_materiaux(surfaces: list, deja: dict, biblio: list, couleurs: dict | None = None) -> list:
     """[(surface, famille, entree Cosmos ou None)] pour les surfaces sans materiau Cosmos."""
     out = []
+    couleurs = couleurs or {}
     for s_ in surfaces:
         if s_ in deja or s_.startswith("Cosmos · "):
             continue
@@ -6611,6 +6632,8 @@ def suggestions_materiaux(surfaces: list, deja: dict, biblio: list) -> list:
         mots_surface = _mots(s_)
         best, score = None, 0.0
         for e in biblio:
+            if not _couleur_compatible(e["nom"], couleurs.get(s_)):
+                continue
             txt = e["nom"] + " " + e.get("categorie", "")
             nom = _mots(txt)
             sc = 3.0 * sum(1 for c in mots_cosmos if _contient(txt, c) >= 0) + 1.0 * len(nom & mots_surface)
@@ -6856,7 +6879,8 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     def auto_materiaux():
         """Propose un materiau Cosmos pour chaque surface Archicad d'apres son nom (brique, beton, verre, bois...)."""
         biblio = cosmos_library("Materials")
-        props = suggestions_materiaux(sorted(surfaces), state.get("cosmos") or {}, biblio)
+        props = suggestions_materiaux(sorted(surfaces), state.get("cosmos") or {}, biblio,
+                                      surfaces if isinstance(surfaces, dict) else None)
         win = tk.Toplevel(root)
         win.title("✨ Matériaux automatiques")
         win.attributes("-topmost", True)
