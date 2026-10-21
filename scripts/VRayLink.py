@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.9 (deplacement SketchUp + mini-plan)"
+VERSION = "21/10 - v8.9b (mini-plan dans le panneau)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1210,6 +1210,8 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" value="1" style="width:130px;vertical-align:middle"></div></div></div><button id="toggle" title="Masquer / afficher les réglages (touche P)">Réglages ▶</button></div>
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
+<div id="miniBloc"><label style="display:flex;justify-content:space-between">Plan vu de haut <span id="miniLbl" style="color:var(--mute);font-weight:normal"></span></label>
+<canvas id="miniCv" title="Clique pour y amener la vue · Maj + clic : y envoyer l'objet choisi" style="width:100%;height:190px;border-radius:8px;border:1px solid var(--line);cursor:crosshair;display:block;background:#e9ecef"></canvas></div>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
 <div><label>Type de vue</label><div class="seg"><button id="vPersp">Perspective libre</button><button id="v2pf">2 points de fuite</button><button id="vOrtho">Orthogonale</button><button id="vAxo" title="Vue en axonométrie (isométrie, sans perspective). Re-clique pour tourner de 90°.">Axonométrie</button></div>
 <div id="orthoBox" style="margin-top:6px"><label>Largeur visible : <span id="owTxt"></span></label>
@@ -1885,24 +1887,23 @@ $("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apIm
 const clock=new THREE.Clock();
 // ---- mini-plan : le projet vu de haut, coupe a hauteur de travail, pour se situer
 const miniCam=new THREE.OrthographicCamera(-10,10,10,-10,0.1,2000); miniCam.up.set(0,1,0); miniCam.layers.enable(1);
-const miniDiv=document.createElement("div"); miniDiv.id="miniPlan"; miniDiv.title="Plan vu de haut — clique pour y amener la vue";
-miniDiv.style.cssText="position:absolute;right:10px;top:10px;width:250px;height:190px;border:2px solid #e8702a;border-radius:8px;z-index:6;cursor:crosshair;box-shadow:0 2px 10px #0006";
-const miniLbl=document.createElement("div"); miniLbl.style.cssText="position:absolute;left:6px;top:4px;font:11px system-ui;color:#fff;background:#0009;padding:1px 6px;border-radius:6px;pointer-events:none";
-miniDiv.appendChild(miniLbl); frame.appendChild(miniDiv);
+const miniDiv=$("miniCv"), miniLbl=$("miniLbl"), miniCtx=miniDiv.getContext("2d"); let miniRT=null, miniBuf=null, miniImg=null, miniDraw=0;
 let miniOn=true; try{miniOn=localStorage.getItem("vrl_mini")!=="0"}catch(_){}
-const miniBtn=document.createElement("button"); miniBtn.className="mini"; miniBtn.title="Mini-plan vu de haut"; miniBtn.textContent="🗺";
+const miniBtn=document.createElement("button"); miniBtn.className="mini"; miniBtn.title="Plan vu de haut (dans le panneau de droite)"; miniBtn.textContent="🗺";
 $("bMove").parentNode.appendChild(miniBtn);
-function majMini(){miniDiv.style.display=miniOn?"":"none"; miniBtn.classList.toggle("on",miniOn)} majMini();
+function majMini(){$("miniBloc").style.display=miniOn?"":"none"; miniBtn.classList.toggle("on",miniOn); if(miniOn&&typeof setPanel==="function"&&$("app").classList.contains("ferme"))setPanel(true)} majMini();
 miniBtn.onclick=()=>{miniOn=!miniOn; try{localStorage.setItem("vrl_mini",miniOn?"1":"0")}catch(_){} majMini()};
 const miniBox=new THREE.Box3(); let miniT=0;
 function cadreMini(){miniBox.makeEmpty(); model.geometry.computeBoundingBox(); miniBox.copy(model.geometry.boundingBox).applyMatrix4(model.matrixWorld);
- for(const o of OBJ)miniBox.expandByPoint(new THREE.Vector3(o.x,o.y,o.z)); miniBox.expandByScalar(4)}
+ for(const o of OBJ)miniBox.expandByPoint(new THREE.Vector3(o.x,o.y,o.z)); miniBox.expandByPoint(new THREE.Vector3(cam.position.x,cam.position.y,info.sol)); miniBox.expandByScalar(4)}
 const miniPlan=new THREE.Plane(new THREE.Vector3(0,0,-1),0);
 const repere=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({color:0xe8702a,transparent:true,opacity:.45,side:THREE.DoubleSide,depthTest:false}));
 const point=new THREE.Mesh(new THREE.CircleGeometry(1,16),new THREE.MeshBasicMaterial({color:0xe8702a,depthTest:false}));
 for(const m of [repere,point]){m.layers.set(1); m.renderOrder=999; scene.add(m)}
-function renderMini(){if(!miniOn)return; const now=performance.now(); if(now-miniT>2000||miniBox.isEmpty()){miniT=now; cadreMini()}
- const W=renderer.domElement.clientWidth, H=renderer.domElement.clientHeight, w=250, h=190, asp=w/h;
+function renderMini(){if(!miniOn||!miniDiv.clientWidth)return; const now=performance.now(); if(now-miniDraw<200)return; miniDraw=now;
+ if(now-miniT>2000||miniBox.isEmpty()){miniT=now; cadreMini()}
+ const dpr=Math.min(devicePixelRatio,2), w=Math.round(miniDiv.clientWidth*dpr), h=Math.round(miniDiv.clientHeight*dpr), asp=w/h;
+ if(!miniRT||miniRT.width!==w||miniRT.height!==h){miniRT?.dispose(); miniRT=new THREE.WebGLRenderTarget(w,h); miniRT.texture.colorSpace=THREE.SRGBColorSpace; miniBuf=new Uint8Array(w*h*4); miniImg=miniCtx.createImageData(w,h); miniDiv.width=w; miniDiv.height=h}
  const c=miniBox.getCenter(new THREE.Vector3()), sz=miniBox.getSize(new THREE.Vector3()); let hw=sz.x/2, hh=sz.y/2; if(hw/hh>asp)hh=hw/asp; else hw=hh*asp;
  miniCam.left=-hw; miniCam.right=hw; miniCam.top=hh; miniCam.bottom=-hh; miniCam.position.set(c.x,c.y,miniBox.max.z+50); miniCam.lookAt(c.x,c.y,miniBox.min.z); miniCam.updateProjectionMatrix();
  const base=sel&&editOn?sel.position.z:(cam.position.z-info.sol<8?Math.max(info.sol,cam.position.z-1.6):info.sol), coupe=base+1.5;  // coupe a 1,50 m au-dessus du niveau de travail
@@ -1911,12 +1912,13 @@ function renderMini(){if(!miniOn)return; const now=performance.now(); if(now-min
  const t=Math.min(fov/2,1.3), pts=[0,0,0, L*Math.cos(a-t),L*Math.sin(a-t),0, L*Math.cos(a+t),L*Math.sin(a+t),0];
  repere.geometry.setAttribute("position",new THREE.Float32BufferAttribute(pts,3)); repere.geometry.attributes.position.needsUpdate=true;
  repere.position.set(cam.position.x,cam.position.y,coupe-0.1); point.position.set(cam.position.x,cam.position.y,coupe-0.05); point.scale.setScalar(hw*0.025);
- miniDiv.style.width=w+"px"; miniDiv.style.height=h+"px";
- miniLbl.textContent=`Plan coupé à ${(coupe-info.sol).toFixed(1)} m`;
+ miniLbl.textContent=`coupé à ${(coupe-info.sol).toFixed(1)} m`;
  const tcv=tc.visible, auto=renderer.shadowMap.autoUpdate, bg=scene.background, sv=sky.visible; tc.visible=false; renderer.shadowMap.autoUpdate=false; sky.visible=false; scene.background=new THREE.Color(0xe9ecef);
- renderer.clippingPlanes=[miniPlan]; renderer.setScissorTest(true); renderer.setScissor(W-10-w,H-10-h,w,h); renderer.setViewport(W-10-w,H-10-h,w,h); renderer.autoClear=true;
- renderer.render(scene,miniCam);
- renderer.clippingPlanes=[]; renderer.setScissorTest(false); renderer.setViewport(0,0,W,H); tc.visible=tcv; renderer.shadowMap.autoUpdate=auto; sky.visible=sv; scene.background=bg}
+ renderer.clippingPlanes=[miniPlan]; renderer.setRenderTarget(miniRT); renderer.render(scene,miniCam); renderer.setRenderTarget(null);
+ renderer.readRenderTargetPixels(miniRT,0,0,w,h,miniBuf);
+ const row=w*4; for(let y=0;y<h;y++)miniImg.data.set(miniBuf.subarray((h-1-y)*row,(h-y)*row),y*row);   // image a l'endroit
+ miniCtx.putImageData(miniImg,0,0);
+ renderer.clippingPlanes=[]; tc.visible=tcv; renderer.shadowMap.autoUpdate=auto; sky.visible=sv; scene.background=bg}
 miniDiv.addEventListener("pointerdown",e=>{e.stopPropagation(); const r=miniDiv.getBoundingClientRect(), u=(e.clientX-r.left)/r.width, v=(e.clientY-r.top)/r.height;
  const x=miniCam.position.x+miniCam.left+(miniCam.right-miniCam.left)*u, y=miniCam.position.y+miniCam.top-(miniCam.top-miniCam.bottom)*v;
  if(editOn&&sel&&e.shiftKey&&!estVerrou(sel)){sel.position.x=x; sel.position.y=y; sel.position.z=sel.userData.kind==="obj"?solEn(x,y,sel.position.z,sel.userData.i):sel.position.z; commit(); return}  // Maj + clic : envoie l'objet choisi a cet endroit
