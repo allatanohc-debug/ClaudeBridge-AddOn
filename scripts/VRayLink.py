@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.5c (verifications)"
+VERSION = "21/10 - v8.5d (verifications)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5286,8 +5286,13 @@ def window(state: dict) -> None:
                     time.sleep(1.5)                # laisse finir la copie du fichier
                     collect()
                     save_settings(state)
-                    subprocess.Popen([sys.executable] + sys.argv, cwd=str(_source.parent),
-                                     creationflags=0x00000008 | 0x01000000 if os.name == "nt" else 0)
+                    for drapeaux in ((0x00000008 | 0x00000200 | 0x01000000), (0x00000008 | 0x00000200), 0):
+                        try:                       # detache si Windows l'autorise, sinon simple
+                            subprocess.Popen([sys.executable] + sys.argv, cwd=str(_source.parent),
+                                             creationflags=drapeaux if os.name == "nt" else 0)
+                            break
+                        except OSError:
+                            continue
                     root.destroy()
                     return
             except Exception:  # noqa: BLE001
