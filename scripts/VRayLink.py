@@ -2800,6 +2800,7 @@ def window(state: dict) -> None:
                     pass
         finally:
             root.after(150, _ui_pump)
+    root.ui_call = ui_call
     root.after(150, _ui_pump)
     root.attributes("-topmost", True)
     couleurs = apply_theme(root, opts.get("theme", "clair"))
@@ -5596,6 +5597,7 @@ def project_surfaces(state: dict, key: str) -> tuple[dict, bool]:
 
 
 def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
+    ui_call = getattr(root, "ui_call", None) or (lambda f: root.after(0, f))
     import tkinter as tk
     from tkinter import ttk
 
