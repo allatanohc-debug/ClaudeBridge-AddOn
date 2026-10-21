@@ -1449,8 +1449,8 @@ $("load").remove();
 const vegGroup=new THREE.Group(); scene.add(vegGroup);
 const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
 // vraie forme simplifiee des objets Cosmos (preview du proxy V-Ray), une geometrie partagee par modele
-const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THREE.DoubleSide}),
- MAT_VEG=new THREE.MeshLambertMaterial({color:0x5b8a3c,side:THREE.DoubleSide});
+const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THREE.DoubleSide,flatShading:true}),
+ MAT_VEG=new THREE.MeshLambertMaterial({color:0x5b8a3c,side:THREE.DoubleSide,flatShading:true});
 function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
  fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){FORMES[d]=false;return}
   const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(j.v,3)); g.setIndex(j.f);
