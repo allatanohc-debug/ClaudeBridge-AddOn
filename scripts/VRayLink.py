@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v9.0b (formes reelles, feuilles entieres)"
+VERSION = "21/10 - v9.1 (silhouettes vertes par defaut, formes detaillees en option)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1076,7 +1076,8 @@ class ViewerServer:
                         f_ = parse_qs(urlparse(self.path).query).get("d", [""])[0]
                         connus = {o_.get("d") for o_ in OBJS.get("liste", [])}
                         ok_ = f_ in connus or ("Chaos Cosmos" in f_ and ".." not in f_ and Path(f_).is_dir())   # objets places + arbres du scatter
-                        self._send(json.dumps(vrmesh_apercu(f_) if ok_ else {}).encode("utf-8"), "application/json")
+                        simple_ = parse_qs(urlparse(self.path).query).get("s", ["0"])[0] == "1"
+                        self._send(json.dumps(vrmesh_apercu(f_, simple_) if ok_ else {}).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/objets"):
                         self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
@@ -1255,7 +1256,8 @@ Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" 
 <label style="margin-top:6px;display:flex;gap:6px;align-items:center"><input id="hdriShow" type="checkbox" checked style="width:auto"> Afficher la HDRI</label>
 <div id="hdriMsg" style="color:var(--mute);font-size:12px"></div></div>
 <div><label>Végétation : <span id="vegTxt"></span></label>
-<label style="display:flex;gap:6px;align-items:center"><input id="vegShow" type="checkbox" checked style="width:auto"> Afficher herbe / plantes / objets</label></div>
+<label style="display:flex;gap:6px;align-items:center"><input id="vegShow" type="checkbox" checked style="width:auto"> Afficher herbe / plantes / objets</label>
+<label style="display:flex;gap:6px;align-items:center" title="Décoché : silhouettes vertes légères. Coché : vraie forme des objets Cosmos, comme dans le rendu"><input id="formesDet" type="checkbox" style="width:auto"> Formes détaillées (comme le rendu)</label></div>
 <div><label>Nom de la vue</label><input id="name" value="Vue 3D"></div>
 <button id="save">Enregistrer la vue</button>
 <button id="render" class="main">Rendre cette vue</button>
@@ -1468,8 +1470,9 @@ const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
 // vraie forme simplifiee des objets Cosmos (preview du proxy V-Ray), une geometrie partagee par modele
 const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THREE.DoubleSide,flatShading:true}),
  MAT_VEG=new THREE.MeshLambertMaterial({color:0x5b8a3c,side:THREE.DoubleSide,flatShading:true});
+let formesDet=false; try{formesDet=localStorage.getItem("vrl_formes")==="det"}catch(_){}
 function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
- fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){setTimeout(()=>{delete FORMES[d]; drawObjs()},4000);return}
+ fetch("/api/objmesh?d="+encodeURIComponent(d)+(formesDet?"":"&s=1")).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){setTimeout(()=>{delete FORMES[d]; drawObjs()},4000);return}
   const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(j.v,3)); g.setIndex(j.f);
   g.computeVertexNormals(); g.computeBoundingSphere(); g.computeBoundingBox();
   // ou commence le feuillage : plus basse hauteur ou la plante s'etale (> 25 % de sa largeur)
@@ -1854,9 +1857,13 @@ function arbresReels(){let reste=false;
   const im=new THREE.InstancedMesh(geo,new THREE.MeshLambertMaterial({vertexColors:true,flatShading:true,side:THREE.DoubleSide}),a.pts.length);
   const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler();
   a.pts.forEach((t,i)=>{const k=t[3]||1; e.set(0,0,((i*137)%360)*Math.PI/180); q.setFromEuler(e); m4.compose(new THREE.Vector3(t[0],t[1],t[2]),q,new THREE.Vector3(k,k,k)); im.setMatrixAt(i,m4)});
-  im.castShadow=true; im.receiveShadow=true; scene.add(im); for(const m of a.lol)scene.remove(m)}
+  im.castShadow=true; im.receiveShadow=true; scene.add(im); a.im=im; for(const m of a.lol)scene.remove(m)}
  if(reste)setTimeout(arbresReels,800)}
 arbresReels();
+$("formesDet").checked=formesDet;
+$("formesDet").onchange=()=>{formesDet=$("formesDet").checked; try{localStorage.setItem("vrl_formes",formesDet?"det":"simple")}catch(_){}
+ for(const k of Object.keys(FORMES))delete FORMES[k]; drawObjs();
+ for(const a of Object.values(ARB_G)){if(a.im){scene.remove(a.im); a.im=null} a.ok=false} arbresReels()};
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
 let liveOn=false, liveSig="", liveSent="", liveT=0, liveBusy=false;
@@ -2676,11 +2683,11 @@ def vrmesh_size(path) -> list:
         return []
 
 
-def vrmesh_apercu(folder: str) -> dict:
+def vrmesh_apercu(folder: str, simple: bool = False) -> dict:
     """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
     Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
     import zlib
-    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v8.json")
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + ("_simple_v1.json" if simple else "_v8.json"))
     try:
         return json.loads(cache.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -2690,7 +2697,8 @@ def vrmesh_apercu(folder: str) -> dict:
         tous = sorted(Path(folder).glob("*.vrmesh"), key=lambda p_: p_.stat().st_size)
         moyen = [p_ for p_ in tous if "_3dm_" in p_.name.lower()]          # version moyenne Cosmos si elle existe
         haut = [p_ for p_ in tous if "_3dh_" in p_.name.lower() and p_.stat().st_size < 60e6]
-        fichier = (moyen or haut or tous[-1:] or [None])[0]
+        fichier = (tous[:1] if simple else (moyen or haut or tous[-1:])) or [None]
+        fichier = fichier[0]
         d = fichier.read_bytes() if fichier else b""
         flux, i = [], 0
         while i < len(d) - 2 and len(flux) < 600:
@@ -2722,7 +2730,7 @@ def vrmesh_apercu(folder: str) -> dict:
                 continue
             paires.append((v_, f_))
         # en fin de fichier : la « sucette » d'apercu du proxy (1 ou 2 petites pieces) qui enveloppe la plante -> on l'enleve
-        reelles = list(paires)
+        reelles = paires[-1:] if simple else list(paires)      # simple : la silhouette legere du proxy (affichage vert d'avant)
         mx = max((len(q[0]) // 3 for q in reelles), default=0)
         while len(reelles) > 1 and len(reelles[-1][0]) // 3 < 0.05 * mx:
             reelles.pop()
