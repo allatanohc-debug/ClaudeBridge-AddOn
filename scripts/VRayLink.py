@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.2b (troncs visibles, arbustes aussi)"
+VERSION = "21/10 - v8.2c (visionneuse ouverte sur la vue choisie)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1351,6 +1351,8 @@ function goTo(c){cam.position.set(...c.eye); controls.target.set(...c.target); $
  if(!c.auto) $("name").value=c.nom; controls.update();}
 info.cameras.forEach((c,i)=>{const o=document.createElement("option");o.value=i;o.textContent=c.nom;$("cams").appendChild(o)});
 $("cams").onchange=()=>goTo(info.cameras[+$("cams").value]);
+{const hv=decodeURIComponent((location.hash.match(/vue=([^&]+)/)||[])[1]||"");   // ouverte sur la vue choisie dans V-Ray Link
+ if(hv){const k=info.cameras.findIndex(c=>c.nom===hv); if(k>=0){$("cams").value=k; setTimeout(()=>goTo(info.cameras[k]),50)}}}
 // modele
 const r1=await fetch("/api/geometrie"); if(!r1.ok) throw new Error("modèle : "+r1.status+" "+(await r1.text()).slice(0,200));
 const geoJ=await r1.json(); const b64=geoJ.d; const GROUPES=geoJ.groupes||[]; const raw=atob(b64); const u8=new Uint8Array(raw.length);
@@ -5030,6 +5032,9 @@ def window(state: dict) -> None:
 
     def open_viewer(page: str = ""):
         collect()
+        if not page and current.get():
+            from urllib.parse import quote
+            page = "#vue=" + quote(current.get())
         if not (data_dir() / key / "geometrie.pkl").exists():
             try:
                 say("Premier export du modèle pour la visionneuse...")
@@ -5062,7 +5067,7 @@ def window(state: dict) -> None:
             viewer["srv"].surfaces = lambda: snap.get("_surfaces", [])
             viewer["srv"].cosmos_tex = lambda nom: cosmos_textures(((state.get("cosmos") or {}).get(nom) or {}).get("dossier", ""))
         viewer["srv"].open(page)
-        if page:
+        if page and not page.startswith("#vue="):
             say("Éditeur de matériaux ouvert : les réglages s'affichent en direct (et dans la visionneuse si elle est ouverte).")
             return
         say("Visionneuse 3D ouverte : place-toi, puis « Rendre cette vue ». (Elle montre le dernier export du modèle.)")
