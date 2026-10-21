@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.1 (vue Axonometrie)"
+VERSION = "21/10 - v7.2 (fenetre fluide)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2788,17 +2788,33 @@ def scroll_area(parent, padding=10):
     box.rowconfigure(0, weight=1)
     box.columnconfigure(0, weight=1)
 
+    etat = {"id": None, "der": None, "barres": None}
+
+    def _fit():                                # regroupe les evenements : 1 seul recalcul toutes les 60 ms
+        etat["id"] = None
+        try:
+            rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
+            cw, ch = cv.winfo_width(), cv.winfo_height()
+        except Exception:  # noqa: BLE001
+            return
+        taille = (max(rw, cw), max(rh, ch))
+        if taille != etat["der"]:              # ne relance la mise en page que si la taille change vraiment
+            etat["der"] = taille
+            cv.itemconfigure(win_id, width=taille[0], height=taille[1])
+            cv.configure(scrollregion=(0, 0) + taille)
+        barres = (rh > ch + 1 and cw > 1, rw > cw + 1 and cw > 1)
+        if barres != etat["barres"]:
+            etat["barres"] = barres
+            for bar, need, kw in ((vs, barres[0], dict(row=0, column=1, sticky="ns")),
+                                  (hs, barres[1], dict(row=1, column=0, sticky="ew"))):
+                if need:
+                    bar.grid(**kw)
+                else:
+                    bar.grid_remove()
+
     def fit(_e=None):
-        rw, rh = inner.winfo_reqwidth(), inner.winfo_reqheight()
-        cw, ch = cv.winfo_width(), cv.winfo_height()
-        cv.itemconfigure(win_id, width=max(rw, cw), height=max(rh, ch))
-        cv.configure(scrollregion=(0, 0, max(rw, cw), max(rh, ch)))
-        for bar, need, kw in ((vs, rh > ch + 1, dict(row=0, column=1, sticky="ns")),
-                              (hs, rw > cw + 1, dict(row=1, column=0, sticky="ew"))):
-            if need and cw > 1:
-                bar.grid(**kw)
-            else:
-                bar.grid_remove()
+        if etat["id"] is None:
+            etat["id"] = cv.after(60, _fit)
     inner.bind("<Configure>", fit)
     cv.bind("<Configure>", fit)
 
@@ -2983,12 +2999,24 @@ def window(state: dict) -> None:
         k = min((W - 2 * m) / max(max(xs) - min(xs), 1.0), (H - 2 * m) / max(max(ys) - min(ys), 1.0))
         view.update(k=k, ox=m - min(xs) * k + ((W - 2 * m) - (max(xs) - min(xs)) * k) / 2,
                     oy=H - m + min(ys) * k - ((H - 2 * m) - (max(ys) - min(ys)) * k) / 2)
-        if f:
-            for cells, col in ((f["sols"], "#dedad0"), (f["murs"], "#4a4a4a")):
-                for i, j in cells:
-                    a, b = to_px(f["x0"] + i * f["pas"], f["y0"] + j * f["pas"])
-                    c, d = to_px(f["x0"] + (i + 1) * f["pas"], f["y0"] + (j + 1) * f["pas"])
-                    plan.create_rectangle(a, d, c, b, fill=col, outline="")
+        if f:                                 # le bati en UNE image (et non des milliers de carres : fenetre lente)
+            sig = (round(view["k"], 4), round(view["ox"], 1), round(view["oy"], 1), id(f))
+            if getattr(plan, "_sig", None) != sig:
+                px = [["#fbfaf7"] * W for _ in range(H)]
+                for cells, col in ((f["sols"], "#dedad0"), (f["murs"], "#4a4a4a")):
+                    for i, j in cells:
+                        a, b = to_px(f["x0"] + i * f["pas"], f["y0"] + j * f["pas"])
+                        c, d = to_px(f["x0"] + (i + 1) * f["pas"], f["y0"] + (j + 1) * f["pas"])
+                        x1, x2 = max(0, int(a)), min(W, max(int(a) + 1, int(round(c))))
+                        y1, y2 = max(0, int(d)), min(H, max(int(d) + 1, int(round(b))))
+                        if x1 >= x2:
+                            continue
+                        for y in range(y1, y2):
+                            px[y][x1:x2] = [col] * (x2 - x1)
+                img = tk.PhotoImage(width=W, height=H)
+                img.put(" ".join("{" + " ".join(r) + "}" for r in px))
+                plan._img, plan._sig = img, sig
+            plan.create_image(0, 0, anchor="nw", image=plan._img)
         for cam in sorted(cams, key=lambda c: c["nom"] == current.get()):
             on = cam["nom"] == current.get()
             col = "#e0702a" if on else "#7d8590"
@@ -4703,7 +4731,9 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         n_ = max(1, e.width // (VIGNETTE["v"] + 24))
         if n_ != larg_t["w"]:
             larg_t["w"] = n_
-            root.after(120, fill_grid)
+            if larg_t.get("id"):
+                root.after_cancel(larg_t["id"])
+            larg_t["id"] = root.after(150, fill_grid)
     canvas.bind("<Configure>", _larg, add="+")
     empty = ttk.Label(right, foreground="#777", wraplength=440, justify="left", text=(
         "Aucun objet Cosmos sur ce PC pour l'instant.\n\nClique « Ouvrir Chaos Cosmos », choisis un objet "
@@ -5833,7 +5863,9 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         n_ = max(1, e.width // (VIGNETTE["v"] + 24))
         if n_ != larg_t["w"]:
             larg_t["w"] = n_
-            root.after(120, fill_grid)
+            if larg_t.get("id"):
+                root.after_cancel(larg_t["id"])
+            larg_t["id"] = root.after(150, fill_grid)
     canvas.bind("<Configure>", _larg, add="+")
     canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units")
                     if str(nb.select()) == str(tab_box) else None)
