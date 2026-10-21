@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.8 (360 dans la visionneuse)"
+VERSION = "21/10 - v7.8b (360 dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1046,6 +1046,7 @@ class ViewerServer:
                         self._send(json.dumps([{"nom": f"{p_.parent.name} · {p_.stem}", "f": str(p_)}
                                                for p_ in panoramas(PANO_PROJET.get("nom", ""))]).encode("utf-8"), "application/json")
                     elif self.path.startswith("/pano360"):
+                        from urllib.parse import parse_qs, urlparse
                         f_ = parse_qs(urlparse(self.path).query).get("f", [""])[0]
                         if f_ == "apercu":
                             f_ = APERCU.get("fichier", "")
@@ -3043,7 +3044,7 @@ def retouche_enregistre(src: Path, r: dict) -> Path:
 def rendus_recents(project: str, n: int = 40) -> list:
     base = Path(os.environ.get("USERPROFILE", Path.home())) / "Documents" / "Rendus V-Ray" / safe(project)
     fs = [p for ext in ("png", "jpg", "jpeg", "tif") for p in base.glob(f"*/*.{ext}")
-          if "_retouche" not in p.stem and "_brut" not in p.stem]
+          if "_retouche" not in p.stem and "_brut" not in p.stem and ".effectsResult" not in p.name]
     return sorted(fs, key=lambda p: p.stat().st_mtime, reverse=True)[:n]
 
 
