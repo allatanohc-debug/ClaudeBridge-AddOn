@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.0b (option Niveau du sol)"
+VERSION = "21/10 - v7.0c (Light Gen -> Soleil et ciel)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3449,7 +3449,13 @@ def window(state: dict) -> None:
             if not ov.get("hdri"):
                 opts["hdri"] = ""
             collect()
-            say(f"Éclairage « {label} » appliqué. Lance « ▶ Rendre cette vue » pour l'image en grand.")
+            try:
+                hdri_maj()                    # la case « Ciel HDRI » de Soleil et ciel montre le choix
+            except Exception:  # noqa: BLE001
+                pass
+            aller(so)
+            say(f"Éclairage « {label} » appliqué : il est dans « Soleil et ciel » (Heure, Ciel, Ciel HDRI). "
+                "Lance « ▶ Lancer le rendu » pour l'image en grand.")
             win.destroy()
 
         def ajoute(k, label, ov, img_path):
