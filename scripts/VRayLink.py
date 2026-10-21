@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.2 (fenetre fluide)"
+VERSION = "21/10 - v7.2b (fenetre fluide)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4172,6 +4172,8 @@ def window(state: dict) -> None:
         planifie["id"] = root.after(90, reflow)
     rendu_box.cv.bind("<Configure>", _sur_taille, add="+")
     root.bind("<Configure>", lambda e: _sur_taille() if e.widget is root else None, add="+")
+    for t_ in (500, 1500):                     # au demarrage la fenetre n'a pas encore sa taille finale
+        root.after(t_, lambda: (etat_large.update(w=0), reflow()))
     root.minsize(300, 300)
     root.mainloop()
 
