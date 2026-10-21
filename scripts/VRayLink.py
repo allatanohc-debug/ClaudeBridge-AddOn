@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.8c (contours coupes avec le masquage)"
+VERSION = "21/10 - v8.9 (deplacement SketchUp + mini-plan)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1185,9 +1185,9 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <button id="bLum" class="mini" title="Ajouter une lumière (L)">💡</button>
 <button id="bMove" class="mini" title="Déplacer / tourner un objet ou une lumière (G)">✋</button></div>
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
-<span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
+<span id="selName" style="padding:0 6px;color:var(--mute);max-width:230px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Clique un objet, puis glisse-le</span>
 <button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eScale" title="Agrandir / réduire une lumière rectangle ou sphère">⤡ Taille</button><button id="eDrop">⤓ Poser</button>
-<button id="ePose" title="Où poser les objets : sur la dalle (terrasse, étage, intérieur) ou toujours au sol">⬓ Sur dalle</button><button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
+<button id="ePose" title="Où poser les objets : sur la dalle (terrasse, étage, intérieur) ou toujours au sol">⬓ Sur dalle</button><button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eLock" title="Verrouiller">🔒</button><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
@@ -1491,8 +1491,8 @@ function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1
   m=new THREE.Mesh(g,new THREE.MeshLambertMaterial({color:0xe0702a,transparent:true,opacity:.5}))}
  m.position.set(ob.x,ob.y,ob.z); m.rotation.z=(ob.rot||0)*Math.PI/180; m.castShadow=true; m.userData={kind:"obj",i:ob.i,nom:ob.nom}; objGroup.add(m);
  if(tc&&sel&&sel.userData.kind==="obj"&&sel.userData.i===ob.i){sel=m; tc.attach(m)}}}
-async function pollObjs(){try{const j=await (await fetch("/api/objets")).json(); if(j.rev!==objRev&&!tcDrag){objRev=j.rev; OBJ=j.liste||[]; drawObjs()}}catch(_){}
- setTimeout(pollObjs,900)}
+async function majObjs(){try{const j=await (await fetch("/api/objets")).json(); if(j.rev!==objRev&&!tcDrag){objRev=j.rev; OBJ=j.liste||[]; drawObjs(); if(typeof nomSel==="function"&&sel)nomSel()}}catch(_){}}
+async function pollObjs(){await majObjs(); setTimeout(pollObjs,900)}
 // herbe / plantes : instances legeres (un seul objet par plante, des milliers de copies)
 let nVeg=0;
 for(const v of (info.vegetation||[])){const t=(v.taille&&v.taille.length)?v.taille:[0.4,0.4,0.1,0], k=v.echelle||1;
@@ -1563,7 +1563,7 @@ let mesureOn=false, mPts=[]; const mGroup=new THREE.Group(); scene.add(mGroup); 
 function setMesure(on){mesureOn=on; $("bMes").classList.toggle("on",on); $("mesure").style.display=on?"":"none";
  mPts=[]; mGroup.clear(); $("mesure").textContent=on?"Mesure : clique le 1er point sur le modèle (Échap pour quitter)":""; renderer.domElement.style.cursor=on?"crosshair":""}
 $("bMes").onclick=()=>setMesure(!mesureOn);
-addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyM")setMesure(!mesureOn); if(e.code==="Escape"&&mesureOn)setMesure(false)});
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyM"&&!(editOn&&sel))setMesure(!mesureOn); if(e.code==="Escape"&&mesureOn)setMesure(false)});
 let downAt=null; renderer.domElement.addEventListener("pointerdown",e=>downAt=[e.clientX,e.clientY]);
 renderer.domElement.addEventListener("pointerup",e=>{if(!mesureOn||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),vmode==="ortho"?ortho:cam);
@@ -1632,7 +1632,8 @@ async function pollLights(){try{const j=await (await fetch("/api/lumieres")).jso
 pollLights();
 // ---- deplacer / tourner les objets Cosmos et les lumieres
 const {TransformControls}=await import("three/addons/controls/TransformControls.js");
-tc=new TransformControls(cam,renderer.domElement); tc.setSize(0.9); scene.add(tc); let editOn=false;
+tc=new TransformControls(cam,renderer.domElement); tc.setSize(1.15); tc.setRotationSnap(THREE.MathUtils.degToRad(15)); scene.add(tc); let editOn=false;
+addEventListener("keydown",e=>{if(e.key==="Shift")tc.setRotationSnap(null)}); addEventListener("keyup",e=>{if(e.key==="Shift")tc.setRotationSnap(THREE.MathUtils.degToRad(15))});
 tc.addEventListener("dragging-changed",e=>{controls.enabled=!e.value&&mode==="orbit"; tcDrag=e.value; if(!e.value)commit()});
 function setEdit(on){editOn=on; $("bMove").classList.toggle("on",on); $("editBar").style.display=on?"flex":"none"; if(!on){tc.detach(); sel=null}
  renderer.domElement.style.cursor=on?"pointer":""}
@@ -1646,15 +1647,16 @@ function tool(m){tc.setMode(m); $("eMove").classList.toggle("on",m==="translate"
 $("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); $("eScale").onclick=()=>tool("scale"); tool("translate");
 renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]);
- if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom}
- else{tc.detach(); sel=null; $("selName").textContent="Clique un objet orange ou une lumière"}});
+ const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],e.altKey);
+ if(hit){if(!sel||sel.userData.kind!==hit.object.userData.kind||sel.userData.i!==hit.object.userData.i)choisit(hit.object)}
+ else{tc.detach(); sel=null; $("selName").textContent="Clique un objet pour le choisir, puis glisse-le"}});
 // clic sur un objet : le tronc / l'anneau au sol selectionnent l'arbre entier
-function pickHit(list){const hs=ray.intersectObjects(list,true); if(!hs.length)return null;
- const racine=h=>{let o=h.object; while(o.parent&&!o.userData.kind&&o.parent!==scene)o=o.parent; return o};
+function pickHit(list,toutes){const racine=h=>{let o=h.object; while(o.parent&&!o.userData.kind&&o.parent!==scene)o=o.parent; return o};
+ const hs=ray.intersectObjects(list,true).filter(h=>toutes||!(typeof estVerrou==="function"&&estVerrou(racine(h)))); if(!hs.length)return null;
  const lum=hs.find(h=>{const k=racine(h).userData.kind; return k==="lum"||k==="lumcible"});   // lumieres dessinees par-dessus : prioritaires
  const h=lum||hs[0], o=racine(h); return o.userData.kind?{object:o,point:h.point,face:h.face}:null}
-const postJ=b=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+const postJ=b=>{const r=fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+ if(/^(obj_|annuler|retablir)/.test(b.action||""))r.then(()=>{for(const t of [120,350,800])setTimeout(majObjs,t)}).catch(()=>{}); return r};   // affichage a jour tout de suite
 window.__vrl={cam,controls,THREE,objGroup,lumGroup,get OBJ(){return OBJ},get LUM(){return LUM},get edit(){return editOn},
  get sel(){return sel&&sel.userData},ecran(x,y,z){const v=new THREE.Vector3(x,y,z).project(cam), r=renderer.domElement.getBoundingClientRect();
   return [r.left+(v.x+1)/2*r.width, r.top+(1-v.y)/2*r.height, v.z<1]}};          // aide aux tests automatiques
@@ -1747,36 +1749,97 @@ addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||!editOn)return;
  if((e.ctrlKey||e.metaKey)&&e.code==="KeyC"&&sel&&sel.userData.kind==="obj"){clip=sel.userData.i; $("selName").textContent="📋 Copié — Ctrl+V pour coller sous la souris"}
  if((e.ctrlKey||e.metaKey)&&e.code==="KeyV"&&clip!==null&&lastGround){const p=sol3(lastGround,clip); if(!p)return; e.preventDefault();
   const o=OBJ[clip]||{}; postJ({action:"obj_multi",i:clip,pts:[[+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),o.rot||0,1]]}); $("selName").textContent="Collé (Ctrl+Z pour annuler)"}},{capture:true});
-// glisser directement l'objet a la souris (il suit les surfaces : sol, terrasse, table…) ; Ctrl + glisser = tourner
+// ---- deplacer comme SketchUp : 1er clic = choisir (rien ne bouge), glisser l'objet deja choisi = deplacer
+const guidesDep=new THREE.Group(); scene.add(guidesDep);
+const selBox=new THREE.Box3Helper(new THREE.Box3(),0xe8702a); selBox.visible=false; selBox.renderOrder=997; scene.add(selBox);
+const survolBox=new THREE.Box3Helper(new THREE.Box3(),0xffd84a); survolBox.visible=false; scene.add(survolBox);
+let fantome=null, verrouAxe=null, dernierePos=null, survolT=0;
+const COUL={x:0xe23b3b,y:0x24b347,z:0x3b6fe2,a:0x8c8c8c,al:0xd23bd8};
+function trait(a,b,c,tirets){const g=new THREE.BufferGeometry().setFromPoints([a,b]);
+ const m=tirets?new THREE.LineDashedMaterial({color:c,dashSize:.3,gapSize:.18,depthTest:false,transparent:true}):new THREE.LineBasicMaterial({color:c,depthTest:false,transparent:true});
+ const l=new THREE.Line(g,m); if(tirets)l.computeLineDistances(); l.renderOrder=998; guidesDep.add(l)}
+function viseur(e){const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam)}
+function cibles(){return [...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]}
+function estVerrou(o){return o&&o.userData.kind==="obj"&&OBJ.find(b=>b.i===o.userData.i)?.verrou}
+function majVerrou(){const v=sel&&estVerrou(sel); $("eLock").textContent=v?"🔓":"🔒"; $("eLock").title=v?"Déverrouiller cet objet":"Verrouiller : l'objet ne peut plus être pris par erreur (Alt + clic pour le choisir quand même)"}
+const AIDE_DEP="Glisse l'objet choisi pour le déplacer · → ← ↑ bloquent un axe · M = le promener sans tenir le clic · Alt + clic = objet verrouillé";
+function nomSel(){if(!sel)return; const u=sel.userData;
+ $("selName").textContent=(u.kind!=="obj"?"💡 ":estVerrou(sel)?"🔒 ":"📦 ")+u.nom; $("selName").title=AIDE_DEP; majVerrou()}
+function choisit(o){sel=o; tc.attach(sel); tool(tc.mode||"translate"); verrouAxe=null; nomSel();
+ if(!dragO&&!mesureOn&&!popMode){$("mesure").style.display=""; $("mesure").textContent=estVerrou(o)?"🔒 Objet verrouillé — 🔓 dans la barre pour le libérer":AIDE_DEP;
+  clearTimeout(choisit.t); choisit.t=setTimeout(()=>{if(!dragO&&!mesureOn&&!popMode)$("mesure").style.display="none"},3000)}}
 let dragO=null;
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||popMode)return;
- const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]); if(!hit)return;   // sur l'objet : on le prend (les fleches restent pour le reste)
- sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom;
- dragO={x:e.clientX,y:e.clientY,z0:sel.position.z,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
- if(sel.userData.kind!=="obj")$("mesure").style.display="", $("mesure").textContent="Lumière : glisse pour la déplacer à la même hauteur · Maj + glisser = monter / descendre · ⟳ Tourner pour l'orienter";
- renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation()},{capture:true});
-renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; dragO.moved=true;
+ if(dragO&&dragO.suivi){finDep(true); e.stopImmediatePropagation(); return}          // mode M : ce clic pose l'objet
+ viseur(e); const tout=pickHit(cibles(),true), memeObj=o=>o&&sel&&(sel===o||(sel.userData.kind===o.userData.kind&&sel.userData.i===o.userData.i));
+ if(tout&&memeObj(tout.object)&&estVerrou(sel)){e.stopImmediatePropagation(); $("selName").textContent="🔒 Objet verrouillé — clique 🔓 dans la barre pour pouvoir le déplacer"; return}
+ const hit=pickHit(cibles(),e.altKey); if(!hit)return;
+ const o=hit.object, meme=memeObj(o);
+ e.stopImmediatePropagation();
+ if(!meme){choisit(o); survolBox.visible=false; return}                              // 1er clic : on choisit seulement
+ if(estVerrou(sel)){$("selName").textContent="🔒 Objet verrouillé — clique 🔓 dans la barre pour pouvoir le déplacer"; return}
+ debutDep(e,false); renderer.domElement.setPointerCapture(e.pointerId)},{capture:true});
+function debutDep(e,suivi){dragO={x:e.clientX,y:e.clientY,x0:sel.position.x,y0:sel.position.y,z0:sel.position.z,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey,suivi,go:suivi};
+ controls.enabled=false; tcDrag=true;
+ const b=new THREE.Box3().setFromObject(sel); fantome=new THREE.Box3Helper(b,0x9a9a9a); fantome.renderOrder=996; scene.add(fantome);
+ $("mesure").style.display=""; $("mesure").textContent=suivi?"L'objet suit la souris — clic pour le poser, Échap pour annuler":(sel.userData.kind!=="obj"?"Lumière : glisse pour la déplacer · Maj = monter / descendre":"Glisse : l'objet se cale sur les axes et s'aligne sur les autres objets")}
+function finDep(garde){if(!dragO)return; const d=dragO; dragO=null; tcDrag=false; controls.enabled=mode==="orbit"; guidesDep.clear();
+ if(fantome){scene.remove(fantome); fantome=null}
+ if(sel&&(!garde||!d.moved)){sel.position.set(d.x0,d.y0,d.z0); sel.rotation.z=d.rot0}
+ else if(sel)commit();
+ setTimeout(()=>{if(!mesureOn&&!popMode&&!dragO)$("mesure").style.display="none"},1500)}
+const AXE={x:new THREE.Vector3(1,0,0),y:new THREE.Vector3(0,1,0)};
+renderer.domElement.addEventListener("pointermove",e=>{dernierePos=e;
+ if(!dragO){if(!editOn||popMode||Date.now()-survolT<50)return; survolT=Date.now(); viseur(e); const h=pickHit(cibles(),e.altKey);
+  const o=h&&h.object, meme=o&&sel&&(sel===o||(sel.userData.kind===o.userData.kind&&sel.userData.i===o.userData.i));
+  if(o&&!meme){survolBox.box.setFromObject(o); survolBox.visible=true} else survolBox.visible=false;
+  renderer.domElement.style.cursor=meme?(estVerrou(sel)?"not-allowed":"move"):o?"pointer":""; return}
+ if(!sel)return;
+ if(!dragO.go){if(Math.hypot(e.clientX-dragO.x,e.clientY-dragO.y)<6)return; dragO.go=true}        // seuil : un clic qui tremble ne deplace rien
+ dragO.moved=true; guidesDep.clear(); const s=new THREE.Vector3(dragO.x0,dragO.y0,dragO.z0);
  if(dragO.ctrl){sel.rotation.z=dragO.rot0+(e.clientX-dragO.x)*0.01; return}
- if(e.shiftKey&&sel.userData.kind==="obj"){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").style.display=""; $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
- if(sel.userData.kind!=="obj"){                       // lumiere : plan horizontal a sa hauteur (plafond), Maj = vertical
-  if(e.shiftKey){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
-  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
-  if(pose==="plafond"){const pp=accroche(posePoint(),-1); if(pp&&pp.length>3){sel.position.set(pp[0],pp[1],pp[2]); $("mesure").textContent=`⬒ Au plafond — hauteur ${pp[2].toFixed(2)} m`; return}}
-  const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}
-  $("mesure").textContent=`x ${sel.position.x.toFixed(2)} · y ${sel.position.y.toFixed(2)} · hauteur ${sel.position.z.toFixed(2)} m (Maj = monter / descendre)`; return}
- const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const pp=accroche(posePoint(),sel.userData.i);
- if(pp){sel.position.x=pp[0]; sel.position.y=pp[1]; sel.position.z=pp[2]; $("mesure").style.display="";
-  $("mesure").textContent=(pp.length>3?"⬒ Au plafond":pose!=="sol"&&pp[2]>info.sol+0.05?"⬓ Sur dalle":"⛰ Au sol")+` — hauteur ${(pp[2]-info.sol).toFixed(2)} m`}
- else{const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}}},{capture:true});
-renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const moved=dragO.moved; dragO=null; tcDrag=false; controls.enabled=mode==="orbit";
- if(sel)setTimeout(()=>{if(!mesureOn&&!popMode&&!dragO)$("mesure").style.display="none"},1500);
- if(moved)commit()},{capture:true});
+ if(e.shiftKey||verrouAxe==="z"){sel.position.set(dragO.x0,dragO.y0,+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3)); trait(s,sel.position.clone(),COUL.z);
+  $("mesure").textContent=`Axe bleu (hauteur) — ${(sel.position.z-info.sol).toFixed(2)} m du sol`; return}
+ viseur(e); const obj=sel.userData.kind==="obj"; let p=null;
+ if(!obj&&pose==="plafond"){const pp=accroche(posePoint(),-1); if(pp&&pp.length>3)p=[pp[0],pp[1],pp[2]]}
+ else if(obj)p=accroche(posePoint(),sel.userData.i);
+ if(!p){const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-dragO.z0), pt=new THREE.Vector3(); if(!ray.ray.intersectPlane(pl,pt))return; p=[pt.x,pt.y,dragO.z0]}
+ let x=p[0], y=p[1], z=p[2], ax=null, bloque=false, gx=null, gy=null;
+ if(verrouAxe==="x"||verrouAxe==="y"){ax=verrouAxe; bloque=true; const q=new THREE.Vector3();          // axe bloque au clavier : la souris glisse le long de la ligne
+  ray.ray.distanceSqToSegment(s.clone().addScaledVector(AXE[ax],-500),s.clone().addScaledVector(AXE[ax],500),null,q); x=q.x; y=q.y; z=dragO.z0}
+ else{const dx=x-s.x, dy=y-s.y;                                                                           // inference : a ~6 deg d'un axe, on se cale dessus
+  if(Math.hypot(dx,dy)>0.3){if(Math.abs(dy)<Math.abs(dx)*0.1){y=s.y; ax="x"} else if(Math.abs(dx)<Math.abs(dy)*0.1){x=s.x; ax="y"}}}
+ if(obj){let bx=0.3, by=0.3;                                                                               // alignement sur les autres objets (rangees propres)
+  for(const o of OBJ){if(o.i===sel.userData.i)continue;
+   if(ax!=="y"&&Math.abs(o.x-x)<bx){bx=Math.abs(o.x-x); gx=o}
+   if(ax!=="x"&&Math.abs(o.y-y)<by){by=Math.abs(o.y-y); gy=o}}
+  if(gx)x=gx.x; if(gy)y=gy.y;
+  if(!bloque&&pose!=="plafond"&&(x!==p[0]||y!==p[1]))z=solEn(x,y,Math.max(s.z,p[2]),sel.userData.i)}
+ sel.position.set(x,y,z);
+ trait(s,new THREE.Vector3(x,y,z),ax?COUL[ax]:COUL.a,!ax);
+ if(gx)trait(new THREE.Vector3(gx.x,gx.y,gx.z+0.05),new THREE.Vector3(x,y,z+0.05),COUL.al,true);
+ if(gy)trait(new THREE.Vector3(gy.x,gy.y,gy.z+0.05),new THREE.Vector3(x,y,z+0.05),COUL.al,true);
+ const dist=Math.hypot(x-s.x,y-s.y);
+ $("mesure").style.display="";
+ $("mesure").textContent=(ax?`Axe ${ax==="x"?"rouge":"vert"}${bloque?" 🔒":""}`:"Libre")+` · ${dist.toFixed(2)} m`
+  +(gx||gy?` · aligné sur ${(gx||gy).nom}`:"")+(obj?` · ${pose==="plafond"&&p.length>3?"au plafond":z>info.sol+0.05?"sur dalle":"au sol"}`:` · hauteur ${(z-info.sol).toFixed(2)} m`)},{capture:true});
+renderer.domElement.addEventListener("pointerup",e=>{if(!dragO||dragO.suivi)return; finDep(true)},{capture:true});
+addEventListener("keydown",e=>{if(!editOn||e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||popMode)return;
+ if(e.code==="Escape"&&dragO){finDep(false); e.stopImmediatePropagation(); e.preventDefault(); return}
+ if(!sel)return;
+ const k={ArrowRight:"x",ArrowLeft:"y",ArrowUp:"z"}[e.code];
+ if(k){verrouAxe=verrouAxe===k?null:k; e.preventDefault(); e.stopImmediatePropagation();
+  $("mesure").style.display=""; $("mesure").textContent=verrouAxe?`Axe ${{x:"rouge",y:"vert",z:"bleu (hauteur)"}[verrouAxe]} bloqué — appuie encore pour libérer`:"Axe libéré";
+  if(dragO&&dernierePos)renderer.domElement.dispatchEvent(new PointerEvent("pointermove",{clientX:dernierePos.clientX,clientY:dernierePos.clientY,shiftKey:dernierePos.shiftKey}));
+  if(!dragO)setTimeout(()=>{if(!dragO&&!mesureOn&&!popMode)$("mesure").style.display="none"},1800); return}
+ if(e.code==="ArrowDown"){verrouAxe=null; e.preventDefault(); e.stopImmediatePropagation(); return}
+ if(e.code==="KeyM"&&!dragO&&dernierePos&&!(e.ctrlKey||e.metaKey)){e.stopImmediatePropagation(); if(estVerrou(sel))return nomSel(); debutDep(dernierePos,true)}},{capture:true});
+$("eLock").onclick=()=>{if(!sel||sel.userData.kind!=="obj")return; const o=OBJ.find(b=>b.i===sel.userData.i); if(!o)return;
+ o.verrou=!o.verrou; postJ({action:"obj_edit",op:"verrou",i:o.i,verrou:o.verrou}); nomSel()};
 renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=pickHit([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children]); if(!hit)return;
- setEdit(true); sel=hit.object; tc.attach(sel); tool("translate"); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom+"  — glisser = déplacer · Maj + glisser = hauteur"});
+ const hit=pickHit([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children],e.altKey); if(!hit)return;
+ setEdit(true); choisit(hit.object)});
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
@@ -1820,7 +1883,46 @@ $("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apIm
   focale:+$("foc").value,mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
   heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})})};
 const clock=new THREE.Clock();
+// ---- mini-plan : le projet vu de haut, coupe a hauteur de travail, pour se situer
+const miniCam=new THREE.OrthographicCamera(-10,10,10,-10,0.1,2000); miniCam.up.set(0,1,0); miniCam.layers.enable(1);
+const miniDiv=document.createElement("div"); miniDiv.id="miniPlan"; miniDiv.title="Plan vu de haut — clique pour y amener la vue";
+miniDiv.style.cssText="position:absolute;right:10px;top:10px;width:250px;height:190px;border:2px solid #e8702a;border-radius:8px;z-index:6;cursor:crosshair;box-shadow:0 2px 10px #0006";
+const miniLbl=document.createElement("div"); miniLbl.style.cssText="position:absolute;left:6px;top:4px;font:11px system-ui;color:#fff;background:#0009;padding:1px 6px;border-radius:6px;pointer-events:none";
+miniDiv.appendChild(miniLbl); frame.appendChild(miniDiv);
+let miniOn=true; try{miniOn=localStorage.getItem("vrl_mini")!=="0"}catch(_){}
+const miniBtn=document.createElement("button"); miniBtn.className="mini"; miniBtn.title="Mini-plan vu de haut"; miniBtn.textContent="🗺";
+$("bMove").parentNode.appendChild(miniBtn);
+function majMini(){miniDiv.style.display=miniOn?"":"none"; miniBtn.classList.toggle("on",miniOn)} majMini();
+miniBtn.onclick=()=>{miniOn=!miniOn; try{localStorage.setItem("vrl_mini",miniOn?"1":"0")}catch(_){} majMini()};
+const miniBox=new THREE.Box3(); let miniT=0;
+function cadreMini(){miniBox.makeEmpty(); model.geometry.computeBoundingBox(); miniBox.copy(model.geometry.boundingBox).applyMatrix4(model.matrixWorld);
+ for(const o of OBJ)miniBox.expandByPoint(new THREE.Vector3(o.x,o.y,o.z)); miniBox.expandByScalar(4)}
+const miniPlan=new THREE.Plane(new THREE.Vector3(0,0,-1),0);
+const repere=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({color:0xe8702a,transparent:true,opacity:.45,side:THREE.DoubleSide,depthTest:false}));
+const point=new THREE.Mesh(new THREE.CircleGeometry(1,16),new THREE.MeshBasicMaterial({color:0xe8702a,depthTest:false}));
+for(const m of [repere,point]){m.layers.set(1); m.renderOrder=999; scene.add(m)}
+function renderMini(){if(!miniOn)return; const now=performance.now(); if(now-miniT>2000||miniBox.isEmpty()){miniT=now; cadreMini()}
+ const W=renderer.domElement.clientWidth, H=renderer.domElement.clientHeight, w=250, h=190, asp=w/h;
+ const c=miniBox.getCenter(new THREE.Vector3()), sz=miniBox.getSize(new THREE.Vector3()); let hw=sz.x/2, hh=sz.y/2; if(hw/hh>asp)hh=hw/asp; else hw=hh*asp;
+ miniCam.left=-hw; miniCam.right=hw; miniCam.top=hh; miniCam.bottom=-hh; miniCam.position.set(c.x,c.y,miniBox.max.z+50); miniCam.lookAt(c.x,c.y,miniBox.min.z); miniCam.updateProjectionMatrix();
+ const base=sel&&editOn?sel.position.z:(cam.position.z-info.sol<8?Math.max(info.sol,cam.position.z-1.6):info.sol), coupe=base+1.5;  // coupe a 1,50 m au-dessus du niveau de travail
+ miniPlan.constant=coupe;
+ const fov=(vmode==="ortho"?30:cam.fov*cam.aspect)*Math.PI/180, d=new THREE.Vector3().subVectors(controls.target,cam.position), a=Math.atan2(d.y,d.x), L=hw*0.35;
+ const t=Math.min(fov/2,1.3), pts=[0,0,0, L*Math.cos(a-t),L*Math.sin(a-t),0, L*Math.cos(a+t),L*Math.sin(a+t),0];
+ repere.geometry.setAttribute("position",new THREE.Float32BufferAttribute(pts,3)); repere.geometry.attributes.position.needsUpdate=true;
+ repere.position.set(cam.position.x,cam.position.y,coupe-0.1); point.position.set(cam.position.x,cam.position.y,coupe-0.05); point.scale.setScalar(hw*0.025);
+ miniDiv.style.width=w+"px"; miniDiv.style.height=h+"px";
+ miniLbl.textContent=`Plan coupé à ${(coupe-info.sol).toFixed(1)} m`;
+ const tcv=tc.visible, auto=renderer.shadowMap.autoUpdate, bg=scene.background, sv=sky.visible; tc.visible=false; renderer.shadowMap.autoUpdate=false; sky.visible=false; scene.background=new THREE.Color(0xe9ecef);
+ renderer.clippingPlanes=[miniPlan]; renderer.setScissorTest(true); renderer.setScissor(W-10-w,H-10-h,w,h); renderer.setViewport(W-10-w,H-10-h,w,h); renderer.autoClear=true;
+ renderer.render(scene,miniCam);
+ renderer.clippingPlanes=[]; renderer.setScissorTest(false); renderer.setViewport(0,0,W,H); tc.visible=tcv; renderer.shadowMap.autoUpdate=auto; sky.visible=sv; scene.background=bg}
+miniDiv.addEventListener("pointerdown",e=>{e.stopPropagation(); const r=miniDiv.getBoundingClientRect(), u=(e.clientX-r.left)/r.width, v=(e.clientY-r.top)/r.height;
+ const x=miniCam.position.x+miniCam.left+(miniCam.right-miniCam.left)*u, y=miniCam.position.y+miniCam.top-(miniCam.top-miniCam.bottom)*v;
+ if(editOn&&sel&&e.shiftKey&&!estVerrou(sel)){sel.position.x=x; sel.position.y=y; sel.position.z=sel.userData.kind==="obj"?solEn(x,y,sel.position.z,sel.userData.i):sel.position.z; commit(); return}  // Maj + clic : envoie l'objet choisi a cet endroit
+ const dx=x-controls.target.x, dy=y-controls.target.y; cam.position.x+=dx; cam.position.y+=dy; controls.target.x+=dx; controls.target.y+=dy; if(mode==="orbit")controls.update()});
 function loop(){if(tc&&tc.object&&!tc.object.parent){tc.detach(); sel=null}
+ if(sel&&editOn&&sel.parent){selBox.box.setFromObject(sel); selBox.visible=true} else selBox.visible=false; if(!editOn)survolBox.visible=false;
  const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
   const f=(keys.KeyW||keys.KeyZ||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
@@ -1832,7 +1934,7 @@ function loop(){if(tc&&tc.object&&!tc.object.parent){tc.detach(); sel=null}
  drawGuides(); {const d=new THREE.Vector3().subVectors(controls.target,cam.position); const t=Math.asin(THREE.MathUtils.clamp(d.z/d.length(),-1,1))*180/Math.PI;
   $("tilt").textContent=vmode==="2pf"?"verticales droites":`inclinaison ${t>0?"+":""}${t.toFixed(1)}°`}
  const p=cam.position;$("hud").textContent=`Caméra  x ${p.x.toFixed(1)}  y ${p.y.toFixed(1)}  ·  hauteur ${(p.z-info.sol).toFixed(2)} m  ·  ${(+$("foc").value).toFixed(0)} mm · ${Math.round(cam.fov)}°`;
- if(vmode==="ortho"){syncOrtho(); renderer.render(scene,ortho)} else renderer.render(scene,cam);requestAnimationFrame(loop)}
+ if(vmode==="ortho"){syncOrtho(); renderer.render(scene,ortho)} else renderer.render(scene,cam); try{renderMini()}catch(err){console.warn(err)} requestAnimationFrame(loop)}
 loop();
 function conseil(h,fov){setMode("2pf"); $("eyeh").value=h; $("eyeBtn").click(); setFov(fov); $("shift").value=0; if($("shift").oninput)$("shift").oninput()}
 $("cExt").onclick=()=>conseil(1.6,45); $("cInt").onclick=()=>conseil(1.3,55);
@@ -5030,6 +5132,8 @@ def window(state: dict) -> None:
                         if op == "delete":
                             reperes_suppr(o)
                             lst.pop(i)
+                        elif op == "verrou":                  # verrouille : ne se prend plus par erreur dans la visionneuse
+                            o["verrou"] = bool(msg.get("verrou"))
                         else:
                             if op == "dup":
                                 o = {k_: v_ for k_, v_ in o.items() if k_ != "traces"}
@@ -5043,7 +5147,7 @@ def window(state: dict) -> None:
                             reperes_maj(o)
                         save_settings(state)
                         OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
-                        say(f"Objet « {o['nom']} » {'supprimé' if op == 'delete' else 'mis à jour'} (plan et rendu).")
+                        say(f"Objet « {o['nom']} » " + ({"delete": "supprimé", "verrou": "verrouillé" if o.get("verrou") else "déverrouillé"}.get(op, "mis à jour (plan et rendu)")) + ".")
                     continue
                 if msg.get("action") in ("lum_save", "lum_import"):
                     lst = state.setdefault("lumieres", {}).setdefault(key, [])
@@ -5201,7 +5305,8 @@ def window(state: dict) -> None:
                 sizes[o["dossier"]] = obj_size(o["dossier"])
             out.append({"i": i, "nom": o["nom"], "x": o["x"], "y": o["y"], "z": o["z"], "rot": o.get("rotation", 0.0),
                         "echelle": o.get("echelle", 1.0), "taille": sizes[o["dossier"]], "d": o["dossier"],
-                        "veg": "vegetation" in o["dossier"].lower() or "plant" in o["dossier"].lower()})
+                        "veg": "vegetation" in o["dossier"].lower() or "plant" in o["dossier"].lower(),
+                        "verrou": bool(o.get("verrou"))})
         return out
 
     def open_viewer(page: str = ""):
