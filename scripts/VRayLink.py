@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v6.9 (module IFC reinstalle)"
+VERSION = "21/10 - v7.0 (option Niveau du sol)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -547,6 +547,48 @@ def _box_uv(verts, faces, offset, k: float):
                 uv.append((p[0] * k, p[1] * k))
             out.append(j)
     return uv, out
+
+
+NIVEAUX_SOL = ["Auto (terrain du projet)", "Niveau 0 (rez-de-chaussée)", "Bas du modèle (fondations)", "Hauteur précise"]
+
+
+def niveau_terrain(meshes: dict, offset: tuple, bas: float) -> float:
+    """Hauteur du terrain : la plus basse des grandes surfaces horizontales tournees vers le ciel
+    (dalle de terrain, gazon, terrasse), pas le dessous des fondations."""
+    oz = offset[2]
+    aires: dict = {}
+    for verts, faces in meshes.values():
+        for i in range(0, len(faces) - 2, 3):
+            try:
+                a, b, c = verts[faces[i]], verts[faces[i + 1]], verts[faces[i + 2]]
+            except IndexError:
+                continue
+            ux, uy, uz = b[0] - a[0], b[1] - a[1], b[2] - a[2]
+            vx, vy, vz = c[0] - a[0], c[1] - a[1], c[2] - a[2]
+            nx, ny, nz = uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx
+            n = (nx * nx + ny * ny + nz * nz) ** 0.5
+            if n <= 1e-9 or nz / n < 0.95:
+                continue
+            z = round(((a[2] + b[2] + c[2]) / 3 + oz) * 20) / 20
+            aires[z] = aires.get(z, 0.0) + n / 2
+    if not aires:
+        return bas
+    grande = max(aires.values())
+    return min(z for z, a_ in aires.items() if a_ >= 0.3 * grande)
+
+
+def niveau_sol(opts: dict, bas: float, auto: float) -> float:
+    choix = opts.get("niveau_sol", NIVEAUX_SOL[0])
+    if choix == NIVEAUX_SOL[1]:
+        return 0.0
+    if choix == NIVEAUX_SOL[2]:
+        return bas
+    if choix == NIVEAUX_SOL[3]:
+        try:
+            return float(opts.get("sol_cote", 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+    return auto
 
 
 def write_geometry(path: Path, meshes: dict, offset: tuple, scales: dict | None = None) -> int:
@@ -2444,6 +2486,14 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
         ground = (box[0][2] if box else lo[2] + offset[2])
         cache.write_bytes(pickle.dumps((meshes, mats, offset, ground)))
         note = ""
+    bas = ground                                         # dessous du modele (fondations)
+    auto = info.get("niveau_auto") if reuse and isinstance(info.get("niveau_auto"), (int, float)) else None
+    if auto is None:
+        try:
+            auto = niveau_terrain(meshes, offset, bas)
+        except Exception:  # noqa: BLE001
+            auto = bas
+    ground = niveau_sol(state["options"], bas, auto)
     scales = {n: float(a.get("echelle", 1.0)) for n, a in assigned.items() if n in meshes}
     uv_sig = hashlib.md5(json.dumps(sorted(scales.items())).encode()).hexdigest()
     if not (reuse and info.get("uv") == uv_sig):
@@ -2464,7 +2514,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
             used.append(f"{SOL_AUTOUR} → {virtual_surface(sol['dossier'])[9:]}")
         except Exception as error:  # noqa: BLE001
             report(f"Matériau du sol indisponible : {error}")
-    meta.write_text(json.dumps({"version": 3, "sol": ground, "surfaces": sorted(meshes), "triangles": tris,
+    meta.write_text(json.dumps({"version": 3, "sol": ground, "niveau_auto": auto, "sol_bas": bas, "surfaces": sorted(meshes), "triangles": tris,
                                 "selection": sel_sig, "uv": uv_sig,
                                 "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
                     encoding="utf-8")
@@ -2485,6 +2535,8 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     if n_sc or sc_notes:
         summary += f"\nScatter : {n_sc:,} exemplaires".replace(",", " ") + "".join("\n  · " + t for t in sc_notes)
         summary += f"\n  (sol V-Ray à {ground:.2f} m)"
+    else:
+        summary += f"\nSol V-Ray à {ground:+.2f} m (terrain détecté {auto:+.2f} m, fondations {bas:+.2f} m)"
     return geo, ground, summary
 
 
@@ -3157,6 +3209,36 @@ def window(state: dict) -> None:
                    "En intérieur, V-Ray Link éclaire aussi la pièce avec la lumière du ciel « intelligente » de V-Ray "
                    "(elle passe par les fenêtres) : image moins granuleuse.")
     am_note.grid(row=3, column=0, columnspan=4, sticky="w")
+    ttk.Label(am, text="⛰ Niveau du sol").grid(row=4, column=0, sticky="w", pady=(8, 0))
+    niv_var = tk.StringVar(value=opts.get("niveau_sol", NIVEAUX_SOL[0]))
+    niv_box = ttk.Combobox(am, values=NIVEAUX_SOL, textvariable=niv_var, state="readonly", width=24)
+    niv_box.grid(row=4, column=1, padx=6, pady=(8, 0), sticky="w")
+    cote_var = tk.StringVar(value=str(opts.get("sol_cote", 0.0)))
+    cote_box = ttk.Frame(am)
+    cote_box.grid(row=4, column=2, columnspan=2, sticky="w", pady=(8, 0))
+    ttk.Spinbox(cote_box, from_=-20, to=20, increment=0.05, textvariable=cote_var, width=7).grid(row=0, column=0)
+    ttk.Label(cote_box, text="m").grid(row=0, column=1, padx=(3, 0))
+    niv_note = ttk.Label(am, foreground="#777", wraplength=430, justify="left")
+    niv_note.grid(row=5, column=0, columnspan=4, sticky="w")
+
+    def niv_maj(_e=None):
+        if niv_var.get() == NIVEAUX_SOL[3]:
+            cote_box.grid()
+        else:
+            cote_box.grid_remove()
+        txt = {NIVEAUX_SOL[0]: "Le sol V-Ray se cale sur le terrain / gazon du modèle (conseillé).",
+               NIVEAUX_SOL[1]: "Le sol V-Ray est posé à 0,00 (niveau du rez-de-chaussée).",
+               NIVEAUX_SOL[2]: "Le sol V-Ray est posé sous les fondations (ancien comportement).",
+               NIVEAUX_SOL[3]: "Indique la hauteur du sol en mètres (ex. -0.15)."}[niv_var.get()]
+        try:
+            g_ = json.loads((data_dir() / key / "geometrie.json").read_text(encoding="utf-8"))
+            if "niveau_auto" in g_:
+                txt += f"  Dernier export : terrain {g_['niveau_auto']:+.2f} m, fondations {g_['sol_bas']:+.2f} m."
+        except Exception:  # noqa: BLE001
+            pass
+        niv_note.configure(text=txt)
+    niv_box.bind("<<ComboboxSelected>>", niv_maj)
+    niv_maj()
     reuse_var = tk.BooleanVar(value=opts["reutiliser"])
     ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
                     variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
@@ -3184,6 +3266,7 @@ def window(state: dict) -> None:
                         verticales=bool(vert_var.get()), lieu=place_var.get(), reutiliser=bool(reuse_var.get()), oeil=float(eye_var.get()), ciel=ciel_var.get(),
                         zones_claires=(zc_var.get().strip() if zc_var.get().strip() in ("auto", "") else float(zc_var.get())),
                         cible=float(tgt_var.get()), focale=int(foc_var.get()))
+            opts.update(niveau_sol=niv_var.get(), sol_cote=float(cote_var.get().replace(",", ".") or 0))
         except (ValueError, tk.TclError):
             pass
         apply_place(proj, opts.get("lieu", "Abidjan"))
