@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.8b (sur dalle / au plafond / au sol)"
+VERSION = "21/10 - v8.8c (contours coupes avec le masquage)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1391,7 +1391,7 @@ for(const [nom,start,count] of GROUPES){const m=new THREE.MeshPhysicalMaterial({
   roughness:0.85,metalness:0,side:THREE.DoubleSide}); m.userData.base=m.color.clone();
  PAR[nom]=MATS.length; g.addGroup(start,count,MATS.length); MATS.push(m)}
 if(!GROUPES.length) MATS.push(new THREE.MeshLambertMaterial({vertexColors:true,side:THREE.DoubleSide}));
-const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]); window.__mats=MATS; setCut();
+const model=new THREE.Mesh(g,GROUPES.length?MATS:MATS[0]); window.__mats=[...MATS]; setCut();
 {const {RoomEnvironment}=await import("three/addons/environments/RoomEnvironment.js");
  const pm=new THREE.PMREMGenerator(renderer); scene.environment=pm.fromScene(new RoomEnvironment(),0.04).texture;
  scene.environmentIntensity=0.9; hemi.intensity=0.45}
@@ -1457,7 +1457,7 @@ $("useSun").onclick=async()=>{await fetch("/camera",{method:"POST",headers:{"Con
  body:JSON.stringify({action:"soleil",heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})});
  $("msg").textContent="Heure et date envoyées à V-Ray Link : les rendus utiliseront ce soleil."};
 const edges=new THREE.LineSegments(new THREE.EdgesGeometry(g,30),new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:.35}));
-scene.add(edges);
+scene.add(edges); window.__mats.push(edges.material); setCut();   // les contours suivent aussi « Masquer au-dessus »
 $("load").remove();
 const vegGroup=new THREE.Group(); scene.add(vegGroup);
 const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
