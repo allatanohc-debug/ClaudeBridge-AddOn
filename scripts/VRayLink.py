@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v9.1 (silhouettes vertes par defaut, formes detaillees en option)"
+VERSION = "21/10 - v9.2 (Maj garde l'objet choisi)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1769,7 +1769,7 @@ function viseur(e){const r=renderer.domElement.getBoundingClientRect(); ray.setF
 function cibles(){return [...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]}
 function estVerrou(o){return o&&o.userData.kind==="obj"&&OBJ.find(b=>b.i===o.userData.i)?.verrou}
 function majVerrou(){const v=sel&&estVerrou(sel); $("eLock").textContent=v?"🔓":"🔒"; $("eLock").title=v?"Déverrouiller cet objet":"Verrouiller : l'objet ne peut plus être pris par erreur (Alt + clic pour le choisir quand même)"}
-const AIDE_DEP="Glisse l'objet choisi pour le déplacer · → ← ↑ bloquent un axe · M = le promener sans tenir le clic · Alt + clic = objet verrouillé";
+const AIDE_DEP="Glisse l'objet choisi pour le déplacer · Maj + glisser n'importe où = sa hauteur (les autres objets ne sont pas pris) · → ← ↑ bloquent un axe · M = le promener sans tenir le clic";
 function nomSel(){if(!sel)return; const u=sel.userData;
  $("selName").textContent=(u.kind!=="obj"?"💡 ":estVerrou(sel)?"🔒 ":"📦 ")+u.nom; $("selName").title=AIDE_DEP; majVerrou()}
 function choisit(o){sel=o; tc.attach(sel); tool(tc.mode||"translate"); verrouAxe=null; nomSel();
@@ -1778,6 +1778,9 @@ function choisit(o){sel=o; tc.attach(sel); tool(tc.mode||"translate"); verrouAxe
 let dragO=null;
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||popMode)return;
  if(dragO&&dragO.suivi){finDep(true); e.stopImmediatePropagation(); return}          // mode M : ce clic pose l'objet
+ if(sel&&(e.shiftKey||verrouAxe)){e.stopImmediatePropagation();                     // Maj (ou axe bloque) : on garde l'objet choisi, ou que soit la souris
+  if(estVerrou(sel)){$("selName").textContent="🔒 Objet verrouillé — clique 🔓 dans la barre pour pouvoir le déplacer"; return}
+  debutDep(e,false); dragO.go=true; renderer.domElement.setPointerCapture(e.pointerId); return}
  viseur(e); const tout=pickHit(cibles(),true), memeObj=o=>o&&sel&&(sel===o||(sel.userData.kind===o.userData.kind&&sel.userData.i===o.userData.i));
  if(tout&&memeObj(tout.object)&&estVerrou(sel)){e.stopImmediatePropagation(); $("selName").textContent="🔒 Objet verrouillé — clique 🔓 dans la barre pour pouvoir le déplacer"; return}
  const hit=pickHit(cibles(),e.altKey); if(!hit)return;
@@ -1797,7 +1800,7 @@ function finDep(garde){if(!dragO)return; const d=dragO; dragO=null; tcDrag=false
  setTimeout(()=>{if(!mesureOn&&!popMode&&!dragO)$("mesure").style.display="none"},1500)}
 const AXE={x:new THREE.Vector3(1,0,0),y:new THREE.Vector3(0,1,0)};
 renderer.domElement.addEventListener("pointermove",e=>{dernierePos=e;
- if(!dragO){if(!editOn||popMode||Date.now()-survolT<50)return; survolT=Date.now(); viseur(e); const h=pickHit(cibles(),e.altKey);
+ if(!dragO){if(!editOn||popMode||Date.now()-survolT<50)return; if(sel&&(e.shiftKey||verrouAxe)){survolBox.visible=false; renderer.domElement.style.cursor="ns-resize"; return} survolT=Date.now(); viseur(e); const h=pickHit(cibles(),e.altKey);
   const o=h&&h.object, meme=o&&sel&&(sel===o||(sel.userData.kind===o.userData.kind&&sel.userData.i===o.userData.i));
   if(o&&!meme){survolBox.box.setFromObject(o); survolBox.visible=true} else survolBox.visible=false;
   renderer.domElement.style.cursor=meme?(estVerrou(sel)?"not-allowed":"move"):o?"pointer":""; return}
