@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.3 (Ctrl+Z dans la visionneuse)"
+VERSION = "21/10 - v7.4 (synchro auto du modele)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -239,6 +239,43 @@ def archicad_bbox(kinds=("Wall", "Slab", "Roof", "Column")):
             for k, (a, c) in enumerate((("xMin", "xMax"), ("yMin", "yMax"), ("zMin", "zMax"))):
                 lo[k], hi[k] = min(lo[k], b[a]), max(hi[k], b[c])
     return (lo, hi) if lo[0] < 1e29 else None
+
+
+FORCER_EXPORT = {"v": False}                 # bouton « Réexporter maintenant »
+
+
+def model_signature() -> str:
+    """Empreinte du modele Archicad (elements, leurs boites 3D, surfaces, calques) : ~0,5 s.
+    Si elle n'a pas change depuis le dernier export, inutile de reexporter (30-40 s)."""
+    try:
+        els = tapir("GetAllElements", {}).get("elements", [])
+        ids_ = [{"elementId": e["elementId"]} for e in els if isinstance(e, dict) and "elementId" in e]
+        h = hashlib.md5()
+        for i in range(0, len(ids_), 500):
+            part = ids_[i:i + 500]
+            rows = tapir("Get3DBoundingBoxes", {"elements": part}).get("boundingBoxes3D", [])
+            for e, r in zip(part, rows):
+                b = r.get("boundingBox3D", r) if isinstance(r, dict) else {}
+                h.update(str(e["elementId"].get("guid")).encode())
+                h.update(",".join(f"{float(b.get(k_, 0)):.3f}" for k_ in ("xMin", "xMax", "yMin", "yMax", "zMin", "zMax")).encode())
+        for kind in ("Surface", "Layer"):
+            try:
+                h.update(json.dumps(tapir("GetAttributesByType", {"attributeType": kind}), sort_keys=True).encode())
+            except Exception:  # noqa: BLE001
+                pass
+        return f"{len(ids_)}-{h.hexdigest()}"
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def find_vantage() -> str:
+    import glob as _g
+    for pat in (r"C:\Program Files\Chaos\Vantage\vantage.exe", r"C:\Program Files\Chaos*\Vantage*\vantage.exe",
+                r"C:\Program Files\Chaos*\**\vantage.exe"):
+        hits = _g.glob(pat, recursive=True)
+        if hits:
+            return hits[0]
+    return ""
 
 
 def _ids(rows) -> list[dict]:
@@ -2464,12 +2501,18 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
             info = json.loads(meta.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             info = {}
-    reuse = (state["options"].get("reutiliser") and geo.exists() and cache.exists() and info.get("version") == 3
-             and info.get("selection") == sel_sig)
+    sig = model_signature()
+    forcer = FORCER_EXPORT["v"]
+    reuse = (state["options"].get("reutiliser") and not forcer and geo.exists() and cache.exists()
+             and info.get("version") == 3 and info.get("selection") == sel_sig
+             and (not sig or not info.get("modele_sig") or sig == info.get("modele_sig")))
     if reuse:
         meshes, mats, offset, ground = pickle.loads(cache.read_bytes())
-        note = "géométrie reprise de l'export précédent"
+        note = "modèle inchangé dans Archicad : géométrie reprise (pas de réexport)"
     else:
+        FORCER_EXPORT["v"] = False
+        if state["options"].get("reutiliser") and sig and info.get("modele_sig") and sig != info.get("modele_sig"):
+            report("Le modèle a changé dans Archicad : nouvel export...")
         if state["options"].get("reutiliser") and info.get("selection") not in (None, sel_sig):
             report("Matériaux appliqués à des éléments : nouvel export du modèle...")
         ensure_ifcopenshell(report)
@@ -2528,7 +2571,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
             used.append(f"{SOL_AUTOUR} → {virtual_surface(sol['dossier'])[9:]}")
         except Exception as error:  # noqa: BLE001
             report(f"Matériau du sol indisponible : {error}")
-    meta.write_text(json.dumps({"version": 3, "sol": ground, "niveau_auto": auto, "sol_bas": bas, "surfaces": sorted(meshes), "triangles": tris,
+    meta.write_text(json.dumps({"version": 3, "modele_sig": sig, "sol": ground, "niveau_auto": auto, "sol_bas": bas, "surfaces": sorted(meshes), "triangles": tris,
                                 "selection": sel_sig, "uv": uv_sig,
                                 "couleurs": {n: list(mats.get(n, {}).get("rgb", (0.7, 0.7, 0.7))) for n in meshes}}),
                     encoding="utf-8")
@@ -3281,9 +3324,19 @@ def window(state: dict) -> None:
         niv_note.configure(text=txt)
     niv_box.bind("<<ComboboxSelected>>", niv_maj)
     niv_maj()
+    if not opts.get("_synchro_v1"):           # la synchro auto devient le reglage par defaut
+        opts.update(reutiliser=True, _synchro_v1=True)
     reuse_var = tk.BooleanVar(value=opts["reutiliser"])
-    ttk.Checkbutton(am, text="Réutiliser la géométrie du dernier rendu (plus rapide si seuls la vue ou le soleil changent)",
-                    variable=reuse_var).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    sync_box = ttk.Frame(am)
+    sync_box.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
+    ttk.Checkbutton(sync_box, text="🔄 Synchro auto : réexporter le modèle seulement s'il a changé dans Archicad (conseillé)",
+                    variable=reuse_var).grid(row=0, column=0, sticky="w")
+
+    def forcer_export():
+        FORCER_EXPORT["v"] = True
+        say("Le modèle sera réexporté entièrement au prochain rendu ou aperçu.")
+    ttk.Button(sync_box, text="Réexporter maintenant", style="Link.TButton", command=forcer_export).grid(
+        row=0, column=1, padx=(8, 0))
 
     report = tk.Text(outer, width=78, height=6, wrap="word", state="disabled", background=couleurs["report"],
                      foreground=couleurs["text"], relief="flat",
@@ -3437,6 +3490,32 @@ def window(state: dict) -> None:
             say("Module manquant.")
         except Exception as error:  # noqa: BLE001
             show([f"Erreur : {error}"])
+            say("Erreur.")
+
+    def vers_vantage():
+        """Envoie la scene V-Ray de la vue choisie a Chaos Vantage (animations, videos, visite en temps reel)."""
+        collect()
+        exe = find_vantage()
+        if not exe:
+            messagebox.showerror("Chaos Vantage", "Chaos Vantage n'est pas installé sur ce PC.", parent=root)
+            return
+        name = current.get()
+        cam = next((c for c in all_cams() if c["nom"] == name), None)
+        if not cam:
+            show(["Choisis d'abord une vue (rond à gauche du nom)."])
+            return
+        try:
+            say("Préparation de la scène pour Vantage...")
+            geo, ground, info = prepare_geometry(state, proj, say)
+            scene = geo.parent / f"vantage_{safe(name)}.vrscene"
+            write_scene(scene, geo, cam, opts, proj, ground)
+            subprocess.Popen([exe, str(scene)], cwd=str(scene.parent))
+            say(f"Vantage s'ouvre avec la vue « {name} » : caméra, soleil, matériaux, objets et lumières inclus.")
+            show([f"Scène envoyée à Vantage : {scene}", "", "Dans Vantage : animations, vidéos, visite libre en temps réel.",
+                  "Après une modification dans Archicad, relance « Ouvrir dans Chaos Vantage » (seules les parties changées "
+                  "sont réexportées).", "", f"Géométrie : {info}."])
+        except Exception as error:  # noqa: BLE001
+            show([f"Vantage : {error}"])
             say("Erreur.")
 
     def light_gen():
@@ -3747,9 +3826,10 @@ def window(state: dict) -> None:
     plus_menu.add_command(label="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen())
     plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
     plus_menu.add_command(label="🧭 Visionneuse 3D", command=lambda: open_viewer())
+    plus_menu.add_command(label="🎥 Ouvrir dans Chaos Vantage (vidéo, visite)", command=lambda: vers_vantage())
     plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
     plus_btn = ttk.Button(action_bar, text="⋯", width=3)
-    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 110))
+    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 135))
     plus_btn.grid(row=0, column=2, padx=(6, 0))
 
     def aller(frame):
