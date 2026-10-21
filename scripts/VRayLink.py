@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.9c (materiaux automatiques)"
+VERSION = "21/10 - v8.0 (raccourcis, fin de rendu, avant/apres)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3459,6 +3459,138 @@ def partage_window(root, proj: dict, say=print) -> None:
     box.bind("<<ComboboxSelected>>", lambda _e: (cv.delete("all"), lien.set(""), note.configure(text="")))
 
 
+def comparer_window(root, proj: dict) -> None:
+    """Avant / apres : deux rendus superposes, la souris deplace la separation."""
+    import tkinter as tk
+    from tkinter import ttk
+    try:
+        ensure_pillow()
+        from PIL import Image, ImageTk
+    except Exception:  # noqa: BLE001
+        return
+    fichiers = rendus_recents(proj["name"], 60)
+    noms = {f"{p_.parent.name} · {p_.name}": p_ for p_ in fichiers}
+    win = tk.Toplevel(root)
+    win.title("◧ Comparer deux rendus (avant / après)")
+    win.attributes("-topmost", True)
+    win.geometry("1200x760")
+    win.columnconfigure(0, weight=1)
+    win.rowconfigure(1, weight=1)
+    haut = ttk.Frame(win, padding=8)
+    haut.grid(row=0, column=0, sticky="ew")
+    haut.columnconfigure(1, weight=1)
+    haut.columnconfigure(3, weight=1)
+    liste = list(noms)
+    va = tk.StringVar(value=liste[1] if len(liste) > 1 else (liste[0] if liste else ""))
+    vb = tk.StringVar(value=liste[0] if liste else "")
+    ttk.Label(haut, text="◀ Gauche").grid(row=0, column=0)
+    ca = ttk.Combobox(haut, values=liste, textvariable=va, state="readonly")
+    ca.grid(row=0, column=1, sticky="ew", padx=6)
+    ttk.Label(haut, text="Droite ▶").grid(row=0, column=2)
+    cb = ttk.Combobox(haut, values=liste, textvariable=vb, state="readonly")
+    cb.grid(row=0, column=3, sticky="ew", padx=6)
+    cv = tk.Canvas(win, background="#1b1d21", highlightthickness=0, cursor="sb_h_double_arrow")
+    cv.grid(row=1, column=0, sticky="nsew")
+    etat = {"a": None, "b": None, "x": 0.5, "ph": None, "id": None}
+
+    def charge(_e=None):
+        w_, h_ = max(200, cv.winfo_width()), max(150, cv.winfo_height())
+        for k_, var in (("a", va), ("b", vb)):
+            p_ = noms.get(var.get())
+            if p_ and p_.exists():
+                im = Image.open(p_).convert("RGB")
+                im.thumbnail((w_, h_))
+                etat[k_] = im
+        dessine()
+
+    def dessine():
+        a_, b_ = etat["a"], etat["b"]
+        if not a_ or not b_:
+            return
+        b_ = b_.resize(a_.size)
+        cut = int(a_.width * etat["x"])
+        im = a_.copy()
+        im.paste(b_.crop((cut, 0, b_.width, b_.height)), (cut, 0))
+        etat["ph"] = ImageTk.PhotoImage(im)
+        cv.delete("all")
+        ox, oy = (cv.winfo_width() - im.width) // 2, (cv.winfo_height() - im.height) // 2
+        cv.create_image(ox, oy, anchor="nw", image=etat["ph"])
+        cv.create_line(ox + cut, oy, ox + cut, oy + im.height, fill="#ffffff", width=2)
+        cv.create_text(ox + 10, oy + 10, anchor="nw", text="AVANT", fill="#ffb07f", font=("Segoe UI", 11, "bold"))
+        cv.create_text(ox + im.width - 10, oy + 10, anchor="ne", text="APRÈS", fill="#9fe3b0", font=("Segoe UI", 11, "bold"))
+
+    def bouge(e):
+        a_ = etat["a"]
+        if not a_:
+            return
+        ox = (cv.winfo_width() - a_.width) // 2
+        etat["x"] = min(1.0, max(0.0, (e.x - ox) / max(1, a_.width)))
+        dessine()
+    cv.bind("<B1-Motion>", bouge)
+    cv.bind("<Button-1>", bouge)
+    cv.bind("<Configure>", lambda _e: (win.after_cancel(etat["id"]) if etat["id"] else None,
+                                      etat.update(id=win.after(150, charge))))
+    ca.bind("<<ComboboxSelected>>", charge)
+    cb.bind("<<ComboboxSelected>>", charge)
+
+
+def surveille_rendus(root, images: list, say=print, proj: dict | None = None) -> None:
+    """Previent quand un rendu lance est termine : petite fenetre en bas a droite + son."""
+    import tkinter as tk
+    from tkinter import ttk
+    restants = [Path(p_) for p_ in images]
+    debut = time.time()
+
+    def toast(img: Path):
+        try:
+            root.bell()
+        except Exception:  # noqa: BLE001
+            pass
+        t = tk.Toplevel(root)
+        t.overrideredirect(True)
+        t.attributes("-topmost", True)
+        f = ttk.Frame(t, padding=12, relief="solid")
+        f.grid()
+        ttk.Label(f, text="✅ Rendu terminé", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(f, text=img.name, foreground="#777").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 8))
+
+        def ouvre():
+            fx = _fx(img)
+            try:
+                os.startfile(str(fx if fx.exists() else img))  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+        ttk.Button(f, text="Ouvrir", command=ouvre).grid(row=2, column=0)
+        if proj:
+            ttk.Button(f, text="🎚 Retoucher", command=lambda: (t.destroy(), retouche_window(root, proj, say))).grid(
+                row=2, column=1, padx=6)
+        ttk.Button(f, text="✕", width=3, command=t.destroy).grid(row=2, column=2)
+        t.update_idletasks()
+        sw, sh = t.winfo_screenwidth(), t.winfo_screenheight()
+        t.geometry(f"+{sw - t.winfo_reqwidth() - 24}+{sh - t.winfo_reqheight() - 70}")
+        t.after(60000, lambda: t.winfo_exists() and t.destroy())
+
+    def tic():
+        for p_ in list(restants):
+            try:
+                if p_.exists() and p_.stat().st_mtime >= debut - 2 and time.time() - p_.stat().st_mtime > 2:
+                    restants.remove(p_)
+                    say(f"✅ Rendu terminé : {p_.name}")
+                    toast(p_)
+            except Exception:  # noqa: BLE001
+                pass
+        if restants and time.time() - debut < 6 * 3600:
+            root.after(3000, tic)
+    root.after(5000, tic)
+
+
+RACCOURCIS = [("F5", "Lancer le rendu de la vue choisie"), ("Ctrl+F5", "Rendre toutes les vues cochées"),
+              ("F6", "Visionneuse 3D"), ("F7", "Envoyer à Chaos Vantage"), ("F8", "Retouche après rendu"),
+              ("F9", "Light Gen (essayer des éclairages)"), ("F10", "Comparer deux rendus (avant / après)"),
+              ("F11", "Partager une visite 360°"), ("Visionneuse", "Ctrl+Z / Ctrl+Y, Ctrl+C / Ctrl+V, G = déplacer, M = mesurer, "
+                                                                    "L = lumières, P = panneau, Échap = sortir")]
+
+
 # ---------------------------------------------------------------- fenetre ---
 def window(state: dict) -> None:
     import tkinter as tk
@@ -4043,10 +4175,11 @@ def window(state: dict) -> None:
                 jobs.append((scene, folder / f"{safe(name)}_{stamp}{FORMATS.get(opts.get('format'), '.png')}"))
             if len(jobs) == 1:
                 launch(state["vray"], *jobs[0], engine=MOTEURS.get(opts.get("moteur"), ""))
-                say("Rendu lancé : la fenêtre V-Ray s'ouvre.")
+                say("Rendu lancé : la fenêtre V-Ray s'ouvre. Tu seras prévenu à la fin.")
             else:
                 launch_batch(state["vray"], jobs, folder, MOTEURS.get(opts.get("moteur"), ""))
-                say(f"{len(jobs)} rendus lancés l'un après l'autre.")
+                say(f"{len(jobs)} rendus lancés l'un après l'autre : tu seras prévenu à chaque image terminée.")
+            surveille_rendus(root, [j_[1] for j_ in jobs], say, proj)
             show([f"Géométrie : {info}.", f"Images enregistrées dans : {folder}",
                   f"Qualité {opts['qualite']}, {opts['taille']}, {opts['ambiance']}, soleil {opts['jour']}/{opts['mois']} "
                   f"à {int(opts['heure']):02d}h{int(round(opts['heure'] % 1 * 60)) % 60:02d}.", "",
@@ -4387,7 +4520,7 @@ def window(state: dict) -> None:
     buttons.grid_remove()                      # remplace par la barre d'action fixe en bas
 
     action_bar.columnconfigure(0, weight=1)
-    ttk.Button(action_bar, text="▶  Lancer le rendu", style="Accent.TButton",
+    ttk.Button(action_bar, text="▶  Lancer le rendu   (F5)", style="Accent.TButton",
                command=lambda: render([current.get()] if current.get() else [])).grid(row=0, column=0, sticky="ew")
     vis_btn = ttk.Button(action_bar, text="🧭 Visionneuse", command=lambda: open_viewer())
     vis_btn.grid(row=0, column=3, padx=(8, 0))
@@ -4401,11 +4534,14 @@ def window(state: dict) -> None:
     plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
     plus_menu.add_command(label="🎚 Retoucher un rendu (sans recalcul)", command=lambda: retouche_window(root, proj, say))
     plus_menu.add_command(label="📱 Partager une visite 360° (QR code, WhatsApp)", command=lambda: partage_window(root, proj, say))
+    plus_menu.add_command(label="◧ Comparer deux rendus (avant / après)", command=lambda: comparer_window(root, proj))
+    plus_menu.add_command(label="⌨ Raccourcis clavier", command=lambda: messagebox.showinfo(
+        "Raccourcis clavier", "\n".join(f"{k_}  :  {v_}" for k_, v_ in RACCOURCIS), parent=root))
     plus_menu.add_command(label="🧭 Visionneuse 3D", command=lambda: open_viewer())
     plus_menu.add_command(label="🎥 Ouvrir dans Chaos Vantage (vidéo, visite)", command=lambda: vers_vantage())
     plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
     plus_btn = ttk.Button(action_bar, text="⋯", width=3)
-    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 185))
+    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 235))
     plus_btn.grid(row=0, column=6, padx=(6, 0))
 
     def aller(frame):
@@ -4908,6 +5044,12 @@ def window(state: dict) -> None:
         planifie["id"] = root.after(90, reflow)
     rendu_box.cv.bind("<Configure>", _sur_taille, add="+")
     root.bind("<Configure>", lambda e: _sur_taille() if e.widget is root else None, add="+")
+    for touche, action in (("<F5>", lambda: render([current.get()] if current.get() else [])),
+                           ("<Control-F5>", lambda: render([n for n, v in cam_vars.items() if v.get()])),
+                           ("<F6>", lambda: open_viewer()), ("<F7>", lambda: vers_vantage()),
+                           ("<F8>", lambda: retouche_window(root, proj, say)), ("<F9>", lambda: light_gen()),
+                           ("<F10>", lambda: comparer_window(root, proj)), ("<F11>", lambda: partage_window(root, proj, say))):
+        root.bind_all(touche, lambda _e, a_=action: (a_(), "break")[1])
     for t_ in (500, 1500):                     # au demarrage la fenetre n'a pas encore sa taille finale
         root.after(t_, lambda: (etat_large.update(w=0), reflow()))
     root.minsize(300, 300)
