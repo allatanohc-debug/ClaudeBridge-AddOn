@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.2b (fenetre fluide)"
+VERSION = "21/10 - v7.3 (Ctrl+Z dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1110,7 +1110,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
 <span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
 <button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eDrop">⤓ Poser</button>
-<button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eEnd">Terminé</button></div>
+<button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
@@ -1537,6 +1537,11 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt
  if(hit){sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom}
  else{tc.detach(); sel=null; $("selName").textContent="Clique un objet orange ou une lumière"}});
 const postJ=b=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+function histo(a){try{tc.detach()}catch(_){} sel=null; $("selName").textContent=a==="annuler"?"Annulé (Ctrl+Y pour rétablir)":"Rétabli"; postJ({action:a})}
+$("eUndo").onclick=()=>histo("annuler"); $("eRedo").onclick=()=>histo("retablir");
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||!(e.ctrlKey||e.metaKey))return;
+ if(e.code==="KeyZ"&&!e.shiftKey){e.preventDefault(); histo("annuler")}
+ else if(e.code==="KeyY"||(e.code==="KeyZ"&&e.shiftKey)){e.preventDefault(); histo("retablir")}});
 function commit(op){if(!sel)return; const u=sel.userData, p=sel.position;
  if(u.kind==="obj"){postJ({action:"obj_edit",op:op||"move",i:u.i,x:+p.x.toFixed(3),y:+p.y.toFixed(3),z:+p.z.toFixed(3),rot:+(sel.rotation.z*180/Math.PI).toFixed(1)})}
  else if(u.kind==="lumcible"){const l=LUM[u.i]; if(!l)return; l.cible=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); drawLights(); postJ({action:"lum_save",liste:LUM})}
@@ -3867,10 +3872,49 @@ def window(state: dict) -> None:
         return [list(p) + [float(sc.get("echelle", 1.0))] for sc in trees
                 for p in scatter_points(sc, meshes, offset, ground, key)][:3000]
 
+    histo = {"passe": [], "futur": []}            # Ctrl+Z / Ctrl+Y dans la visionneuse (objets et lumieres)
+
+    def _instantane():
+        import copy
+        return {"objets": [{k_: v_ for k_, v_ in o_.items() if k_ != "traces"}
+                           for o_ in (state.get("objets") or {}).get(key, [])],
+                "lumieres": copy.deepcopy((state.get("lumieres") or {}).get(key, []))}
+
+    def _memorise():
+        histo["passe"].append(_instantane())
+        del histo["passe"][:-60]
+        histo["futur"].clear()
+
+    def _restaure(snap):
+        objs = state.setdefault("objets", {}).setdefault(key, [])
+        for o_ in objs:
+            delete_elements(o_.get("traces", []))
+        objs[:] = [dict(o_) for o_ in snap["objets"]]
+        for o_ in objs:
+            try:
+                o_["traces"] = draw_object_marker(o_)
+            except Exception:  # noqa: BLE001
+                o_["traces"] = []
+        OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
+        inbox.put({"action": "lum_save", "liste": snap["lumieres"], "_histo": False})
+
     def poll_viewer():
         try:
             while True:
                 msg = inbox.get_nowait()
+                if msg.get("action") in ("annuler", "retablir"):
+                    src, dst = (histo["passe"], histo["futur"]) if msg["action"] == "annuler" else (histo["futur"], histo["passe"])
+                    if not src:
+                        say("Rien à annuler." if msg["action"] == "annuler" else "Rien à rétablir.")
+                        continue
+                    dst.append(_instantane())
+                    _restaure(src.pop())
+                    save_settings(state)
+                    say("Dernière modification annulée (Ctrl+Y pour rétablir)." if msg["action"] == "annuler"
+                        else "Modification rétablie.")
+                    continue
+                if msg.get("action") in ("obj_edit", "lum_save", "lum_import") and msg.get("_histo", True):
+                    _memorise()
                 if msg.get("action") == "choisir":
                     from tkinter import filedialog
                     if msg.get("filtre") == "ies":
@@ -5233,6 +5277,9 @@ import * as THREE from "three";
 import {RoomEnvironment} from "three/addons/environments/RoomEnvironment.js";
 const $=id=>document.getElementById(id);
 const post=(b)=>fetch("/camera",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||e.target.tagName==="SELECT"||e.target.tagName==="TEXTAREA"||!(e.ctrlKey||e.metaKey))return;
+ if(e.code==="KeyZ"&&!e.shiftKey){e.preventDefault(); post({action:"annuler"}); lastEdit=0}
+ else if(e.code==="KeyY"||(e.code==="KeyZ"&&e.shiftKey)){e.preventDefault(); post({action:"retablir"}); lastEdit=0}});
 // ---------- apercu
 const pv=$("prev"); const R=new THREE.WebGLRenderer({antialias:true,alpha:true}); R.setPixelRatio(Math.min(devicePixelRatio,2));
 R.toneMapping=THREE.ACESFilmicToneMapping; R.shadowMap.enabled=true; pv.appendChild(R.domElement);
