@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.4e (visionneuse se reconnecte)"
+VERSION = "21/10 - v8.5 (rechargement auto, onglet Objets)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5270,6 +5270,26 @@ def window(state: dict) -> None:
         planifie["id"] = root.after(90, reflow)
     rendu_box.cv.bind("<Configure>", _sur_taille, add="+")
     root.bind("<Configure>", lambda e: _sur_taille() if e.widget is root else None, add="+")
+    try:                                       # mise a jour installee : V-Ray Link se recharge tout seul
+        _source = Path(__file__).resolve()
+        _depart = _source.stat().st_mtime
+
+        def _verifie_maj():
+            try:
+                if _source.stat().st_mtime != _depart:
+                    time.sleep(1.5)                # laisse finir la copie du fichier
+                    collect()
+                    save_settings(state)
+                    subprocess.Popen([sys.executable] + sys.argv, cwd=str(_source.parent),
+                                     creationflags=0x00000008 | 0x01000000 if os.name == "nt" else 0)
+                    root.destroy()
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            root.after(3000, _verifie_maj)
+        root.after(5000, _verifie_maj)
+    except Exception:  # noqa: BLE001
+        pass
     for touche, action in (("<F5>", lambda: render([current.get()] if current.get() else [])),
                            ("<Control-F5>", lambda: render([n for n, v in cam_vars.items() if v.get()])),
                            ("<F6>", lambda: open_viewer()), ("<F7>", lambda: vers_vantage()),
@@ -5803,18 +5823,49 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     tree.column("#0", width=200)
     tree.column("rot", width=70, anchor="center")
     tree.column("ech", width=60, anchor="center")
+    tree.configure(height=8)
     tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
-    ttk.Button(left, text="↺ 15°", width=7, command=lambda: rotate(-15)).grid(row=1, column=0, pady=4)
-    ttk.Button(left, text="↻ 15°", width=7, command=lambda: rotate(15)).grid(row=1, column=1)
-    ttk.Button(left, text="↻ 90°", width=7, command=lambda: rotate(90)).grid(row=1, column=2)
+    left.rowconfigure(0, weight=1, minsize=170)            # la liste garde toujours de la place
+    ligne1 = ttk.Frame(left)
+    ligne1.grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
+    ttk.Button(ligne1, text="↶ Annuler", command=lambda: annuler()).pack(side="left", padx=(0, 6))
+    ttk.Button(ligne1, text="↺ 15°", width=6, command=lambda: rotate(-15)).pack(side="left")
+    ttk.Button(ligne1, text="↻ 15°", width=6, command=lambda: rotate(15)).pack(side="left", padx=2)
+    ttk.Button(ligne1, text="↻ 90°", width=6, command=lambda: rotate(90)).pack(side="left")
+    ligne2 = ttk.Frame(left)
+    ligne2.grid(row=3, column=0, columnspan=6, sticky="w", pady=(4, 0))
     size_var = tk.DoubleVar(value=1.0)
-    ttk.Spinbox(left, from_=0.1, to=50, increment=0.1, textvariable=size_var, width=5).grid(row=1, column=3, padx=(8, 2))
-    ttk.Button(left, text="Taille", command=lambda: resize()).grid(row=1, column=4)
-    ttk.Button(left, text="🗑 Supprimer", command=lambda: remove()).grid(row=1, column=5, padx=4)
+    ttk.Label(ligne2, text="Taille").pack(side="left")
+    ttk.Spinbox(ligne2, from_=0.1, to=50, increment=0.1, textvariable=size_var, width=5).pack(side="left", padx=(4, 2))
+    ttk.Button(ligne2, text="Appliquer", command=lambda: resize()).pack(side="left")
+    ttk.Button(ligne2, text="🗑 Supprimer", command=lambda: remove()).pack(side="left", padx=6)
+    passe: list = []                                       # annuler (onglet Objets)
+
+    def memo():
+        import copy
+        passe.append(([{k_: v_ for k_, v_ in o_.items() if k_ != "traces"} for o_ in objs], copy.deepcopy(scats)))
+        del passe[:-30]
+
+    def annuler():
+        if not passe:
+            msg.set("Rien à annuler.")
+            return
+        anciens, sc_ = passe.pop()
+        for o_ in objs:
+            delete_elements(o_.get("traces", []))
+        objs[:] = [dict(o_) for o_ in anciens]
+        for o_ in objs:
+            try:
+                o_["traces"] = draw_object_marker(o_)
+            except Exception:  # noqa: BLE001
+                o_["traces"] = []
+        scats[:] = sc_
+        save_settings(state)
+        refresh_tree()
+        msg.set("Dernière modification annulée.")
+    root.bind_all("<Control-z>", lambda _e: (annuler() if str(nb.select()) == str(tab_box) else None))
     ttk.Label(left, foreground="#777", wraplength=360, justify="left",
-              text="Taille 1 = taille réelle de l'objet Cosmos. Si un objet sort 100 fois trop grand ou trop petit, "
-                   "mets 0.01 ou 100 et dis-le-moi : je corrigerai l'unité par défaut.").grid(
-        row=2, column=0, columnspan=6, sticky="w")
+              text="Taille 1 = taille réelle de l'objet Cosmos.").grid(row=4, column=0, columnspan=6, sticky="w")
 
     def refresh_tree():
         tree.delete(*tree.get_children())
@@ -5844,6 +5895,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         o["traces"] = draw_object_marker(o)
 
     def rotate(deg):
+        memo()
         for o in selected():
             if o in scats:
                 continue
@@ -5859,6 +5911,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             v = float(size_var.get())
         except (ValueError, tk.TclError):
             return
+        memo()
         for o in selected():
             o["echelle"] = v
             redraw(o)
@@ -5868,6 +5921,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
         tree.selection_set(keep)
 
     def remove():
+        memo()
         for o in selected():
             if o in scats:
                 delete_elements(o.get("traces", []))
@@ -5993,6 +6047,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     cat_box.bind("<<ComboboxSelected>>", lambda *_: fill_grid())
 
     def place():
+        memo()
         e = chosen["entry"]
         if not e:
             msg.set("Choisis d'abord un objet à droite.")
@@ -6134,6 +6189,7 @@ def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
             surf_var.set(grass[0])
 
     def scatter():
+        memo()
         e = chosen["entry"]
         if not e:
             msg.set("Choisis d'abord à droite l'objet à répartir (touffe d'herbe, fleurs, gravier…).")
