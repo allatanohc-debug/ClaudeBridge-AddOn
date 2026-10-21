@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v6.8 (Light Gen ne ferme plus V-Ray Link)"
+VERSION = "21/10 - v6.9 (module IFC reinstalle)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -388,7 +388,11 @@ def _rgb(m) -> tuple:
 
 
 def ensure_ifcopenshell(report=print) -> None:
-    """Installe le module IFC au premier rendu (une seule fois, environ 1 minute)."""
+    """Installe le module IFC au premier rendu (une seule fois, environ 1 minute).
+    Il va dans %APPDATA%\\ClaudeBridge\\modules : une mise a jour de Python (uv) ne l'efface plus."""
+    mods = str(data_dir().parent / "modules")
+    if mods not in sys.path:
+        sys.path.insert(0, mods)
     try:
         import ifcopenshell  # noqa: F401
         return
@@ -396,7 +400,8 @@ def ensure_ifcopenshell(report=print) -> None:
         pass
     report("Premier rendu : installation du module IFC (ifcopenshell), une minute environ...")
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    for cmd in ([sys.executable, "-m", "pip", "install", "--user", "ifcopenshell"],
+    for cmd in ([sys.executable, "-m", "pip", "install", "--target", mods, "--upgrade", "ifcopenshell"],
+                [sys.executable, "-m", "pip", "install", "--user", "ifcopenshell"],
                 [sys.executable, "-m", "pip", "install", "ifcopenshell"],
                 ["uv", "pip", "install", "--python", sys.executable, "ifcopenshell"]):
         try:
