@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.5b (verifications)"
+VERSION = "21/10 - v8.5c (verifications)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5291,11 +5291,17 @@ def window(state: dict) -> None:
                     root.destroy()
                     return
             except Exception:  # noqa: BLE001
-                pass
+                import traceback
+                try:
+                    (data_dir() / "erreurs.txt").open("a", encoding="utf-8").write(
+                        time.strftime("%H:%M:%S rechargement auto : ") + traceback.format_exc() + "\n")
+                except Exception:  # noqa: BLE001
+                    pass
             root.after(3000, _verifie_maj)
         root.after(5000, _verifie_maj)
     except Exception:  # noqa: BLE001
-        pass
+        import traceback
+        (data_dir() / "erreurs.txt").open("a", encoding="utf-8").write("rechargement auto (depart) : " + traceback.format_exc())
     for touche, action in (("<F5>", lambda: render([current.get()] if current.get() else [])),
                            ("<Control-F5>", lambda: render([n for n, v in cam_vars.items() if v.get()])),
                            ("<F6>", lambda: open_viewer()), ("<F7>", lambda: vers_vantage()),
