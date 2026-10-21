@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.5d (verifications)"
+VERSION = "21/10 - v8.6 (verifications)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -249,7 +249,13 @@ def model_signature() -> str:
     """Empreinte du modele Archicad (elements, leurs boites 3D, surfaces, calques) : ~0,5 s.
     Si elle n'a pas change depuis le dernier export, inutile de reexporter (30-40 s)."""
     try:
-        els = tapir("GetAllElements", {}).get("elements", [])
+        els = []                              # elements 3D seulement : les reperes 2D du plan ne comptent pas
+        for kind in ("Wall", "Slab", "Roof", "Shell", "Column", "Beam", "Window", "Door", "Skylight", "Object", "Lamp",
+                     "Stair", "Railing", "CurtainWall", "Morph", "Mesh", "Opening"):
+            try:
+                els += tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+            except Exception:  # noqa: BLE001
+                continue
         ids_ = [{"elementId": e["elementId"]} for e in els if isinstance(e, dict) and "elementId" in e]
         h = hashlib.md5()
         for i in range(0, len(ids_), 500):
@@ -2825,6 +2831,20 @@ def _run_bat(bat: Path, lines: list, env_vars: dict, cwd: Path | None = None) ->
                      creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
 
 
+def vray_silencieux(vray: str, scene: Path, image: Path, extra: list | None = None, timeout: int = 600) -> bool:
+    """Rendu sans fenetre (apercus, Light Gen). V-Ray plante parfois au hasard (acces memoire) : 2e essai."""
+    for _essai in range(2):
+        try:
+            subprocess.run([vray, f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1", "-verboseLevel=1"]
+                           + (extra or []), cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                           timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return image.exists()
+        if image.exists():
+            return True
+    return False
+
+
 def launch(vray: str, scene: Path, image: Path, show: bool = True, engine: str = "") -> None:
     """Lance V-Ray. S'il se ferme sans image : relance ; s'il plante encore, rendu de secours sans
     materiaux scannes (.vrscan) ; en dernier recours la fenetre reste ouverte avec le code d'erreur."""
@@ -4562,9 +4582,8 @@ def window(state: dict) -> None:
                     if image.exists():
                         image.unlink()
                     boite.put(("etat", f"Calcul {k + 1} / {len(sc)}…"))
-                    subprocess.run([state["vray"], f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1",
-                                    "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
-                                   cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=300)
+                    vray_silencieux(state["vray"], scene, image,
+                                    [MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else [], timeout=300)
                     fx = _fx(image)
                     out_ = fx if fx.exists() else image
                 except Exception:  # noqa: BLE001
@@ -5129,9 +5148,7 @@ def window(state: dict) -> None:
             try:
                 if image.exists():
                     image.unlink()
-                subprocess.run([state["vray"], f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1",
-                                "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
-                               cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=600)
+                vray_silencieux(state["vray"], scene, image, [MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else [])
                 ok_ = image.exists()
                 fx = image.with_name(image.stem + ".effectsResult" + image.suffix)      # image debruitee
                 montre = fx if (ok_ and fx.exists() and fx.stat().st_mtime >= image.stat().st_mtime - 5) else image
