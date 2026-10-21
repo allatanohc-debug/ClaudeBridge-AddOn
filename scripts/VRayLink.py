@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.1d (vraie forme des objets dans la visionneuse)"
+VERSION = "21/10 - v8.1e (vraie forme des objets dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1186,8 +1186,8 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="pipMsg" style="position:absolute;left:8px;top:6px;color:#fff;font-size:12px;text-shadow:0 1px 2px #000">V-Ray interactif : arrête-toi pour calculer…</div>
 <img id="pipImg" style="display:block;width:100%"></div>
 <button id="bApercu" style="position:absolute;right:120px;top:10px;z-index:5;background:var(--acc);border-color:var(--acc);color:#fff;padding:6px 12px">⚡ Aperçu V-Ray</button>
-<button id="bPano" title="Rendu V-Ray 360° depuis l'endroit où tu es, puis visite à la souris (~1 min)" style="position:absolute;right:262px;top:10px;z-index:5;padding:6px 12px">🌐 360° d'ici</button>
-<button id="bPanos" title="Revoir tes panoramas 360°" style="position:absolute;right:378px;top:10px;z-index:5;padding:6px 12px">🖼 Mes 360°</button>
+<button id="bPano" title="Rendu V-Ray 360° depuis l'endroit où tu es, puis visite à la souris (~1 min)" style="position:absolute;right:120px;top:50px;z-index:5;padding:6px 12px">🌐 360° d'ici</button>
+<button id="bPanos" title="Revoir tes panoramas 360°" style="position:absolute;right:240px;top:50px;z-index:5;padding:6px 12px">🖼 Mes 360°</button>
 <div id="pano" style="position:absolute;inset:0;z-index:20;display:none;background:#111">
 <iframe id="panoF" style="border:0;width:100%;height:100%"></iframe>
 <div id="panoL" style="position:absolute;left:50%;top:60px;transform:translateX(-50%);background:rgba(32,35,42,.96);border:1px solid var(--line);border-radius:10px;padding:12px;display:none;min-width:320px;max-height:70%;overflow:auto"></div>
