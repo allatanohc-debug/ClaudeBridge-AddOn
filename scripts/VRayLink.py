@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.7 (reperes en arriere-plan)"
+VERSION = "21/10 - v8.7b (deplacement comme SketchUp)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1642,7 +1642,7 @@ addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==
 function tool(m){tc.setMode(m); $("eMove").classList.toggle("on",m==="translate"); $("eRot").classList.toggle("on",m==="rotate");
  $("eScale").classList.toggle("on",m==="scale");
  const lum=sel&&sel.userData.kind==="lum";        // lumiere : les 3 axes (hauteur, inclinaison) comme dans SketchUp
- tc.showX=tc.showY=(m==="translate"||m==="scale"||lum); tc.showZ=m!=="scale"}
+ tc.showX=tc.showY=(m==="translate"||m==="scale"||lum); tc.showZ=lum?m!=="scale":m==="rotate"}
 $("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); $("eScale").onclick=()=>tool("scale"); tool("translate");
 renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
@@ -1721,15 +1721,16 @@ addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||!editOn)return;
   const o=OBJ[clip]||{}; postJ({action:"obj_multi",i:clip,pts:[[+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),o.rot||0,1]]}); $("selName").textContent="Collé (Ctrl+Z pour annuler)"}},{capture:true});
 // glisser directement l'objet a la souris (il suit les surfaces : sol, terrasse, table…) ; Ctrl + glisser = tourner
 let dragO=null;
-renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||(tc&&tc.axis))return;
+renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||popMode)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]); if(!hit)return;
+ const hit=pickHit([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)]); if(!hit)return;   // sur l'objet : on le prend (les fleches restent pour le reste)
  sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom;
  dragO={x:e.clientX,y:e.clientY,z0:sel.position.z,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
  if(sel.userData.kind!=="obj")$("mesure").style.display="", $("mesure").textContent="Lumière : glisse pour la déplacer à la même hauteur · Maj + glisser = monter / descendre · ⟳ Tourner pour l'orienter";
  renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation()},{capture:true});
 renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; dragO.moved=true;
  if(dragO.ctrl){sel.rotation.z=dragO.rot0+(e.clientX-dragO.x)*0.01; return}
+ if(e.shiftKey&&sel.userData.kind==="obj"){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").style.display=""; $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
  if(sel.userData.kind!=="obj"){                       // lumiere : plan horizontal a sa hauteur (plafond), Maj = vertical
   if(e.shiftKey){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
   const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
@@ -1745,7 +1746,7 @@ renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const mov
 renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=pickHit([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children]); if(!hit)return;
- setEdit(true); sel=hit.object; tc.attach(sel); tool("translate"); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom});
+ setEdit(true); sel=hit.object; tc.attach(sel); tool("translate"); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom+"  — glisser = déplacer · Maj + glisser = hauteur"});
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
@@ -1789,7 +1790,8 @@ $("bApercu").onclick=()=>{apWait=true; $("apercu").style.display="flex"; $("apIm
   focale:+$("foc").value,mode:vmode,decentrement:vmode==="2pf"?+$("shift").value:0,coupe:+$("coupe").value,ev:+$("ev").value,ortho_largeur:+$("ow").value,
   heure:+$("hour").value,jour:+$("day").value,mois:+$("month").value,intensite:+$("sunInt").value,hdri_rot:+$("hdriRot").value})})};
 const clock=new THREE.Clock();
-function loop(){const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
+function loop(){if(tc&&tc.object&&!tc.object.parent){tc.detach(); sel=null}
+ const dt=Math.min(clock.getDelta(),.05);const v=(keys.ShiftLeft||keys.ShiftRight?12:4)*dt;
  if(mode==="walk"||Object.values(keys).some(Boolean)){
   const f=(keys.KeyW||keys.KeyZ||keys.ArrowUp?1:0)-(keys.KeyS||keys.ArrowDown?1:0);
   const s=(keys.KeyD||keys.ArrowRight?1:0)-(keys.KeyQ||keys.KeyA||keys.ArrowLeft?1:0);
