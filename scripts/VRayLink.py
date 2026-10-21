@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.6c (reperes : corbeille masquee)"
+VERSION = "21/10 - v7.6d (reperes fiables)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4625,7 +4625,7 @@ def window(state: dict) -> None:
 
 
 # ------------------------------------------------------------------ objets ---
-CALQUE_OBJETS = "V-Ray Link - Objets Cosmos"
+CALQUE_OBJETS = "V-Ray Link - Objets (repères)"   # ancien calque « V-Ray Link - Objets Cosmos » : repères morts, à supprimer
 ECHELLE_COSMOS = 0.01          # les modeles Cosmos (.vrmesh) sont en centimetres ; reglable par objet
 
 
@@ -4903,7 +4903,6 @@ def draw_object_marker(o: dict) -> list:
         if guids:
             tapir("SetDetailsOfElements", {"elementsWithDetails": [
                 {"elementId": {"guid": g}, "details": {"layerIndex": layer}} for g in guids]})
-            tapir("CreateGroups", {"elementGroups": [{"elements": [{"elementId": {"guid": g}} for g in guids]}]})
     except Exception:  # noqa: BLE001
         pass
     return guids
@@ -4964,8 +4963,11 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
     layer = int(lay["index"])
     stories = {s_.get("index"): float(s_.get("level", 0.0)) for s_ in tapir("GetStories").get("stories", [])}
 
+    morts = reperes_morts()
+
     def read(kind):
-        ids = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+        ids = [e for e in tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+               if e.get("elementId", {}).get("guid") not in morts]
         out = []
         for i in range(0, len(ids), 400):
             part = ids[i:i + 400]
@@ -5050,6 +5052,25 @@ def _calque_corbeille() -> int:
     return int(found["index"]) if found else 0
 
 
+def _morts_path() -> Path:
+    return data_dir() / "reperes_morts.json"
+
+
+def reperes_morts() -> set:
+    try:
+        return set(json.loads(_morts_path().read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _ajoute_morts(guids: list) -> None:
+    m = reperes_morts() | set(guids)
+    try:
+        _morts_path().write_text(json.dumps(sorted(m)), encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def delete_elements(guids: list) -> None:
     """Efface des reperes du plan. Si Archicad refuse l'effacement (cas de Tapir sur certaines versions),
     ils partent sur un calque « corbeille » masque : invisibles, et jamais relus comme des objets."""
@@ -5066,13 +5087,19 @@ def delete_elements(guids: list) -> None:
             reste += part
     if not reste:
         return
+    refus = []
     try:
         lay = _calque_corbeille()
         for i in range(0, len(reste), 300):
-            tapir("SetDetailsOfElements", {"elementsWithDetails": [
-                {"elementId": {"guid": g}, "details": {"layerIndex": lay}} for g in reste[i:i + 300]]})
+            part = reste[i:i + 300]
+            res = tapir("SetDetailsOfElements", {"elementsWithDetails": [
+                {"elementId": {"guid": g}, "details": {"layerIndex": lay}} for g in part]})
+            rows = res.get("executionResults", []) if isinstance(res, dict) else []
+            refus += [g for g, r in zip(part, rows) if isinstance(r, dict) and not r.get("success", True)]
     except Exception:  # noqa: BLE001
-        pass
+        refus = list(reste)
+    if refus:                                   # repere groupe, verrouille... : V-Ray Link l'ignorera desormais
+        _ajoute_morts(refus)
 
 
 def objects_tab(root, nb, state: dict, proj: dict, key: str) -> None:
