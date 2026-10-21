@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.2c (visionneuse ouverte sur la vue choisie)"
+VERSION = "21/10 - v8.3 (lumieres a la SketchUp)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1175,7 +1175,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <button id="bMove" class="mini" title="Déplacer / tourner un objet ou une lumière (G)">✋</button></div>
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
 <span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
-<button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eDrop">⤓ Poser</button>
+<button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eScale" title="Agrandir / réduire une lumière rectangle ou sphère">⤡ Taille</button><button id="eDrop">⤓ Poser</button>
 <button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
@@ -1613,7 +1613,8 @@ function drawLights(){lumGroup.clear();
   else{L=new THREE.PointLight(c,l.type==="Omni"?l.intensite*0.03:l.intensite*0.8,0,2); giz=new THREE.Mesh(new THREE.SphereGeometry(Math.max(.14,l.rayon||.08),16,10),gm); giz.position.copy(p)}
   if(giz)giz.renderOrder=999;
   L.position.copy(p); L.castShadow=false; lumGroup.add(L);
-  if(giz){giz.userData={kind:"lum",i:LUM.indexOf(l),nom:l.nom,light:L}; lumGroup.add(giz);
+  if(giz){giz.userData={kind:"lum",i:LUM.indexOf(l),nom:l.nom,light:L,q0:giz.quaternion.clone(),
+    dir0:tg.clone().sub(p).normalize(),dist:Math.max(0.3,tg.distanceTo(p))}; lumGroup.add(giz);
    if(tc&&sel&&sel.userData.kind==="lum"&&sel.userData.i===giz.userData.i){sel=giz; tc.attach(giz)}}}}
 async function pollLights(){try{const j=await (await fetch("/api/lumieres")).json(); if(j.rev!==lumRev&&!tcDrag){lumRev=j.rev; LUM=j.liste||[]; drawLights()}}catch(_){}
  setTimeout(pollLights,800)}
@@ -1628,8 +1629,10 @@ $("bMove").onclick=()=>setEdit(!editOn); $("eEnd").onclick=()=>setEdit(false);
 addEventListener("keydown",e=>{if(e.target.tagName==="INPUT")return; if(e.code==="KeyG")setEdit(!editOn); if(e.code==="Escape"&&editOn)setEdit(false);
  if(editOn&&sel&&(e.code==="Delete"||e.code==="Backspace"))$("eDel").click()});
 function tool(m){tc.setMode(m); $("eMove").classList.toggle("on",m==="translate"); $("eRot").classList.toggle("on",m==="rotate");
- tc.showX=tc.showY=m==="translate"; tc.showZ=true}
-$("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); tool("translate");
+ $("eScale").classList.toggle("on",m==="scale");
+ const lum=sel&&sel.userData.kind==="lum";        // lumiere : les 3 axes (hauteur, inclinaison) comme dans SketchUp
+ tc.showX=tc.showY=(m==="translate"||m==="scale"||lum); tc.showZ=m!=="scale"}
+$("eMove").onclick=()=>tool("translate"); $("eRot").onclick=()=>tool("rotate"); $("eScale").onclick=()=>tool("scale"); tool("translate");
 renderer.domElement.addEventListener("pointerup",e=>{if(!editOn||tcDrag||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0];
@@ -1646,6 +1649,13 @@ function commit(op){if(!sel)return; const u=sel.userData, p=sel.position;
  else if(u.kind==="lumcible"){const l=LUM[u.i]; if(!l)return; l.cible=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); drawLights(); postJ({action:"lum_save",liste:LUM})}
  else{const l=LUM[u.i]; if(!l)return; const d=[p.x-l.pos[0],p.y-l.pos[1],p.z-l.pos[2]];
   l.pos=[p.x,p.y,p.z].map(v=>+v.toFixed(3)); if(l.cible)l.cible=l.cible.map((v,k)=>+(v+d[k]).toFixed(3));
+  if(u.q0&&!sel.quaternion.equals(u.q0)){           // tournee (comme l'outil Rotation de SketchUp) : on reoriente le point vise
+   const dq=sel.quaternion.clone().multiply(u.q0.clone().invert()), dir=u.dir0.clone().applyQuaternion(dq);
+   l.cible=[p.x+dir.x*u.dist,p.y+dir.y*u.dist,p.z+dir.z*u.dist].map(v=>+v.toFixed(3))}
+  if(sel.scale.x!==1||sel.scale.y!==1){              // outil Taille : rectangle plus grand / plus petit
+   if(l.type==="Rectangle"){l.largeur=+((l.largeur||1)*Math.abs(sel.scale.x)).toFixed(2); l.hauteur=+((l.hauteur||.5)*Math.abs(sel.scale.y)).toFixed(2)}
+   else if(l.rayon!==undefined||l.type==="Sphère"){l.rayon=+((l.rayon||.08)*Math.abs(sel.scale.x)).toFixed(3)}
+   sel.scale.set(1,1,1)}
   if(op==="dup"){const c=JSON.parse(JSON.stringify(l)); c.nom=l.nom+" copie"; c.pos[0]+=0.5; if(c.cible)c.cible[0]+=0.5; LUM.push(c)}
   if(op==="delete"){LUM.splice(u.i,1); tc.detach(); sel=null}
   drawLights(); postJ({action:"lum_save",liste:LUM})}}
@@ -1696,16 +1706,27 @@ renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0|
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=ray.intersectObjects([...objGroup.children,...lumGroup.children.filter(c=>c.userData.kind)],false)[0]; if(!hit)return;
  sel=hit.object; tc.attach(sel); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom;
- dragO={x:e.clientX,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
+ dragO={x:e.clientX,y:e.clientY,z0:sel.position.z,rot0:sel.rotation.z,moved:false,ctrl:e.ctrlKey}; controls.enabled=false; tcDrag=true;
+ if(sel.userData.kind!=="obj")$("mesure").style.display="", $("mesure").textContent="Lumière : glisse pour la déplacer à la même hauteur · Maj + glisser = monter / descendre · ⟳ Tourner pour l'orienter";
  renderer.domElement.setPointerCapture(e.pointerId); e.stopImmediatePropagation()},{capture:true});
 renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; dragO.moved=true;
  if(dragO.ctrl){sel.rotation.z=dragO.rot0+(e.clientX-dragO.x)*0.01; return}
+ if(sel.userData.kind!=="obj"){                       // lumiere : plan horizontal a sa hauteur (plafond), Maj = vertical
+  if(e.shiftKey){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
+  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+  const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}
+  $("mesure").textContent=`x ${sel.position.x.toFixed(2)} · y ${sel.position.y.toFixed(2)} · hauteur ${sel.position.z.toFixed(2)} m (Maj = monter / descendre)`; return}
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
  const hit=ray.intersectObjects([model,ground],false).find(h=>!h.face||Math.abs(h.face.normal.z)>0.6);
  if(hit){sel.position.x=hit.point.x; sel.position.y=hit.point.y; if(sel.userData.kind==="obj")sel.position.z=hit.object===ground?info.sol:hit.point.z}
  else{const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}}},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const moved=dragO.moved; dragO=null; tcDrag=false; controls.enabled=mode==="orbit";
+ if(sel&&sel.userData.kind!=="obj")setTimeout(()=>{if(!mesureOn&&!popMode)$("mesure").style.display="none"},1500);
  if(moved)commit()},{capture:true});
+renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>4)return;
+ const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const hit=ray.intersectObjects([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children],false)[0]; if(!hit)return;
+ setEdit(true); sel=hit.object; tc.attach(sel); tool("translate"); $("selName").textContent=(sel.userData.kind!=="obj"?"💡 ":"📦 ")+sel.userData.nom});
 pollObjs();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
