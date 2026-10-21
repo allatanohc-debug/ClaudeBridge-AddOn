@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.1b (vraie forme des objets dans la visionneuse)"
+VERSION = "21/10 - v8.1c (vraie forme des objets dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2472,7 +2472,7 @@ def vrmesh_apercu(folder: str) -> dict:
     """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
     Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
     import zlib
-    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v2.json")
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v3.json")
     try:
         return json.loads(cache.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -2497,8 +2497,7 @@ def vrmesh_apercu(folder: str) -> dict:
                 except Exception:  # noqa: BLE001
                     pass
             i = j + 1
-        ref = vrmesh_size(meshes[0]) if meshes else []          # dimensions reelles (modele complet)
-        best = None
+        best = None                           # la DERNIERE paire (sommets, faces) du fichier = l'apercu complet
         for a, b in zip(flux, flux[1:]):      # (sommets flottants, faces entieres) qui se suivent
             if len(a) % 12 or len(b) % 12:
                 continue
@@ -2506,13 +2505,23 @@ def vrmesh_apercu(folder: str) -> dict:
             f_ = struct.unpack(f"<{len(b) // 4}i", b)
             if not f_ or min(f_) < 0 or max(f_) >= nv or nv < 30:
                 continue
-            if ref:                           # meme encombrement que l'objet reel (sinon ce sont des normales, des UV...)
-                v_ = struct.unpack(f"<{len(a) // 4}f", a)
-                dims = [(max(v_[k::3]) - min(v_[k::3])) * ECHELLE_COSMOS for k in range(3)]
-                if any(not (0.6 * r_ <= d_ <= 1.6 * r_) for d_, r_ in zip(dims, ref[:3]) if r_ > 0.05):
-                    continue
-            if best is None or nv < best[0]:
-                best = (nv, a, f_)
+            v_ = struct.unpack(f"<{len(a) // 4}f", a)
+            if max(abs(c) for c in v_) <= 1.001:          # normales, pas des positions
+                continue
+            best = (nv, a, f_)
+        if best and best[0] > 40000:          # pas d'apercu leger : on garde 1 triangle sur n
+            nv, a, f_ = best
+            pas = max(1, (len(f_) // 3) // 20000)
+            tri = [f_[k:k + 3] for k in range(0, len(f_), 3 * pas)]
+            v_ = struct.unpack(f"<{len(a) // 4}f", a)
+            garde, nouv, ff = {}, [], []
+            for t_ in tri:
+                for ix in t_:
+                    if ix not in garde:
+                        garde[ix] = len(garde)
+                        nouv += v_[3 * ix:3 * ix + 3]
+                    ff.append(garde[ix])
+            best = (len(garde), struct.pack(f"<{len(nouv)}f", *nouv), ff)
         if best:
             v = struct.unpack(f"<{len(best[1]) // 4}f", best[1])
             res = {"v": [round(c * ECHELLE_COSMOS, 3) for c in v], "f": list(best[2])}
