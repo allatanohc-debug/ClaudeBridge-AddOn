@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.4c (boutons Visionneuse et Vantage)"
+VERSION = "21/10 - v7.5 (retouche apres rendu)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2891,6 +2891,259 @@ def fit_window(win, max_w=0.9, max_h=0.85) -> None:
     win.after(60, go)
 
 
+# ---------------------------------------------------------------- retouche ---
+RETOUCHE_DEFAUT = {"exposition": 0.0, "contraste": 0.0, "chaleur": 0.0, "teinte": 0.0, "saturation": 0.0,
+                   "hautes": 0.0, "ombres": 0.0, "vignettage": 0.0, "nettete": 0.0}
+RETOUCHE_PRESETS = {
+    "Neutre (remise à zéro)": {},
+    "✨ Lumineux et net": {"exposition": 0.3, "contraste": 12, "hautes": -25, "ombres": 20, "saturation": 8, "nettete": 35},
+    "🌴 Chaud tropical": {"exposition": 0.15, "contraste": 10, "chaleur": 30, "saturation": 15, "ombres": 10, "nettete": 25},
+    "🏛 Architecture sobre": {"contraste": 18, "saturation": -15, "hautes": -30, "ombres": 15, "nettete": 40},
+    "🌇 Soirée douce": {"exposition": -0.15, "chaleur": 40, "teinte": 8, "contraste": 8, "vignettage": 35, "saturation": 10},
+    "🏠 Intérieur clair": {"exposition": 0.45, "hautes": -40, "ombres": 35, "chaleur": 10, "contraste": 6, "nettete": 25},
+}
+RETOUCHE_AIDE = {"exposition": "Plus clair / plus sombre (en diaphragmes, comme un appareil photo)",
+                 "contraste": "Écart entre clairs et sombres", "chaleur": "Lumière plus bleue (froide) ou plus orangée (chaude)",
+                 "teinte": "Corrige une dominante verte ou magenta", "saturation": "Couleurs plus vives ou plus ternes",
+                 "hautes": "Récupère le détail du ciel et des fenêtres trop blancs (vers la gauche)",
+                 "ombres": "Débouche les zones sombres (vers la droite)", "vignettage": "Assombrit doucement les bords",
+                 "nettete": "Accentue les détails (appliquée à l'image enregistrée)"}
+
+
+def ensure_pillow() -> None:
+    mods = str(data_dir().parent / "modules")
+    if mods not in sys.path:
+        sys.path.insert(0, mods)
+    try:
+        import PIL  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    subprocess.run([sys.executable, "-m", "pip", "install", "--target", mods, "--upgrade", "pillow"],
+                   capture_output=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=600)
+    import importlib
+    importlib.invalidate_caches()
+    import PIL  # noqa: F401
+
+
+def retouche_calc(a, r: dict):
+    """a : tableau numpy float32 (h, w, 3) en 0..1 (sRGB). Renvoie l'image retouchee (0..1)."""
+    import numpy as np
+    x = a
+    ev, warm, tint = float(r.get("exposition", 0)), float(r.get("chaleur", 0)) / 100, float(r.get("teinte", 0)) / 100
+    if ev or warm or tint:
+        lin = np.power(np.clip(x, 0, 1), 2.2) * (2.0 ** ev)
+        gain = np.array([1 + 0.18 * warm + 0.04 * tint, 1 - 0.08 * tint, 1 - 0.18 * warm + 0.04 * tint], dtype=np.float32)
+        x = np.power(np.clip(lin * gain, 0, None), 1 / 2.2)
+    lum = (x * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).sum(axis=2, keepdims=True)
+    hl, sh = float(r.get("hautes", 0)) / 100, float(r.get("ombres", 0)) / 100
+    if hl:
+        x = x + hl * 0.35 * np.clip((lum - 0.45) / 0.55, 0, 1) ** 2 * np.where(hl < 0, np.clip(x, 0, 1.5), 1)
+    if sh:
+        x = x + sh * 0.3 * np.clip((0.55 - lum) / 0.55, 0, 1) ** 2
+    c = float(r.get("contraste", 0)) / 100
+    if c:
+        x = (x - 0.5) * (1 + c * 0.7) + 0.5
+    s = float(r.get("saturation", 0)) / 100
+    if s:
+        lum = (x * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).sum(axis=2, keepdims=True)
+        x = lum + (x - lum) * (1 + s)
+    v = float(r.get("vignettage", 0)) / 100
+    if v:
+        h, w = x.shape[:2]
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        d2 = ((xx / w - 0.5) ** 2 + (yy / h - 0.5) ** 2) / 0.5
+        x = x * (1 - v * 0.6 * d2)[..., None]
+    return np.clip(x, 0, 1)
+
+
+def retouche_enregistre(src: Path, r: dict) -> Path:
+    import numpy as np
+    from PIL import Image, ImageFilter
+    im = Image.open(src).convert("RGB")
+    out = retouche_calc(np.asarray(im, dtype=np.float32) / 255.0, r)
+    res = Image.fromarray((out * 255 + 0.5).astype(np.uint8))
+    n = float(r.get("nettete", 0))
+    if n > 0:
+        res = res.filter(ImageFilter.UnsharpMask(radius=1.6, percent=int(n * 1.6), threshold=2))
+    dst = src.with_name(src.stem + "_retouche.png")
+    res.save(dst)
+    src.with_name(src.stem + "_retouche.json").write_text(json.dumps(r), encoding="utf-8")
+    return dst
+
+
+def rendus_recents(project: str, n: int = 40) -> list:
+    base = Path(os.environ.get("USERPROFILE", Path.home())) / "Documents" / "Rendus V-Ray" / safe(project)
+    fs = [p for ext in ("png", "jpg", "jpeg", "tif") for p in base.glob(f"*/*.{ext}")
+          if "_retouche" not in p.stem and "_brut" not in p.stem]
+    return sorted(fs, key=lambda p: p.stat().st_mtime, reverse=True)[:n]
+
+
+def retouche_window(root, proj: dict, say=print) -> None:
+    """Retouche apres rendu, sans relancer V-Ray : exposition, contraste, chaleur... apercu immediat."""
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+    try:
+        ensure_pillow()
+        import numpy as np
+        from PIL import Image, ImageTk
+    except Exception as error:  # noqa: BLE001
+        messagebox.showerror("Retouche", f"Module image indisponible : {error}", parent=root)
+        return
+    fichiers = rendus_recents(proj["name"])
+    win = tk.Toplevel(root)
+    win.title("🎚 Retouche du rendu (sans recalcul)")
+    win.attributes("-topmost", True)
+    win.geometry("1240x760")
+    win.minsize(640, 420)
+    win.columnconfigure(0, weight=1)
+    win.rowconfigure(1, weight=1)
+    haut = ttk.Frame(win, padding=(10, 8))
+    haut.grid(row=0, column=0, columnspan=2, sticky="ew")
+    haut.columnconfigure(1, weight=1)
+    ttk.Label(haut, text="Image").grid(row=0, column=0, sticky="w")
+    noms = {f"{p.parent.name} · {p.name}": p for p in fichiers}
+    img_var = tk.StringVar(value=next(iter(noms), ""))
+    box = ttk.Combobox(haut, values=list(noms), textvariable=img_var, state="readonly")
+    box.grid(row=0, column=1, sticky="ew", padx=6)
+
+    def parcourir():
+        f_ = filedialog.askopenfilename(parent=win, title="Image à retoucher",
+                                        filetypes=[("Images", "*.png *.jpg *.jpeg *.tif *.tiff"), ("Tous", "*.*")])
+        if f_:
+            p_ = Path(f_)
+            noms[f"{p_.parent.name} · {p_.name}"] = p_
+            box.configure(values=list(noms))
+            img_var.set(f"{p_.parent.name} · {p_.name}")
+            charge()
+    ttk.Button(haut, text="Parcourir…", command=parcourir).grid(row=0, column=2)
+    cv = tk.Canvas(win, background="#1b1d21", highlightthickness=0)
+    cv.grid(row=1, column=0, sticky="nsew")
+    cote = ttk.Frame(win, padding=(12, 6))
+    cote.grid(row=1, column=1, sticky="ns")
+    r = dict(RETOUCHE_DEFAUT)
+    vars_: dict = {}
+    etat = {"src": None, "petit": None, "photo": None, "id": None, "orig": False}
+    ttk.Label(cote, text="Préréglage").grid(row=0, column=0, columnspan=3, sticky="w")
+    pre_var = tk.StringVar(value="")
+    pre = ttk.Combobox(cote, values=list(RETOUCHE_PRESETS), textvariable=pre_var, state="readonly", width=26)
+    pre.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 8))
+    bornes = {"exposition": (-2.0, 2.0), "nettete": (0, 100), "vignettage": (0, 100)}
+    libelles = {"exposition": "☀ Exposition", "contraste": "◐ Contraste", "chaleur": "🌡 Chaleur", "teinte": "🎨 Teinte",
+                "saturation": "🌈 Saturation", "hautes": "⛅ Hautes lumières", "ombres": "🌑 Ombres",
+                "vignettage": "⭕ Vignettage", "nettete": "🔍 Netteté"}
+    for k, key in enumerate(RETOUCHE_DEFAUT):
+        lo, hi = bornes.get(key, (-100, 100))
+        ttk.Label(cote, text=libelles[key]).grid(row=2 + 2 * k, column=0, sticky="w")
+        val = ttk.Label(cote, width=6, anchor="e")
+        val.grid(row=2 + 2 * k, column=2, sticky="e")
+        v = tk.DoubleVar(value=0.0)
+        sc = ttk.Scale(cote, from_=lo, to=hi, variable=v, length=230)
+        sc.grid(row=3 + 2 * k, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+        vars_[key] = (v, val)
+        sc.bind("<Double-Button-1>", lambda _e, v=v: (v.set(0.0), maj()))
+        v.trace_add("write", lambda *_a: maj())
+        tip = RETOUCHE_AIDE[key]
+        sc.bind("<Enter>", lambda _e, t=tip: aide.configure(text=t))
+    aide = ttk.Label(cote, foreground="#888", wraplength=250, justify="left",
+                     text="Double-clic sur un curseur : retour à zéro.")
+    aide.grid(row=30, column=0, columnspan=3, sticky="w", pady=(6, 6))
+    bas = ttk.Frame(cote)
+    bas.grid(row=31, column=0, columnspan=3, sticky="ew")
+    avant = ttk.Button(bas, text="👁 Maintenir : avant")
+    avant.grid(row=0, column=0, sticky="w")
+    avant.bind("<ButtonPress-1>", lambda _e: (etat.update(orig=True), dessine()))
+    avant.bind("<ButtonRelease-1>", lambda _e: (etat.update(orig=False), dessine()))
+    ttk.Button(bas, text="Auto", command=lambda: auto()).grid(row=0, column=1, padx=6)
+    ttk.Button(cote, text="💾 Enregistrer l'image retouchée", style="Accent.TButton",
+               command=lambda: enregistre()).grid(row=32, column=0, columnspan=3, sticky="ew", pady=(10, 4))
+    ttk.Button(cote, text="⧉ Appliquer à toutes les images du même jour",
+               command=lambda: tout_le_jour()).grid(row=33, column=0, columnspan=3, sticky="ew")
+    info = ttk.Label(cote, foreground="#2a7d4f", wraplength=250, justify="left")
+    info.grid(row=34, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    def lit():
+        return {k_: float(v_[0].get()) for k_, v_ in vars_.items()}
+
+    def pose(valeurs: dict):
+        for k_, (v_, _l) in vars_.items():
+            v_.set(float(valeurs.get(k_, 0.0)))
+
+    def maj():
+        for k_, (v_, l_) in vars_.items():
+            x_ = float(v_.get())
+            l_.configure(text=f"{x_:+.2f}" if k_ == "exposition" else f"{x_:+.0f}")
+        if etat["id"]:
+            win.after_cancel(etat["id"])
+        etat["id"] = win.after(40, dessine)
+
+    def charge(_e=None):
+        p_ = noms.get(img_var.get())
+        if not p_ or not p_.exists():
+            return
+        im = Image.open(p_).convert("RGB")
+        etat["src"] = p_
+        w_, h_ = max(200, cv.winfo_width()), max(150, cv.winfo_height())
+        im.thumbnail((w_, h_))
+        etat["petit"] = np.asarray(im, dtype=np.float32) / 255.0
+        js = p_.with_name(p_.stem + "_retouche.json")       # reglages deja faits sur cette image
+        try:
+            pose(json.loads(js.read_text(encoding="utf-8")) if js.exists() else {})
+        except Exception:  # noqa: BLE001
+            pose({})
+        info.configure(text="")
+        dessine()
+
+    def dessine():
+        etat["id"] = None
+        if etat["petit"] is None:
+            return
+        a_ = etat["petit"] if etat["orig"] else retouche_calc(etat["petit"], lit())
+        etat["photo"] = ImageTk.PhotoImage(Image.fromarray((a_ * 255 + 0.5).astype(np.uint8)))
+        cv.delete("all")
+        cv.create_image(cv.winfo_width() // 2, cv.winfo_height() // 2, image=etat["photo"])
+        if etat["orig"]:
+            cv.create_text(12, 12, anchor="nw", text="AVANT", fill="#ffb07f", font=("Segoe UI", 11, "bold"))
+
+    def auto():
+        if etat["petit"] is None:
+            return
+        lum = float((etat["petit"] * np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).sum(axis=2).mean())
+        ev = float(np.clip(np.log2(0.46 / max(lum, 0.02)) * 0.8, -1.5, 1.5))
+        blanc = float((etat["petit"].max(axis=2) > 0.97).mean())
+        pose(dict(lit(), exposition=round(ev, 2), hautes=-min(60, blanc * 400), ombres=15, contraste=8))
+        info.configure(text="Réglage automatique appliqué (ajuste si besoin).")
+
+    def enregistre():
+        if not etat["src"]:
+            return
+        dst = retouche_enregistre(etat["src"], lit())
+        info.configure(text=f"Enregistrée : {dst.name}\n(l'original est conservé)")
+        say(f"Retouche enregistrée : {dst}")
+
+    def tout_le_jour():
+        if not etat["src"]:
+            return
+        lot = [p_ for p_ in etat["src"].parent.iterdir() if p_.suffix.lower() in (".png", ".jpg", ".jpeg", ".tif")
+               and "_retouche" not in p_.stem and "_brut" not in p_.stem and ".effectsResult" not in p_.stem]
+        if not messagebox.askyesno("Retouche", f"Appliquer ces réglages aux {len(lot)} images du dossier "
+                                   f"« {etat['src'].parent.name} » ?\n(les originaux sont conservés)", parent=win):
+            return
+        for p_ in lot:
+            retouche_enregistre(p_, lit())
+        info.configure(text=f"{len(lot)} images retouchées (fichiers « _retouche »).")
+
+    def preset(_e=None):
+        pose(RETOUCHE_PRESETS.get(pre_var.get(), {}))
+    pre.bind("<<ComboboxSelected>>", preset)
+    box.bind("<<ComboboxSelected>>", charge)
+    cv.bind("<Configure>", lambda _e: (win.after_cancel(etat["cfg"]) if etat.get("cfg") else None,
+                                      etat.update(cfg=win.after(150, charge))))
+    if not fichiers:
+        info.configure(text="Aucun rendu trouvé : clique « Parcourir… ».")
+    maj()
+
+
 # ---------------------------------------------------------------- fenetre ---
 def window(state: dict) -> None:
     import tkinter as tk
@@ -3825,15 +4078,18 @@ def window(state: dict) -> None:
     vis_btn.grid(row=0, column=3, padx=(8, 0))
     van_btn = ttk.Button(action_bar, text="🎥 Vantage", command=lambda: vers_vantage())
     van_btn.grid(row=0, column=4, padx=(6, 0))
+    ret_btn = ttk.Button(action_bar, text="🎚 Retouche", command=lambda: retouche_window(root, proj, say))
+    ret_btn.grid(row=0, column=2, padx=(8, 0))
     ttk.Button(action_bar, text="⚙", width=3, command=lambda: advanced()).grid(row=0, column=5, padx=(8, 0))
     plus_menu = tk.Menu(root, tearoff=0)
     plus_menu.add_command(label="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen())
     plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
+    plus_menu.add_command(label="🎚 Retoucher un rendu (sans recalcul)", command=lambda: retouche_window(root, proj, say))
     plus_menu.add_command(label="🧭 Visionneuse 3D", command=lambda: open_viewer())
     plus_menu.add_command(label="🎥 Ouvrir dans Chaos Vantage (vidéo, visite)", command=lambda: vers_vantage())
     plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
     plus_btn = ttk.Button(action_bar, text="⋯", width=3)
-    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 135))
+    plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 160))
     plus_btn.grid(row=0, column=6, padx=(6, 0))
 
     def aller(frame):
@@ -4286,6 +4542,7 @@ def window(state: dict) -> None:
             fin = root.winfo_width() < 640                                    # tres fine : barre de gauche en icones
             vis_btn.configure(text="🧭" if root.winfo_width() < 760 else "🧭 Visionneuse")
             van_btn.configure(text="🎥" if root.winfo_width() < 760 else "🎥 Vantage")
+            ret_btn.configure(text="🎚" if root.winfo_width() < 760 else "🎚 Retouche")
             for b_ in side_btns:
                 t_ = b_.cget("text")
                 ico, _, lab = t_.partition("\n")
