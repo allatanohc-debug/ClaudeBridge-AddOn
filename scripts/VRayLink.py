@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.4 (synchro auto du modele)"
+VERSION = "21/10 - v7.4b (synchro auto du modele)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2505,7 +2505,7 @@ def prepare_geometry(state: dict, proj: dict, report=print) -> tuple[Path, float
     forcer = FORCER_EXPORT["v"]
     reuse = (state["options"].get("reutiliser") and not forcer and geo.exists() and cache.exists()
              and info.get("version") == 3 and info.get("selection") == sel_sig
-             and (not sig or not info.get("modele_sig") or sig == info.get("modele_sig")))
+             and (not sig or sig == info.get("modele_sig")))
     if reuse:
         meshes, mats, offset, ground = pickle.loads(cache.read_bytes())
         note = "modèle inchangé dans Archicad : géométrie reprise (pas de réexport)"
