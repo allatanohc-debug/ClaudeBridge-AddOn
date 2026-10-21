@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.0 (option Niveau du sol)"
+VERSION = "21/10 - v7.0b (option Niveau du sol)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3209,17 +3209,17 @@ def window(state: dict) -> None:
                    "En intérieur, V-Ray Link éclaire aussi la pièce avec la lumière du ciel « intelligente » de V-Ray "
                    "(elle passe par les fenêtres) : image moins granuleuse.")
     am_note.grid(row=3, column=0, columnspan=4, sticky="w")
-    ttk.Label(am, text="⛰ Niveau du sol").grid(row=4, column=0, sticky="w", pady=(8, 0))
+    ttk.Label(am, text="⛰ Niveau du sol").grid(row=6, column=0, sticky="w", pady=(8, 0))
     niv_var = tk.StringVar(value=opts.get("niveau_sol", NIVEAUX_SOL[0]))
     niv_box = ttk.Combobox(am, values=NIVEAUX_SOL, textvariable=niv_var, state="readonly", width=24)
-    niv_box.grid(row=4, column=1, padx=6, pady=(8, 0), sticky="w")
+    niv_box.grid(row=6, column=1, padx=6, pady=(8, 0), sticky="w")
     cote_var = tk.StringVar(value=str(opts.get("sol_cote", 0.0)))
     cote_box = ttk.Frame(am)
-    cote_box.grid(row=4, column=2, columnspan=2, sticky="w", pady=(8, 0))
+    cote_box.grid(row=6, column=2, columnspan=2, sticky="w", pady=(8, 0))
     ttk.Spinbox(cote_box, from_=-20, to=20, increment=0.05, textvariable=cote_var, width=7).grid(row=0, column=0)
     ttk.Label(cote_box, text="m").grid(row=0, column=1, padx=(3, 0))
     niv_note = ttk.Label(am, foreground="#777", wraplength=430, justify="left")
-    niv_note.grid(row=5, column=0, columnspan=4, sticky="w")
+    niv_note.grid(row=7, column=0, columnspan=4, sticky="w")
 
     def niv_maj(_e=None):
         if niv_var.get() == NIVEAUX_SOL[3]:
