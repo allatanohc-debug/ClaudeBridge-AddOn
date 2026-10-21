@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.8b (360 dans la visionneuse)"
+VERSION = "21/10 - v7.9 (materiaux automatiques)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -6536,6 +6536,90 @@ def project_surfaces(state: dict, key: str) -> tuple[dict, bool]:
         return {}, False
 
 
+# ---------------------------------------------------------------- materiaux automatiques ---
+FAMILLES_MAT = [   # (famille, mots Archicad (fr/en/de), mots a chercher dans les materiaux Cosmos)
+    ("Brique", ["brick", "brique", "ziegel", "parement"], ["brick"]),
+    ("Béton", ["concrete", "beton", "béton", "ciment", "cement", "precast"], ["concrete", "cement"]),
+    ("Verre", ["glass", "verre", "vitrage", "glas", "glazing", "vitre"], ["glass"]),
+    ("Miroir", ["mirror", "miroir", "spiegel"], ["mirror"]),
+    ("Bois", ["wood", "bois", "holz", "timber", "oak", "chene", "chêne", "walnut", "noyer", "pine", "pin", "teak", "teck",
+              "parquet", "plank", "lame", "veneer", "placage", "beech", "hetre", "hêtre", "ash", "frene"], ["wood", "oak", "walnut",
+              "parquet", "plank", "timber", "veneer", "pine", "teak"]),
+    ("Métal", ["metal", "métal", "steel", "acier", "alu", "aluminium", "aluminum", "zinc", "chrome", "inox", "stainless",
+               "iron", "fer", "copper", "cuivre", "brass", "laiton", "stahl"], ["metal", "steel", "aluminium", "aluminum", "chrome",
+               "brass", "copper", "iron", "zinc"]),
+    ("Carrelage", ["tile", "tiles", "carrelage", "carreau", "ceramic", "céramique", "ceramique", "fliese", "faience",
+                   "faïence", "mosaic", "mosaique", "mosaïque"], ["tile", "ceramic", "mosaic", "terrazzo"]),
+    ("Marbre", ["marble", "marbre", "marmor"], ["marble"]),
+    ("Pierre", ["stone", "pierre", "stein", "granite", "granit", "slate", "ardoise", "limestone", "calcaire", "travertin"],
+     ["stone", "granite", "slate", "travertine", "limestone"]),
+    ("Enduit / peinture", ["plaster", "platre", "plâtre", "enduit", "stucco", "crepi", "crépi", "paint", "peinture",
+                           "putz", "render", "rendering", "wall finish", "gypsum"], ["plaster", "paint", "stucco", "render"]),
+    ("Toiture", ["roof", "toit", "tuile", "shingle", "dach", "couverture"], ["roof", "shingle"]),
+    ("Gazon", ["grass", "gazon", "herbe", "lawn", "rasen", "pelouse"], ["grass", "lawn"]),
+    ("Gravier", ["gravel", "gravier", "kies", "pebble", "galet"], ["gravel", "pebble"]),
+    ("Sable / terre", ["sand", "sable", "soil", "terre", "earth", "dirt", "laterite", "latérite"], ["sand", "soil", "dirt", "ground"]),
+    ("Asphalte", ["asphalt", "asphalte", "bitume", "goudron", "tarmac", "road", "route", "chaussee", "chaussée"], ["asphalt", "road"]),
+    ("Tissu / cuir", ["fabric", "tissu", "textile", "cloth", "leather", "cuir", "carpet", "moquette", "tapis", "velvet"],
+     ["fabric", "textile", "leather", "carpet", "cloth", "velvet"]),
+    ("Plastique", ["plastic", "plastique", "kunststoff", "pvc", "laminate", "stratifie", "stratifié", "resin", "résine"],
+     ["plastic", "laminate", "pvc"]),
+    ("Eau", ["water", "eau", "piscine", "pool", "wasser"], ["water"]),
+]
+
+
+def _mots(texte: str) -> set:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", texte.lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return set(re.findall(r"[a-z]+", t))
+
+
+def _norm(texte: str) -> str:
+    import unicodedata
+    t = unicodedata.normalize("NFKD", texte.lower())
+    return "".join(c for c in t if not unicodedata.combining(c))
+
+
+def _contient(texte: str, cle: str) -> int:
+    """Position du mot-cle dans le texte (mots courts : mot entier seulement), -1 si absent."""
+    t, c = _norm(texte), _norm(cle)
+    if len(c) >= 5:
+        return t.find(c)
+    m = re.search(rf"(?<![a-z]){re.escape(c)}(?![a-z])", t)
+    return m.start() if m else -1
+
+
+def famille_de(nom_surface: str):
+    meilleur = None
+    for fam, cles, cosmos in FAMILLES_MAT:
+        pos = [p_ for p_ in (_contient(nom_surface, c) for c in cles) if p_ >= 0]
+        if pos and (meilleur is None or min(pos) < meilleur[0]):
+            meilleur = (min(pos), fam, cosmos)
+    return (meilleur[1], meilleur[2]) if meilleur else (None, [])
+
+
+def suggestions_materiaux(surfaces: list, deja: dict, biblio: list) -> list:
+    """[(surface, famille, entree Cosmos ou None)] pour les surfaces sans materiau Cosmos."""
+    out = []
+    for s_ in surfaces:
+        if s_ in deja or s_.startswith("Cosmos · "):
+            continue
+        fam, mots_cosmos = famille_de(s_)
+        if not fam:
+            continue
+        mots_surface = _mots(s_)
+        best, score = None, 0.0
+        for e in biblio:
+            txt = e["nom"] + " " + e.get("categorie", "")
+            nom = _mots(txt)
+            sc = 3.0 * sum(1 for c in mots_cosmos if _contient(txt, c) >= 0) + 1.0 * len(nom & mots_surface)
+            if sc > score:
+                best, score = e, sc
+        out.append((s_, fam, best if score >= 3 else None))
+    return out
+
+
 def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     ui_call = getattr(root, "ui_call", None) or (lambda f: root.after(0, f))
     import tkinter as tk
@@ -6766,6 +6850,74 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     scale_var = tk.DoubleVar(value=1.0)
     ttk.Spinbox(acts, from_=0.05, to=20, increment=0.25, textvariable=scale_var, width=5).grid(row=0, column=4)
     ttk.Button(acts, text="Appliquer l'échelle", command=lambda: set_scale()).grid(row=0, column=5, padx=3)
+    ttk.Button(acts, text="✨ Matériaux automatiques", style="Accent.TButton",
+               command=lambda: auto_materiaux()).grid(row=0, column=6, padx=(12, 3))
+
+    def auto_materiaux():
+        """Propose un materiau Cosmos pour chaque surface Archicad d'apres son nom (brique, beton, verre, bois...)."""
+        biblio = cosmos_library("Materials")
+        props = suggestions_materiaux(sorted(surfaces), state.get("cosmos") or {}, biblio)
+        win = tk.Toplevel(root)
+        win.title("✨ Matériaux automatiques")
+        win.attributes("-topmost", True)
+        win.geometry("860x520")
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(1, weight=1)
+        ttk.Label(win, padding=(10, 8), wraplength=820, justify="left",
+                  text="V-Ray Link a lu le nom de tes surfaces Archicad et propose un matériau Cosmos déjà téléchargé. "
+                       "Décoche (clic sur la ligne) ce que tu ne veux pas, puis « Appliquer ». Les surfaces déjà associées "
+                       "ne sont pas touchées.").grid(row=0, column=0, sticky="w")
+        tv = ttk.Treeview(win, columns=("ok", "surface", "famille", "cosmos"), show="headings", selectmode="none")
+        for c_, t_, w_ in (("ok", "", 34), ("surface", "Surface Archicad", 300), ("famille", "Reconnu comme", 130),
+                           ("cosmos", "Matériau Cosmos proposé", 340)):
+            tv.heading(c_, text=t_)
+            tv.column(c_, width=w_, anchor="w", stretch=c_ != "ok")
+        tv.grid(row=1, column=0, sticky="nsew", padx=10)
+        sb = ttk.Scrollbar(win, orient="vertical", command=tv.yview)
+        sb.grid(row=1, column=1, sticky="ns")
+        tv.configure(yscrollcommand=sb.set)
+        coche, manque = {}, []
+        for s_, fam, e in props:
+            if e:
+                iid = tv.insert("", "end", values=("☑", s_, fam, f"{e['nom']}  ({e['categorie']})"))
+                coche[iid] = (s_, e, True)
+            else:
+                manque.append(fam)
+                tv.insert("", "end", values=("—", s_, fam, "aucun matériau de ce type téléchargé"))
+
+        def bascule(ev):
+            iid = tv.identify_row(ev.y)
+            if iid in coche:
+                s_, e, on = coche[iid]
+                coche[iid] = (s_, e, not on)
+                tv.set(iid, "ok", "☑" if not on else "☐")
+        tv.bind("<Button-1>", bascule)
+        bas = ttk.Frame(win, padding=10)
+        bas.grid(row=2, column=0, columnspan=2, sticky="ew")
+        manque_txt = sorted(set(manque))
+        ttk.Label(bas, foreground="#a55", wraplength=520, justify="left",
+                  text=(("À télécharger dans Cosmos pour compléter : " + ", ".join(manque_txt) + ".") if manque_txt else
+                        ("Aucune surface à compléter." if not props else ""))).grid(row=0, column=0, sticky="w")
+
+        def appliquer():
+            cosmos = state.setdefault("cosmos", {})
+            n = 0
+            for s_, e, on in coche.values():
+                if on:
+                    cosmos[s_] = {"dossier": e["dossier"], "echelle": 1.0}
+                    n += 1
+            save_settings(state)
+            fill_tree()
+            msg.set(f"✨ {n} surface(s) habillée(s) automatiquement avec un matériau Cosmos. Ctrl+clic sur une surface "
+                    "à gauche pour changer un choix.")
+            win.destroy()
+        bt = ttk.Frame(bas)
+        bt.grid(row=0, column=1, sticky="e")
+        bas.columnconfigure(0, weight=1)
+        if manque_txt:
+            ttk.Button(bt, text="🌐 Ouvrir Cosmos", command=lambda: open_cosmos()).grid(row=0, column=0, padx=4)
+        ttk.Button(bt, text=f"Appliquer ({len(coche)})", style="Accent.TButton", command=appliquer).grid(row=0, column=1, padx=4)
+        ttk.Button(bt, text="Annuler", command=win.destroy).grid(row=0, column=2)
 
     def edit_material():
         names = [n for n in tree.selection()]
