@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.8 (pose sur dalle ou au sol)"
+VERSION = "21/10 - v8.8b (sur dalle / au plafond / au sol)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1687,22 +1687,35 @@ $("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("del
 let popMode=null, stroke=null, clip=null, lastGround=null; const popGroup=new THREE.Group(); scene.add(popGroup);
 // pose : "dalle" = premiere surface horizontale tournee vers le haut (dalle, terrasse, plancher d'etage), sinon le sol ; "sol" = toujours au niveau du sol
 let pose="dalle"; try{pose=localStorage.getItem("vrl_pose")||"dalle"}catch(_){}
-function majPose(){$("ePose").textContent=pose==="dalle"?"⬓ Sur dalle":"⛰ Au sol"; $("ePose").classList.toggle("on",pose==="dalle")}
-$("ePose").onclick=()=>{pose=pose==="dalle"?"sol":"dalle"; try{localStorage.setItem("vrl_pose",pose)}catch(_){} majPose();
- $("mesure").style.display=""; $("mesure").textContent=pose==="dalle"?"Les objets se posent sur la dalle sous la souris (terrasse, étage…) — « Masquer au-dessus » pour viser un étage sous un toit":"Les objets se posent toujours au niveau du sol";
+const POSES={dalle:["⬓ Sur dalle","Les objets se posent sur la dalle sous la souris (terrasse, étage…) — « Masquer au-dessus » pour viser un étage sous un toit"],
+ plafond:["⬒ Au plafond","Les objets et les lumières s'accrochent sous la dalle du dessus (plafond) de la pièce visée — lustres, suspensions, spots"],
+ sol:["⛰ Au sol","Les objets se posent toujours au niveau du sol"]};
+if(!POSES[pose])pose="dalle";
+function majPose(){$("ePose").textContent=POSES[pose][0]; $("ePose").classList.toggle("on",pose!=="sol")}
+$("ePose").onclick=()=>{pose={dalle:"plafond",plafond:"sol",sol:"dalle"}[pose]; try{localStorage.setItem("vrl_pose",pose)}catch(_){} majPose();
+ $("mesure").style.display=""; $("mesure").textContent=POSES[pose][1];
  setTimeout(()=>{if(!popMode&&!mesureOn)$("mesure").style.display="none"},2500)}; majPose();
+const rayU=new THREE.Raycaster();
+function plafondEn(x,y,z){rayU.set(new THREE.Vector3(x,y,z+0.05),new THREE.Vector3(0,0,1));   // dessous de la dalle au-dessus du point
+ const h=rayU.intersectObject(model,false).find(h=>h.face&&h.face.normal.z<-0.6&&h.distance>0.3); return h?+h.point.z.toFixed(3):null}
+function hautObj(oi){const o=OBJ[oi]; if(!o)return 0; const t=o.taille||[0.8,0.8,1,0]; return ((t[3]||0)+t[2])*(o.echelle||1)}
+function accroche(p,oi){if(pose!=="plafond"||!p)return p; const c=plafondEn(p[0],p[1],p[2]); if(c===null)return p;
+ return [p[0],p[1],oi===-1?+(c-0.05).toFixed(3):+(c-hautObj(oi)).toFixed(3),c]}
 function posePoint(){const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-info.sol), pt=new THREE.Vector3();
- if(pose==="dalle"){const cut=+$("cut").value, haut=cut>=30?Infinity:info.sol+cut, near=+$("coupe").value||0;
+ if(pose!=="sol"){const cut=+$("cut").value, haut=cut>=30?Infinity:info.sol+cut, near=+$("coupe").value||0;
   const h=ray.intersectObject(model,false).find(h=>h.face&&h.face.normal.z>0.6&&h.point.z<=haut+0.01&&h.distance>=near);
   if(h&&h.point.z>=info.sol-0.05)return [h.point.x,h.point.y,+h.point.z.toFixed(3)]}
  return ray.ray.intersectPlane(pl,pt)?[pt.x,pt.y,info.sol]:null}
 const rayV=new THREE.Raycaster();
-function solEn(x,y,zRef){if(pose!=="dalle")return info.sol;           // hauteur de la surface sous (x,y), en partant un peu au-dessus de zRef (evite le toit)
+function solEn(x,y,zRef,oi){if(pose==="plafond"){const f=solEnD(x,y,zRef); const a=accroche([x,y,f],oi); return a[2]}
+ return solEnD(x,y,zRef)}
+function solEnD(x,y,zRef){if(pose==="sol")return info.sol;           // hauteur de la surface sous (x,y), en partant un peu au-dessus de zRef (evite le toit)
  rayV.set(new THREE.Vector3(x,y,Math.max(zRef,info.sol)+1.5),new THREE.Vector3(0,0,-1));
  const h=rayV.intersectObject(model,false).find(h=>h.face&&h.face.normal.z>0.6); return h&&h.point.z>=info.sol-0.05?+h.point.z.toFixed(3):info.sol}
-window.__vrl.solEn=solEn; window.__vrl.model=model; Object.defineProperty(window.__vrl,"pose",{get:()=>pose});
-function sol3(e){const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- return posePoint()}
+window.__vrl.solEn=solEn; window.__vrl.plafondEn=(x,y,z)=>plafondEn(x,y,z); window.__vrl.model=model; window.__vrl.sonde=(cx,cy)=>{const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((cx-r.left)/r.width*2-1,-(cy-r.top)/r.height*2+1),cam);
+ return {pose:posePoint(),hits:ray.intersectObject(model,false).slice(0,6).map(h=>[+h.point.z.toFixed(2),h.face?+h.face.normal.z.toFixed(2):null,+h.distance.toFixed(1)])}}; Object.defineProperty(window.__vrl,"pose",{get:()=>pose});
+function sol3(e,oi){const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const p=accroche(posePoint(),oi); return p&&p.slice(0,3)}
 function varie(base){const v=$("eVar").checked; return [v?Math.random()*360:base.rot, v?+(0.85+Math.random()*0.3).toFixed(2):1]}
 function envoie(pts){if(!pts.length||!sel||sel.userData.kind!=="obj")return; const o=OBJ[sel.userData.i]||{};
  postJ({action:"obj_multi",i:sel.userData.i,pts:pts.slice(0,300).map(p=>{const [r,k]=varie(o); return [+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),+r.toFixed(1),k]})});
@@ -1716,23 +1729,23 @@ function setPop(m){popMode=(popMode===m)?null:m; $("eRow").classList.toggle("on"
 $("eRow").onclick=()=>setPop("rangee"); $("eBrush").onclick=()=>setPop("pinceau");
 function pastille(p){const m=new THREE.Mesh(new THREE.SphereGeometry(0.25,10,8),new THREE.MeshBasicMaterial({color:0xe8702a,depthTest:false}));
  m.position.set(p[0],p[1],p[2]+0.2); m.renderOrder=9; popGroup.add(m)}
-function ligne(e){const end=sol3(e); popGroup.clear(); if(!end||!sel)return [];
+function ligne(e){const oi=sel?sel.userData.i:0, end=sol3(e,oi); popGroup.clear(); if(!end||!sel)return [];
  const a=sel.position, gap=Math.max(0.3,+$("eGap").value||4), d=Math.hypot(end[0]-a.x,end[1]-a.y), n=Math.floor(d/gap), pts=[];
- for(let k=1;k<=n;k++){const t=k*gap/d, x=a.x+(end[0]-a.x)*t, y=a.y+(end[1]-a.y)*t; pts.push([x,y,solEn(x,y,Math.max(a.z,end[2]))])}
+ for(let k=1;k<=n;k++){const t=k*gap/d, x=a.x+(end[0]-a.x)*t, y=a.y+(end[1]-a.y)*t; pts.push([x,y,pose==="plafond"?end[2]:solEn(x,y,Math.max(a.z,end[2]))])}
  for(const p of pts)pastille(p); $("mesure").textContent=`Rangée : ${pts.length} copie(s) tous les ${gap} m — clique pour poser`; return pts}
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||!popMode||e.button!==0)return; e.stopImmediatePropagation(); controls.enabled=false;
  if(popMode==="rangee"){envoie(ligne(e)); setPop("rangee"); controls.enabled=mode==="orbit"; return}
- const p=sol3(e); stroke=p?[p]:[]; popGroup.clear(); if(p)pastille(p); renderer.domElement.setPointerCapture(e.pointerId)},{capture:true});
+ const p=sol3(e,sel?sel.userData.i:0); stroke=p?[p]:[]; popGroup.clear(); if(p)pastille(p); renderer.domElement.setPointerCapture(e.pointerId)},{capture:true});
 renderer.domElement.addEventListener("pointermove",e=>{if(editOn)lastGround=e;
  if(popMode==="rangee"&&sel){ligne(e); return}
- if(popMode!=="pinceau"||!stroke)return; e.stopImmediatePropagation(); const p=sol3(e); if(!p)return; const gap=Math.max(0.3,+$("eGap").value||4);
+ if(popMode!=="pinceau"||!stroke)return; e.stopImmediatePropagation(); const p=sol3(e,sel?sel.userData.i:0); if(!p)return; const gap=Math.max(0.3,+$("eGap").value||4);
  if(stroke.every(q=>Math.hypot(q[0]-p[0],q[1]-p[1])>=gap)){stroke.push(p); pastille(p)}},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(popMode!=="pinceau"||!stroke)return; e.stopImmediatePropagation();
  const pts=stroke; stroke=null; controls.enabled=mode==="orbit"; envoie(pts); setTimeout(()=>popGroup.clear(),600)},{capture:true});
 addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||!editOn)return;
  if(e.code==="Escape"&&popMode){setPop(popMode); e.stopImmediatePropagation(); return}
  if((e.ctrlKey||e.metaKey)&&e.code==="KeyC"&&sel&&sel.userData.kind==="obj"){clip=sel.userData.i; $("selName").textContent="📋 Copié — Ctrl+V pour coller sous la souris"}
- if((e.ctrlKey||e.metaKey)&&e.code==="KeyV"&&clip!==null&&lastGround){const p=sol3(lastGround); if(!p)return; e.preventDefault();
+ if((e.ctrlKey||e.metaKey)&&e.code==="KeyV"&&clip!==null&&lastGround){const p=sol3(lastGround,clip); if(!p)return; e.preventDefault();
   const o=OBJ[clip]||{}; postJ({action:"obj_multi",i:clip,pts:[[+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),o.rot||0,1]]}); $("selName").textContent="Collé (Ctrl+Z pour annuler)"}},{capture:true});
 // glisser directement l'objet a la souris (il suit les surfaces : sol, terrasse, table…) ; Ctrl + glisser = tourner
 let dragO=null;
@@ -1749,11 +1762,13 @@ renderer.domElement.addEventListener("pointermove",e=>{if(!dragO||!sel)return; d
  if(sel.userData.kind!=="obj"){                       // lumiere : plan horizontal a sa hauteur (plafond), Maj = vertical
   if(e.shiftKey){sel.position.z=+(dragO.z0-(e.clientY-dragO.y)*0.01).toFixed(3); $("mesure").textContent=`Hauteur : ${sel.position.z.toFixed(2)} m`; return}
   const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+  if(pose==="plafond"){const pp=accroche(posePoint(),-1); if(pp&&pp.length>3){sel.position.set(pp[0],pp[1],pp[2]); $("mesure").textContent=`⬒ Au plafond — hauteur ${pp[2].toFixed(2)} m`; return}}
   const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}
   $("mesure").textContent=`x ${sel.position.x.toFixed(2)} · y ${sel.position.y.toFixed(2)} · hauteur ${sel.position.z.toFixed(2)} m (Maj = monter / descendre)`; return}
  const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
- const pp=posePoint();
- if(pp){sel.position.x=pp[0]; sel.position.y=pp[1]; sel.position.z=pp[2]; $("mesure").style.display=""; $("mesure").textContent=(pose==="dalle"&&pp[2]>info.sol+0.05?"⬓ Sur dalle":"⛰ Au sol")+` — hauteur ${(pp[2]-info.sol).toFixed(2)} m`}
+ const pp=accroche(posePoint(),sel.userData.i);
+ if(pp){sel.position.x=pp[0]; sel.position.y=pp[1]; sel.position.z=pp[2]; $("mesure").style.display="";
+  $("mesure").textContent=(pp.length>3?"⬒ Au plafond":pose!=="sol"&&pp[2]>info.sol+0.05?"⬓ Sur dalle":"⛰ Au sol")+` — hauteur ${(pp[2]-info.sol).toFixed(2)} m`}
  else{const pl=new THREE.Plane(new THREE.Vector3(0,0,1),-sel.position.z), pt=new THREE.Vector3(); if(ray.ray.intersectPlane(pl,pt)){sel.position.x=pt.x; sel.position.y=pt.y}}},{capture:true});
 renderer.domElement.addEventListener("pointerup",e=>{if(!dragO)return; const moved=dragO.moved; dragO=null; tcDrag=false; controls.enabled=mode==="orbit";
  if(sel)setTimeout(()=>{if(!mesureOn&&!popMode&&!dragO)$("mesure").style.display="none"},1500);
