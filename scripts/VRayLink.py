@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.1c (vraie forme des objets dans la visionneuse)"
+VERSION = "21/10 - v8.1d (vraie forme des objets dans la visionneuse)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2472,7 +2472,7 @@ def vrmesh_apercu(folder: str) -> dict:
     """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
     Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
     import zlib
-    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v3.json")
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v4.json")
     try:
         return json.loads(cache.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
@@ -2506,7 +2506,8 @@ def vrmesh_apercu(folder: str) -> dict:
             if not f_ or min(f_) < 0 or max(f_) >= nv or nv < 30:
                 continue
             v_ = struct.unpack(f"<{len(a) // 4}f", a)
-            if max(abs(c) for c in v_) <= 1.001:          # normales, pas des positions
+            ext = [max(v_[k::3]) - min(v_[k::3]) for k in range(3)]
+            if max(abs(c) for c in v_) <= 1.001 or max(ext) < 3 or min(ext) < 0.2:   # normales / UV, pas une forme
                 continue
             best = (nv, a, f_)
         if best and best[0] > 40000:          # pas d'apercu leger : on garde 1 triangle sur n
