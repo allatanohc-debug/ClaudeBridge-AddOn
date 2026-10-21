@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "20/10 - v6.7 (HDRI dans Soleil et ciel)"
+VERSION = "21/10 - v6.8 (Light Gen ne ferme plus V-Ray Link)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -2783,6 +2783,24 @@ def window(state: dict) -> None:
                              f"Détail : {data_dir() / 'erreurs.txt'}", parent=root)
 
     root.report_callback_exception = tk_error
+    import queue as _queue
+    _ui_q = _queue.Queue()                     # appels venus d'autres fils : executes ici, dans le fil de Tk
+
+    def ui_call(f):
+        _ui_q.put(f)
+
+    def _ui_pump():
+        try:
+            while True:
+                try:
+                    _ui_q.get_nowait()()
+                except _queue.Empty:
+                    break
+                except Exception:  # noqa: BLE001
+                    pass
+        finally:
+            root.after(150, _ui_pump)
+    root.after(150, _ui_pump)
     root.attributes("-topmost", True)
     couleurs = apply_theme(root, opts.get("theme", "clair"))
     # --- en-tete de fenetre : logo, titre, etat de V-Ray, clair / sombre
@@ -3360,8 +3378,35 @@ def window(state: dict) -> None:
             b.grid(row=0, column=0)
             ttk.Label(cell, text=label).grid(row=1, column=0)
 
+        import queue as _q
+        boite = _q.Queue()                    # le fil de calcul ne touche jamais Tk (sinon l'appli peut se fermer net)
+        vivant = {"v": True}
+        win.bind("<Destroy>", lambda e: vivant.update(v=False) if e.widget is win else None, add="+")
+
+        def pompe():
+            if not vivant["v"]:
+                return
+            try:
+                while True:
+                    m = boite.get_nowait()
+                    if m[0] == "etat":
+                        etat.set(m[1])
+                    elif m[0] == "img":
+                        ajoute(*m[1:])
+                    elif m[0] == "fin":
+                        etat.set("Terminé : clique sur une image pour appliquer cet éclairage.")
+                        return
+            except _q.Empty:
+                pass
+            except Exception:  # noqa: BLE001
+                pass
+            win.after(250, pompe)
+        win.after(250, pompe)
+
         def run():
             for k, (label, ov) in enumerate(sc):
+                if not vivant["v"]:
+                    return
                 o = dict(opts, _apercu=True, _apercu_px=360, reutiliser=True, **ov)
                 scene = geo.parent / f"lightgen_{k}.vrscene"
                 image = geo.parent / f"lightgen_{k}.png"
@@ -3371,7 +3416,7 @@ def window(state: dict) -> None:
                                             scene.read_text(encoding="utf-8")), encoding="utf-8")
                     if image.exists():
                         image.unlink()
-                    root.after(0, lambda k=k: etat.set(f"Calcul {k + 1} / {len(sc)}…"))
+                    boite.put(("etat", f"Calcul {k + 1} / {len(sc)}…"))
                     subprocess.run([state["vray"], f"-sceneFile={scene}", f"-imgFile={image}", "-display=0", "-autoClose=1",
                                     "-verboseLevel=1"] + ([MOTEURS[opts["moteur"]]] if MOTEURS.get(opts.get("moteur")) else []),
                                    cwd=str(scene.parent), creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=300)
@@ -3379,13 +3424,8 @@ def window(state: dict) -> None:
                     out_ = fx if fx.exists() else image
                 except Exception:  # noqa: BLE001
                     out_ = image
-                try:
-                    if not win.winfo_exists():
-                        return
-                except Exception:  # noqa: BLE001
-                    return
-                root.after(0, lambda k=k, label=label, ov=ov, out_=out_: ajoute(k, label, ov, out_))
-            root.after(0, lambda: etat.set("Terminé : clique sur une image pour appliquer cet éclairage."))
+                boite.put(("img", k, label, ov, out_))
+            boite.put(("fin",))
         threading.Thread(target=run, daemon=True).start()
 
     def advanced():
@@ -5889,7 +5929,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
     host = {"h": None}
 
     def on_status(text):
-        root.after(0, lambda: cosmos_state.set(("● " if "connecté" in text else "○ ") + text))
+        ui_call(lambda: cosmos_state.set(("● " if "connecté" in text else "○ ") + text))
 
     def on_import(name):
         for listener in (state.get("_cosmos") or {}).get("listeners", []):
@@ -5906,7 +5946,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
                 root.lift()
             except Exception:  # noqa: BLE001
                 pass
-        root.after(0, ui)
+        ui_call(ui)
 
     def connect():
         if host["h"] is None:
@@ -5916,7 +5956,7 @@ def materials_tab(root, nb, state: dict, proj: dict, key: str) -> None:
 
     # Connexion a Cosmos des le lancement (si Cosmos tourne) : sinon un telechargement fait depuis le navigateur
     # echoue avec « The selected importer was not found » (aucun logiciel hote a l'ecoute).
-    root.after(2500, lambda: threading.Thread(target=lambda: _port_open(30305) and root.after(0, connect), daemon=True).start())
+    root.after(2500, lambda: threading.Thread(target=lambda: _port_open(30305) and ui_call(connect), daemon=True).start())
 
     def open_cosmos():
         connect()
@@ -5948,7 +5988,23 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=T.PORT)
     args, _ = parser.parse_known_args()
     T.PORT = args.port
-    window(load_settings())
+    try:                                       # une fermeture brutale laisse une trace dans plantage.txt
+        import faulthandler
+        _crash = (data_dir() / "plantage.txt").open("a", encoding="utf-8")
+        _crash.write(time.strftime("\n--- %d/%m %H:%M:%S lancement ") + VERSION + "\n")
+        _crash.flush()
+        faulthandler.enable(_crash)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        window(load_settings())
+    except Exception:
+        import traceback
+        try:
+            (data_dir() / "erreurs.txt").open("a", encoding="utf-8").write(time.strftime("%H:%M:%S ") + traceback.format_exc() + "\n")
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     return 0
 
 
