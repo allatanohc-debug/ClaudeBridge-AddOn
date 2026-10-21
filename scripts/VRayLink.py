@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.4d (reperes sur le bon etage)"
+VERSION = "21/10 - v8.4e (visionneuse se reconnecte)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1120,7 +1120,12 @@ class ViewerServer:
                 except Exception:  # noqa: BLE001
                     pass
 
-        self.httpd = Quiet(("127.0.0.1", 0), H)
+        for port_ in (8740, 8741, 8742, 0):      # meme adresse a chaque lancement : une fenetre deja ouverte se reconnecte
+            try:
+                self.httpd = Quiet(("127.0.0.1", port_), H)
+                break
+            except OSError:
+                continue
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
@@ -1454,7 +1459,7 @@ const objGroup=new THREE.Group(); scene.add(objGroup); let OBJ=[], objRev=-1;
 const FORMES={}, MAT_OBJ=new THREE.MeshLambertMaterial({color:0xd9773a,side:THREE.DoubleSide,flatShading:true}),
  MAT_VEG=new THREE.MeshLambertMaterial({color:0x5b8a3c,side:THREE.DoubleSide,flatShading:true});
 function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
- fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){FORMES[d]=false;return}
+ fetch("/api/objmesh?d="+encodeURIComponent(d)).then(r=>r.json()).then(j=>{if(!j.v||!j.v.length){setTimeout(()=>{delete FORMES[d]; drawObjs()},4000);return}
   const g=new THREE.BufferGeometry(); g.setAttribute("position",new THREE.Float32BufferAttribute(j.v,3)); g.setIndex(j.f);
   g.computeVertexNormals(); g.computeBoundingSphere(); g.computeBoundingBox();
   // ou commence le feuillage : plus basse hauteur ou la plante s'etale (> 25 % de sa largeur)
@@ -1464,7 +1469,7 @@ function forme(d){if(FORMES[d]!==undefined)return FORMES[d]; FORMES[d]=null;
    q[0]=Math.min(q[0],j.v[i]);q[1]=Math.max(q[1],j.v[i]);q[2]=Math.min(q[2],j.v[i+1]);q[3]=Math.max(q[3],j.v[i+1])}
   let kc=0; for(;kc<n;kc++){const q=bins[kc]; if(q[1]>q[0]&&Math.max(q[1]-q[0],q[3]-q[2])>0.25*W)break}
   g.userData={tronc:b.min.z+kc/n*H, base:b.min.z, larg:W, haut:H};
-  FORMES[d]=g; drawObjs()}).catch(()=>{FORMES[d]=false}); return null}
+  FORMES[d]=g; drawObjs()}).catch(()=>{setTimeout(()=>{delete FORMES[d]; drawObjs()},3000)}); return null}
 const MAT_TRONC=new THREE.MeshLambertMaterial({color:0x7a5a3a}), MAT_PIED=new THREE.MeshBasicMaterial({color:0x5b8a3c,transparent:true,opacity:.55,side:THREE.DoubleSide});
 function drawObjs(){objGroup.clear(); for(const ob of OBJ){const k=ob.echelle||1, t=(ob.taille&&ob.taille.length)?ob.taille:[0.8,0.8,1.0,0];
  const fg=ob.d?forme(ob.d):false; let m;
