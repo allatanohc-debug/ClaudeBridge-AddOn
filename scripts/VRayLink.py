@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.4b (reglage de chaque lumiere apres rendu)"
+VERSION = "21/10 - v8.4c (reperes sur le bon etage)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5537,8 +5537,17 @@ def write_scatter(path: Path, scatters: list, meshes: dict, offset: tuple, groun
 
 
 def draw_object_marker(o: dict) -> list:
-    """Repere de l'objet dans le plan : cercle + fleche d'orientation + nom (calque des objets Cosmos)."""
-    story = tapir("GetStories").get("actStory", 0)
+    """Repere de l'objet dans le plan : cercle + fleche d'orientation + nom (calque des objets Cosmos),
+    sur l'etage de l'objet (sinon un objet de l'etage redescend au rez-de-chaussee a la relecture du plan)."""
+    st_ = tapir("GetStories")
+    story = st_.get("actStory", 0)
+    try:
+        z = float(o.get("z", 0.0))
+        dessous = [s_ for s_ in st_.get("stories", []) if float(s_.get("level", 0.0)) <= z + 0.05]
+        if dessous:
+            story = max(dessous, key=lambda s_: float(s_.get("level", 0.0)))["index"]
+    except Exception:  # noqa: BLE001
+        pass
     layer = _layer_index(CALQUE_OBJETS)
     x, y, r = o["x"], o["y"], 0.4 * float(o.get("echelle", 1.0))
     a = math.radians(float(o.get("rotation", 0.0)))
