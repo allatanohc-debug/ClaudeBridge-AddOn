@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.4c (reperes sur le bon etage)"
+VERSION = "21/10 - v8.4d (reperes sur le bon etage)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -5656,10 +5656,10 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
         pos = dd.get("coordinate") or dd.get("position") or dd.get("origin") or {}
         txt = str(dd.get("text") or dd.get("content") or "").strip()
         if txt and "x" in pos:
-            labels.append({"g": g, "p": (float(pos["x"]), float(pos["y"])), "t": txt})
+            labels.append({"g": g, "p": (float(pos["x"]), float(pos["y"])), "t": txt, "f": d.get("floorIndex", 0)})
     by_name = {o["nom"]: o["dossier"] for o in objs}
     lib = {e["nom"]: e["dossier"] for e in cosmos_library("3D_Models")}
-    out, lost, vus, doublons = [], 0, set(), []
+    out, lost, vus, doublons, etages = [], 0, set(), [], {}
     for c in circles:
         arrow = min(arrows, key=lambda a: math.dist(a["a"], c["c"]), default=None)
         rot = 0.0
@@ -5667,7 +5667,8 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
         if arrow and math.dist(arrow["a"], c["c"]) < 0.05 + c["r"] * 0.1:
             rot = (math.degrees(math.atan2(arrow["b"][1] - arrow["a"][1], arrow["b"][0] - arrow["a"][0])) + 90) % 360
             traces.append(arrow["g"])
-        lab = min(labels, key=lambda t_: math.dist(t_["p"], c["c"]), default=None)      # le nom le plus proche du rond
+        lab = min((t_ for t_ in labels if t_["f"] == c["f"]), key=lambda t_: math.dist(t_["p"], c["c"]),
+                  default=None)                          # le nom le plus proche du rond, sur le meme etage
         if not lab or math.dist(lab["p"], c["c"]) > c["r"] + 2.0:
             lost += 1
             continue
@@ -5681,13 +5682,15 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
             doublons += [c["g"]] + ([traces[1]] if len(traces) > 2 else [])
             continue
         vus.add(cle)
+        etages[len(out)] = c["f"]
         out.append({"nom": lab["t"], "dossier": folder, "x": c["c"][0], "y": c["c"][1],
                     "z": stories.get(c["f"], 0.0), "rotation": round(rot, 1), "echelle": round(c["r"] / 0.4, 3),
                     "traces": traces})
     gardes = {o["traces"][-1] for o in out}
     for t_ in labels:                                  # noms empiles sur un nom deja utilise : en double aussi
-        if t_["g"] not in gardes and any(t_["t"] == o["nom"] and math.dist(t_["p"], (o["x"], o["y"] - 0.4 * o["echelle"] - 0.35)) < 0.05
-                                         for o in out):
+        if t_["g"] not in gardes and any(t_["t"] == o["nom"] and etages.get(k_) == t_["f"] and
+                                         math.dist(t_["p"], (o["x"], o["y"] - 0.4 * o["echelle"] - 0.35)) < 0.05
+                                         for k_, o in enumerate(out)):
             doublons.append(t_["g"])
     if doublons:
         try:
