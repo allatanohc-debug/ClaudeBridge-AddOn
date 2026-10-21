@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.9b (mini-plan dans le panneau)"
+VERSION = "21/10 - v9.0 (rendu = visionneuse : formes reelles, plan fusionne)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1075,7 +1075,8 @@ class ViewerServer:
                         from urllib.parse import parse_qs, urlparse
                         f_ = parse_qs(urlparse(self.path).query).get("d", [""])[0]
                         connus = {o_.get("d") for o_ in OBJS.get("liste", [])}
-                        self._send(json.dumps(vrmesh_apercu(f_) if f_ in connus else {}).encode("utf-8"), "application/json")
+                        ok_ = f_ in connus or ("Chaos Cosmos" in f_ and ".." not in f_ and Path(f_).is_dir())   # objets places + arbres du scatter
+                        self._send(json.dumps(vrmesh_apercu(f_) if ok_ else {}).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/objets"):
                         self._send(json.dumps(OBJS).encode("utf-8"), "application/json")
                     elif self.path.startswith("/api/lumieres"):
@@ -1426,10 +1427,11 @@ async function pollMat(){try{const L=await (await fetch("/api/mat")).json();
   if(L.rev!==matRev){matRev=L.rev; for(const [n,c] of Object.entries(L.tous||{}))await applyMat(n,c);
    for(const n of (L.surfaces||[]))await applyMat(n,L.c&&Object.keys(L.c).length?L.c:null)}}catch(_){}
  setTimeout(pollMat,400)}
-for(const t of (info.arbres||[])){const k=t[3]||1;const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15*k,.2*k,2.5*k,8),new THREE.MeshLambertMaterial({color:0x6b4f35}));
+const ARB_G={};                                   // arbres du scatter : sucette en attendant la vraie forme Cosmos
+for(const t of (info.arbres||[])){const k=t[3]||1, a=(ARB_G[t[4]||""]??={lol:[],pts:[],ok:false}); a.pts.push(t);const trunk=new THREE.Mesh(new THREE.CylinderGeometry(.15*k,.2*k,2.5*k,8),new THREE.MeshLambertMaterial({color:0x6b4f35}));
  trunk.rotation.x=Math.PI/2;trunk.position.set(t[0],t[1],t[2]+1.25*k);trunk.castShadow=true;scene.add(trunk);
  const crown=new THREE.Mesh(new THREE.IcosahedronGeometry(2.2*k,1),new THREE.MeshLambertMaterial({color:0x4f7a3a,flatShading:true}));
- crown.position.set(t[0],t[1],t[2]+4.2*k);crown.castShadow=true;crown.receiveShadow=true;scene.add(crown)}
+ crown.position.set(t[0],t[1],t[2]+4.2*k);crown.castShadow=true;crown.receiveShadow=true;scene.add(crown); a.lol.push(trunk,crown)}
 model.castShadow=true; model.receiveShadow=true; scene.add(model); pollMat();
 g.computeBoundingBox(); const bb=g.boundingBox, mid=bb.getCenter(new THREE.Vector3()), rad=bb.getSize(new THREE.Vector3()).length()/2+5;
 // soleil (formules NOAA, comme pour le rendu V-Ray)
@@ -1843,6 +1845,18 @@ renderer.domElement.addEventListener("pointerup",e=>{if(editOn||mode!=="orbit"||
  const hit=pickHit([...lumGroup.children.filter(c=>c.userData.kind),...objGroup.children],e.altKey); if(!hit)return;
  setEdit(true); choisit(hit.object)});
 pollObjs();
+// arbres du scatter : meme forme que dans le rendu (une instance par arbre, tronc brun / feuillage vert)
+function arbresReels(){let reste=false;
+ for(const [d,a] of Object.entries(ARB_G)){if(a.ok||!d)continue; const g=forme(d); if(!g){reste=true; continue} a.ok=true;
+  const geo=g.clone(), pos=geo.attributes.position, col=new Float32Array(pos.count*3), tr=g.userData.tronc;
+  for(let i=0;i<pos.count;i++){const b=pos.getZ(i)<tr; col[3*i]=b?0.48:0.36; col[3*i+1]=b?0.35:0.54; col[3*i+2]=b?0.23:0.24}
+  geo.setAttribute("color",new THREE.BufferAttribute(col,3));
+  const im=new THREE.InstancedMesh(geo,new THREE.MeshLambertMaterial({vertexColors:true,flatShading:true,side:THREE.DoubleSide}),a.pts.length);
+  const m4=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler();
+  a.pts.forEach((t,i)=>{const k=t[3]||1; e.set(0,0,((i*137)%360)*Math.PI/180); q.setFromEuler(e); m4.compose(new THREE.Vector3(t[0],t[1],t[2]),q,new THREE.Vector3(k,k,k)); im.setMatrixAt(i,m4)});
+  im.castShadow=true; im.receiveShadow=true; scene.add(im); for(const m of a.lol)scene.remove(m)}
+ if(reste)setTimeout(arbresReels,800)}
+arbresReels();
 // ---- apercu V-Ray rapide : ce que donnera le rendu, dans la visionneuse
 let apRev=-1, apWait=false;
 let liveOn=false, liveSig="", liveSent="", liveT=0, liveBusy=false;
@@ -2666,17 +2680,20 @@ def vrmesh_apercu(folder: str) -> dict:
     """Forme simplifiee d'un objet Cosmos (le « preview » du proxy V-Ray : ~1 000 a 5 000 triangles), en metres.
     Gardee en cache. {"v": [x,y,z,...], "f": [a,b,c,...]} ou {} si illisible."""
     import zlib
-    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v4.json")
+    cache = data_dir() / "apercus_3d" / (hashlib.md5(folder.encode()).hexdigest() + "_v6.json")
     try:
         return json.loads(cache.read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         pass
     res: dict = {}
     try:
-        meshes = sorted(Path(folder).glob("*.vrmesh"), key=lambda p_: p_.stat().st_size)
-        d = meshes[0].read_bytes() if meshes else b""
+        tous = sorted(Path(folder).glob("*.vrmesh"), key=lambda p_: p_.stat().st_size)
+        moyen = [p_ for p_ in tous if "_3dm_" in p_.name.lower()]          # version moyenne Cosmos si elle existe
+        haut = [p_ for p_ in tous if "_3dh_" in p_.name.lower() and p_.stat().st_size < 60e6]
+        fichier = (moyen or haut or tous[-1:] or [None])[0]
+        d = fichier.read_bytes() if fichier else b""
         flux, i = [], 0
-        while i < len(d) - 2 and len(flux) < 40:
+        while i < len(d) - 2 and len(flux) < 600:
             j = d.find(b"x", i)
             if j < 0:
                 break
@@ -2691,35 +2708,39 @@ def vrmesh_apercu(folder: str) -> dict:
                 except Exception:  # noqa: BLE001
                     pass
             i = j + 1
-        best = None                           # la DERNIERE paire (sommets, faces) du fichier = l'apercu complet
-        for a, b in zip(flux, flux[1:]):      # (sommets flottants, faces entieres) qui se suivent
-            if len(a) % 12 or len(b) % 12:
+        paires = []                            # (sommets flottants, faces entieres) qui se suivent
+        for a_, b_ in zip(flux, flux[1:]):
+            if len(a_) % 12 or len(b_) % 12:
                 continue
-            nv = len(a) // 12
-            f_ = struct.unpack(f"<{len(b) // 4}i", b)
+            nv = len(a_) // 12
+            f_ = struct.unpack(f"<{len(b_) // 4}i", b_)
             if not f_ or min(f_) < 0 or max(f_) >= nv or nv < 30:
                 continue
-            v_ = struct.unpack(f"<{len(a) // 4}f", a)
+            v_ = struct.unpack(f"<{len(a_) // 4}f", a_)
             ext = [max(v_[k::3]) - min(v_[k::3]) for k in range(3)]
             if max(abs(c) for c in v_) <= 1.001 or max(ext) < 3 or min(ext) < 0.2:   # normales / UV, pas une forme
                 continue
-            best = (nv, a, f_)
-        if best and best[0] > 40000:          # pas d'apercu leger : on garde 1 triangle sur n
-            nv, a, f_ = best
-            pas = max(1, (len(f_) // 3) // 20000)
-            tri = [f_[k:k + 3] for k in range(0, len(f_), 3 * pas)]
-            v_ = struct.unpack(f"<{len(a) // 4}f", a)
-            garde, nouv, ff = {}, [], []
-            for t_ in tri:
-                for ix in t_:
+            paires.append((v_, f_))
+        # en fin de fichier : la « sucette » d'apercu du proxy (1 ou 2 petites pieces) qui enveloppe la plante -> on l'enleve
+        reelles = list(paires)
+        mx = max((len(q[0]) // 3 for q in reelles), default=0)
+        while len(reelles) > 1 and len(reelles[-1][0]) // 3 < 0.05 * mx:
+            reelles.pop()
+        ntri = sum(len(q[1]) // 3 for q in reelles)
+        pas = max(1, -(-ntri // 30000))           # au plus ~30 000 triangles dans la visionneuse
+        verts, faces, base = [], [], 0
+        for v_, f_ in reelles:
+            garde = {}
+            for k in range(0, len(f_) - 2, 3 * pas):
+                for ix in f_[k:k + 3]:
                     if ix not in garde:
-                        garde[ix] = len(garde)
-                        nouv += v_[3 * ix:3 * ix + 3]
-                    ff.append(garde[ix])
-            best = (len(garde), struct.pack(f"<{len(nouv)}f", *nouv), ff)
+                        garde[ix] = base + len(garde)
+                        verts += v_[3 * ix:3 * ix + 3]
+                    faces.append(garde[ix])
+            base += len(garde)
+        best = (base, verts, faces) if faces else None
         if best:
-            v = struct.unpack(f"<{len(best[1]) // 4}f", best[1])
-            res = {"v": [round(c * ECHELLE_COSMOS, 3) for c in v], "f": list(best[2])}
+            res = {"v": [round(c * ECHELLE_COSMOS, 3) for c in best[1]], "f": list(best[2])}
     except Exception:  # noqa: BLE001
         res = {}
     try:
@@ -5047,7 +5068,7 @@ def window(state: dict) -> None:
             meshes, _m, offset, ground = pickle.loads((data_dir() / key / "geometrie.pkl").read_bytes())
         except Exception:  # noqa: BLE001
             return []
-        return [list(p) + [float(sc.get("echelle", 1.0))] for sc in trees
+        return [list(p)[:3] + [float(sc.get("echelle", 1.0)), sc.get("dossier", "")] for sc in trees
                 for p in scatter_points(sc, meshes, offset, ground, key)][:3000]
 
     REPERES["apres"] = lambda: ui_call(lambda: save_settings(state))   # traces des reperes enregistrees une fois dessines
@@ -5892,9 +5913,48 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
             delete_elements(doublons)
         except Exception:  # noqa: BLE001
             pass
+    out = fusion_plan(objs, out, sorted(stories.values()))
     note = f"{len(out)} objet(s) Cosmos lus dans le plan" + (f" ({lost} repère(s) incomplet(s) ignoré(s))" if lost else "") + \
         (f" ({len(doublons)} repère(s) en double supprimé(s))" if doublons else "")
     return out, note
+
+
+def fusion_plan(anciens: list, lus: list, niveaux: list) -> list:
+    """Fusionne les reperes lus dans le plan avec la liste d'objets de V-Ray Link : on n'applique que ce qui a
+    vraiment change dans Archicad (deplace, tourne, agrandi, change d'etage, copie, efface). La hauteur reglee
+    dans la visionneuse (terrasse, plafond, Maj + glisser), le verrou et les autres reglages sont gardes."""
+    def niv(z):
+        sous = [l_ for l_ in niveaux if l_ <= z + 0.05]
+        return max(sous) if sous else (niveaux[0] if niveaux else 0.0)
+    par_g = {q["traces"][0]: q for q in lus if q.get("traces")}
+    pris, res = set(), []
+    for o in anciens:
+        tr = o.get("traces") or []
+        q = par_g.get(tr[0]) if tr else None
+        if q is None or id(q) in pris:                   # repere redessine : meme nom, tout pres, meme etage
+            cand = [c for c in lus if id(c) not in pris and c["nom"] == o["nom"]
+                    and math.dist((c["x"], c["y"]), (o["x"], o["y"])) < 0.3 and abs(c["z"] - niv(float(o.get("z", 0.0)))) < 0.05]
+            q = min(cand, key=lambda c: math.dist((c["x"], c["y"]), (o["x"], o["y"]))) if cand else None
+        if q is None:
+            if not tr:
+                res.append(o)                            # pas encore de repere : on le garde tel quel
+            continue                                     # repere efface dans Archicad : objet supprime
+        pris.add(id(q))
+        n = dict(o)
+        if math.dist((q["x"], q["y"]), (o["x"], o["y"])) > 0.02:
+            n["x"], n["y"] = q["x"], q["y"]
+        z = float(o.get("z", 0.0))
+        if abs(q["z"] - niv(z)) > 0.05:                  # change d'etage dans Archicad : meme hauteur au-dessus du plancher
+            n["z"] = q["z"] + (z - niv(z))
+        if abs((q["rotation"] - float(o.get("rotation", 0.0)) + 180) % 360 - 180) > 1.0:
+            n["rotation"] = q["rotation"]
+        e = float(o.get("echelle", 1.0))
+        if abs(q["echelle"] - e) > 0.03 * e:
+            n["echelle"] = q["echelle"]
+        n["traces"] = q["traces"]
+        res.append(n)
+    res += [q for q in lus if id(q) not in pris]         # copies faites dans Archicad
+    return res
 
 
 CALQUE_CORBEILLE = "V-Ray Link - Corbeille (masqué)"
