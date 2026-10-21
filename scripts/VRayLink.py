@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.9b (materiaux automatiques)"
+VERSION = "21/10 - v7.9c (materiaux automatiques)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -262,6 +262,16 @@ def model_signature() -> str:
         for kind in ("Surface", "Layer"):
             try:
                 h.update(json.dumps(tapir("GetAttributesByType", {"attributeType": kind}), sort_keys=True).encode())
+            except Exception:  # noqa: BLE001
+                pass
+        for kind in ("Window", "Door", "Skylight"):      # materiaux choisis dans les reglages des menuiseries
+            try:
+                ouv = tapir("GetElementsByType", {"elementType": kind}).get("elements", [])
+                if ouv:
+                    for ps in tapir("GetGDLParametersOfElements", {"elements": ouv}).get("gdlParametersOfElements", []):
+                        pl = ps.get("parameters", []) if isinstance(ps, dict) else ps
+                        h.update(",".join(f"{q.get('name')}={q.get('value')}" for q in pl
+                                          if q.get("type") == "Material").encode())
             except Exception:  # noqa: BLE001
                 pass
         return f"{len(ids_)}-{h.hexdigest()}"
