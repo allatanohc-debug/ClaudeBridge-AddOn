@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.6 (peupler vite : rangee, pinceau, copier-coller)"
+VERSION = "21/10 - v7.6b (peupler vite : rangee, pinceau, copier-coller)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -4994,7 +4994,7 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
             labels.append({"g": g, "p": (float(pos["x"]), float(pos["y"])), "t": txt})
     by_name = {o["nom"]: o["dossier"] for o in objs}
     lib = {e["nom"]: e["dossier"] for e in cosmos_library("3D_Models")}
-    out, lost = [], 0
+    out, lost, vus, doublons = [], 0, set(), []
     for c in circles:
         arrow = min(arrows, key=lambda a: math.dist(a["a"], c["c"]), default=None)
         rot = 0.0
@@ -5011,10 +5011,26 @@ def sync_objects_from_plan(objs: list) -> tuple[list, str]:
         if not folder:
             lost += 1
             continue
+        cle = (lab["t"], round(c["c"][0], 2), round(c["c"][1], 2), c["f"])
+        if cle in vus:                                   # repere en double au meme endroit : on l'efface
+            doublons += [c["g"]] + ([traces[1]] if len(traces) > 2 else [])
+            continue
+        vus.add(cle)
         out.append({"nom": lab["t"], "dossier": folder, "x": c["c"][0], "y": c["c"][1],
                     "z": stories.get(c["f"], 0.0), "rotation": round(rot, 1), "echelle": round(c["r"] / 0.4, 3),
                     "traces": traces})
-    note = f"{len(out)} objet(s) Cosmos lus dans le plan" + (f" ({lost} repère(s) incomplet(s) ignoré(s))" if lost else "")
+    gardes = {o["traces"][-1] for o in out}
+    for t_ in labels:                                  # noms empiles sur un nom deja utilise : en double aussi
+        if t_["g"] not in gardes and any(t_["t"] == o["nom"] and math.dist(t_["p"], (o["x"], o["y"] - 0.4 * o["echelle"] - 0.35)) < 0.05
+                                         for o in out):
+            doublons.append(t_["g"])
+    if doublons:
+        try:
+            delete_elements(doublons)
+        except Exception:  # noqa: BLE001
+            pass
+    note = f"{len(out)} objet(s) Cosmos lus dans le plan" + (f" ({lost} repère(s) incomplet(s) ignoré(s))" if lost else "") + \
+        (f" ({len(doublons)} repère(s) en double supprimé(s))" if doublons else "")
     return out, note
 
 
