@@ -58,7 +58,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v8.4 (reglage de chaque lumiere apres rendu)"
+VERSION = "21/10 - v8.4b (reglage de chaque lumiere apres rendu)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3145,15 +3145,16 @@ def ajoute_light_mix(scene: Path, lights: list) -> list:
             cid = "lm_" + pid
             if cid not in vus:
                 vus.add(cid)
-                canaux.append((cid, "LM_" + safe(noms.get(pid, pid))))
+                canaux.append((cid, "LM_" + safe(noms.get(pid, pid)), m.group(1) not in ("SunLight", "LightDome")))
             return m.group(0) + f" channels_full=List({cid});"
         f_.write_text(motif.sub(sub, txt), encoding="utf-8")
     if canaux:
         with scene.open("a", encoding="utf-8") as out:
             out.write("\n// Light Mix : une image par lumiere (reglage apres rendu dans la Retouche)\n")
-            for cid, nom in canaux:
-                out.write(f'RenderChannelLightSelect {cid} {{ name="{nom}"; light_select_mode=4; color_mapping=1; denoise=1; }}\n')
-    return [n for _c, n in canaux]
+            for cid, nom, dn in canaux:          # debruitage : pas sur le soleil / dome (V-Ray plante)
+                out.write(f'RenderChannelLightSelect {cid} {{ name="{nom}"; light_select_mode=4; color_mapping=1; '
+                          f'denoise={1 if dn else 0}; }}\n')
+    return [c[1] for c in canaux]
 
 
 def couches_lumieres(img: Path) -> list:
