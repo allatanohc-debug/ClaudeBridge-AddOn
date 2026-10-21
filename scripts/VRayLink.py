@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.4b (synchro auto du modele)"
+VERSION = "21/10 - v7.4c (boutons Visionneuse et Vantage)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -3821,7 +3821,11 @@ def window(state: dict) -> None:
     action_bar.columnconfigure(0, weight=1)
     ttk.Button(action_bar, text="▶  Lancer le rendu", style="Accent.TButton",
                command=lambda: render([current.get()] if current.get() else [])).grid(row=0, column=0, sticky="ew")
-    ttk.Button(action_bar, text="⚙", width=3, command=lambda: advanced()).grid(row=0, column=1, padx=(8, 0))
+    vis_btn = ttk.Button(action_bar, text="🧭 Visionneuse", command=lambda: open_viewer())
+    vis_btn.grid(row=0, column=3, padx=(8, 0))
+    van_btn = ttk.Button(action_bar, text="🎥 Vantage", command=lambda: vers_vantage())
+    van_btn.grid(row=0, column=4, padx=(6, 0))
+    ttk.Button(action_bar, text="⚙", width=3, command=lambda: advanced()).grid(row=0, column=5, padx=(8, 0))
     plus_menu = tk.Menu(root, tearoff=0)
     plus_menu.add_command(label="💡 Light Gen (essayer des éclairages)", command=lambda: light_gen())
     plus_menu.add_command(label="⏩ Rendre les vues cochées", command=lambda: render([n for n, v in cam_vars.items() if v.get()]))
@@ -3830,7 +3834,7 @@ def window(state: dict) -> None:
     plus_menu.add_command(label="📂 Dossier des rendus", command=open_folder)
     plus_btn = ttk.Button(action_bar, text="⋯", width=3)
     plus_btn.configure(command=lambda: plus_menu.tk_popup(plus_btn.winfo_rootx(), plus_btn.winfo_rooty() - 135))
-    plus_btn.grid(row=0, column=2, padx=(6, 0))
+    plus_btn.grid(row=0, column=6, padx=(6, 0))
 
     def aller(frame):
         try:
@@ -4280,6 +4284,8 @@ def window(state: dict) -> None:
             am_note.configure(wraplength=max(220, min(560, w - 30)))
             ciel_note.grid_configure(row=5 if w < 560 else 4, column=1 if w < 560 else 3)
             fin = root.winfo_width() < 640                                    # tres fine : barre de gauche en icones
+            vis_btn.configure(text="🧭" if root.winfo_width() < 760 else "🧭 Visionneuse")
+            van_btn.configure(text="🎥" if root.winfo_width() < 760 else "🎥 Vantage")
             for b_ in side_btns:
                 t_ = b_.cget("text")
                 ico, _, lab = t_.partition("\n")
