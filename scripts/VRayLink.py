@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.0c (Light Gen -> Soleil et ciel)"
+VERSION = "21/10 - v7.1 (vue Axonometrie)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1128,7 +1128,7 @@ Comparer avec la 3D : <input id="apOp" type="range" min="0" max="1" step="0.01" 
 <aside>
 <h1>V-Ray Link · <b>Visionneuse 3D</b></h1>
 <div><label>Aller à une vue</label><select id="cams"></select></div>
-<div><label>Type de vue</label><div class="seg"><button id="vPersp">Perspective libre</button><button id="v2pf">2 points de fuite</button><button id="vOrtho">Orthogonale</button></div>
+<div><label>Type de vue</label><div class="seg"><button id="vPersp">Perspective libre</button><button id="v2pf">2 points de fuite</button><button id="vOrtho">Orthogonale</button><button id="vAxo" title="Vue en axonométrie (isométrie, sans perspective). Re-clique pour tourner de 90°.">Axonométrie</button></div>
 <div id="orthoBox" style="margin-top:6px"><label>Largeur visible : <span id="owTxt"></span></label>
 <input id="ow" type="range" min="2" max="120" step="0.5" value="20" style="padding:0">
 <div style="color:var(--mute);font-size:12px">Sans perspective (axonométrie, élévation, plan) : place-toi face à la façade ou au-dessus, puis règle la largeur.</div></div>
@@ -1245,11 +1245,20 @@ $("ow").addEventListener("input",syncOrtho);
 renderer.domElement.addEventListener("wheel",e=>{if(vmode!=="ortho")return; e.preventDefault(); e.stopImmediatePropagation();
  const w=Math.min(120,Math.max(2,+$("ow").value*(e.deltaY>0?1.1:0.9))); $("ow").value=w; syncOrtho()},{capture:true,passive:false});
 function setMode(m){vmode=m; $("vPersp").classList.toggle("on",m==="persp"); $("v2pf").classList.toggle("on",m==="2pf");
- $("vOrtho").classList.toggle("on",m==="ortho"); $("orthoBox").style.display=m==="ortho"?"":"none";
+ $("vOrtho").classList.toggle("on",m==="ortho"); $("vAxo").classList.remove("on"); $("orthoBox").style.display=m==="ortho"?"":"none";
  $("shiftBox").style.display=m==="2pf"?"":"none";
  if(m==="2pf"){controls.minPolarAngle=controls.maxPolarAngle=Math.PI/2; controls.target.z=cam.position.z} else {controls.minPolarAngle=0; controls.maxPolarAngle=Math.PI}
  controls.update(); applyShift()}
 $("vPersp").onclick=()=>setMode("persp"); $("v2pf").onclick=()=>setMode("2pf"); $("vOrtho").onclick=()=>setMode("ortho");
+function axono(){const deja=$("vAxo").classList.contains("on");
+ const b=new THREE.Box3().setFromObject(model), c=b.getCenter(new THREE.Vector3()), sz=b.getSize(new THREE.Vector3());
+ const d=cam.position.clone().sub(controls.target); let az=Math.atan2(d.y,d.x);
+ az=Math.round((az-Math.PI/4)/(Math.PI/2))*(Math.PI/2)+Math.PI/4; if(deja)az+=Math.PI/2;
+ const el=Math.atan(1/Math.SQRT2), R=Math.max(sz.x,sz.y,sz.z)*2+30;
+ controls.target.copy(c); cam.position.set(c.x+R*Math.cos(el)*Math.cos(az),c.y+R*Math.cos(el)*Math.sin(az),c.z+R*Math.sin(el));
+ $("ow").value=Math.min(120,Math.max(4,Math.ceil(Math.hypot(sz.x,sz.y)*1.1)));
+ setMode("ortho"); $("vOrtho").classList.remove("on"); $("vAxo").classList.add("on"); syncOrtho()}
+$("vAxo").onclick=axono;
 function eyeAt(hh){const h=info.sol+hh; const d=new THREE.Vector3().subVectors(controls.target,cam.position); d.z=0; if(d.length()<0.3)d.set(3,0,0);
  cam.position.z=h; controls.target.set(cam.position.x+d.x,cam.position.y+d.y,h); controls.update()}
 $("hAssis").onclick=()=>eyeAt(1.2); $("hDebout").onclick=()=>eyeAt(1.6);
