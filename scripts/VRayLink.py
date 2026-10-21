@@ -57,7 +57,7 @@ def _load(name: str):
 T = _load("TableauSurfaces")
 api, tapir, load_json, save_json = T.api, T.tapir, T.load_json, T.save_json
 
-VERSION = "21/10 - v7.5 (retouche apres rendu)"
+VERSION = "21/10 - v7.6 (peupler vite : rangee, pinceau, copier-coller)"
 REGLAGES = "vray_link.json"
 ABIDJAN = (5.36, -4.01)                    # lieu par defaut si le projet n'en a pas
 VILLES = {                                 # (latitude, longitude, fuseau horaire)
@@ -1147,7 +1147,7 @@ kbd{background:#2b2f37;border:1px solid var(--line);border-radius:4px;padding:0 
 <div id="editBar" style="position:absolute;left:50%;transform:translateX(-50%);bottom:14px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:8px;padding:6px;display:none;gap:6px;z-index:6;align-items:center">
 <span id="selName" style="padding:0 6px;color:var(--mute)">Glisse un objet à la souris (Ctrl + glisser = tourner)</span>
 <button id="eMove" class="on">↔ Déplacer</button><button id="eRot">⟳ Tourner</button><button id="eDrop">⤓ Poser</button>
-<button id="eDup">⧉ Dupliquer</button><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
+<button id="eDup">⧉ Dupliquer</button><button id="eRow" title="Répéter l'objet en ligne jusqu'au point cliqué (allée, haie, clôture)">⫶ Rangée</button><button id="eBrush" title="Peindre des copies sur le terrain en glissant la souris">🖌 Pinceau</button><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Distance entre deux copies">↔<input id="eGap" type="number" min="0.3" max="50" step="0.5" value="4" style="width:58px;padding:4px 6px">m</label><label style="display:flex;align-items:center;gap:4px;color:var(--mute);font-size:12px" title="Rotation et taille un peu différentes pour un rendu naturel"><input id="eVar" type="checkbox" checked style="width:auto">Varier</label><button id="eDel">🗑</button><button id="eUndo" title="Annuler (Ctrl+Z)">↶</button><button id="eRedo" title="Rétablir (Ctrl+Y)">↷</button><button id="eEnd">Terminé</button></div>
 <div id="lumMenu" style="position:absolute;left:56px;top:110px;background:rgba(32,35,42,.95);border:1px solid var(--line);border-radius:7px;padding:6px;display:none;z-index:6;flex-direction:column;gap:4px">
 <b style="font-size:12px;color:var(--mute);padding:2px 4px">Ajouter une lumière :</b></div>
 <div id="mesure" style="position:absolute;left:56px;top:12px;background:rgba(32,35,42,.9);border:1px solid var(--line);border-radius:7px;padding:6px 10px;font-size:12px;display:none;z-index:5"></div><div id="tilt" style="position:absolute;right:12px;bottom:10px;color:var(--mute);font-size:12px"></div>
@@ -1592,6 +1592,42 @@ $("eDrop").onclick=()=>{if(!sel)return; ray.set(sel.position.clone().add(new THR
 $("eDup").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){sel.position.x+=0.6; commit("dup"); sel.position.x-=0.6} else commit("dup")};
 $("eDel").onclick=()=>{if(!sel)return; if(sel.userData.kind==="obj"){commit("delete"); tc.detach(); sel=null} else commit("delete");
  $("selName").textContent="Supprimé"};
+// ---- peupler vite : rangee, pinceau, copier / coller
+let popMode=null, stroke=null, clip=null, lastGround=null; const popGroup=new THREE.Group(); scene.add(popGroup);
+function sol3(e){const r=renderer.domElement.getBoundingClientRect(); ray.setFromCamera(new THREE.Vector2((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1),cam);
+ const h=ray.intersectObjects([model,ground],false).find(h=>!h.face||Math.abs(h.face.normal.z)>0.6); if(!h)return null;
+ return [h.point.x,h.point.y,h.object===ground?info.sol:h.point.z]}
+function varie(base){const v=$("eVar").checked; return [v?Math.random()*360:base.rot, v?+(0.85+Math.random()*0.3).toFixed(2):1]}
+function envoie(pts){if(!pts.length||!sel||sel.userData.kind!=="obj")return; const o=OBJ[sel.userData.i]||{};
+ postJ({action:"obj_multi",i:sel.userData.i,pts:pts.slice(0,300).map(p=>{const [r,k]=varie(o); return [+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),+r.toFixed(1),k]})});
+ $("selName").textContent=`${Math.min(pts.length,300)} copie(s) ajoutée(s) — Ctrl+Z pour annuler`}
+function setPop(m){popMode=(popMode===m)?null:m; $("eRow").classList.toggle("on",popMode==="rangee"); $("eBrush").classList.toggle("on",popMode==="pinceau");
+ popGroup.clear(); $("mesure").style.display=popMode?"":"none";
+ if(popMode&&(!sel||sel.userData.kind!=="obj")){$("mesure").textContent="Clique d'abord un objet (palmier, buisson…) puis choisis l'outil"; popMode=null;
+  $("eRow").classList.remove("on"); $("eBrush").classList.remove("on"); return}
+ if(popMode==="rangee")$("mesure").textContent="Rangée : clique le point d'arrivée (l'objet choisi est le départ) — Échap pour annuler";
+ if(popMode==="pinceau")$("mesure").textContent="Pinceau : maintiens le clic et glisse sur le terrain — Échap pour arrêter"}
+$("eRow").onclick=()=>setPop("rangee"); $("eBrush").onclick=()=>setPop("pinceau");
+function pastille(p){const m=new THREE.Mesh(new THREE.SphereGeometry(0.25,10,8),new THREE.MeshBasicMaterial({color:0xe8702a,depthTest:false}));
+ m.position.set(p[0],p[1],p[2]+0.2); m.renderOrder=9; popGroup.add(m)}
+function ligne(e){const end=sol3(e); popGroup.clear(); if(!end||!sel)return [];
+ const a=sel.position, gap=Math.max(0.3,+$("eGap").value||4), d=Math.hypot(end[0]-a.x,end[1]-a.y), n=Math.floor(d/gap), pts=[];
+ for(let k=1;k<=n;k++){const t=k*gap/d; pts.push([a.x+(end[0]-a.x)*t,a.y+(end[1]-a.y)*t,a.z+(end[2]-a.z)*t])}
+ for(const p of pts)pastille(p); $("mesure").textContent=`Rangée : ${pts.length} copie(s) tous les ${gap} m — clique pour poser`; return pts}
+renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||!popMode||e.button!==0)return; e.stopImmediatePropagation(); controls.enabled=false;
+ if(popMode==="rangee"){envoie(ligne(e)); setPop("rangee"); controls.enabled=mode==="orbit"; return}
+ const p=sol3(e); stroke=p?[p]:[]; popGroup.clear(); if(p)pastille(p); renderer.domElement.setPointerCapture(e.pointerId)},{capture:true});
+renderer.domElement.addEventListener("pointermove",e=>{if(editOn)lastGround=e;
+ if(popMode==="rangee"&&sel){ligne(e); return}
+ if(popMode!=="pinceau"||!stroke)return; e.stopImmediatePropagation(); const p=sol3(e); if(!p)return; const gap=Math.max(0.3,+$("eGap").value||4);
+ if(stroke.every(q=>Math.hypot(q[0]-p[0],q[1]-p[1])>=gap)){stroke.push(p); pastille(p)}},{capture:true});
+renderer.domElement.addEventListener("pointerup",e=>{if(popMode!=="pinceau"||!stroke)return; e.stopImmediatePropagation();
+ const pts=stroke; stroke=null; controls.enabled=mode==="orbit"; envoie(pts); setTimeout(()=>popGroup.clear(),600)},{capture:true});
+addEventListener("keydown",e=>{if(e.target.tagName==="INPUT"||!editOn)return;
+ if(e.code==="Escape"&&popMode){setPop(popMode); e.stopImmediatePropagation(); return}
+ if((e.ctrlKey||e.metaKey)&&e.code==="KeyC"&&sel&&sel.userData.kind==="obj"){clip=sel.userData.i; $("selName").textContent="📋 Copié — Ctrl+V pour coller sous la souris"}
+ if((e.ctrlKey||e.metaKey)&&e.code==="KeyV"&&clip!==null&&lastGround){const p=sol3(lastGround); if(!p)return; e.preventDefault();
+  const o=OBJ[clip]||{}; postJ({action:"obj_multi",i:clip,pts:[[+p[0].toFixed(3),+p[1].toFixed(3),+p[2].toFixed(3),o.rot||0,1]]}); $("selName").textContent="Collé (Ctrl+Z pour annuler)"}},{capture:true});
 // glisser directement l'objet a la souris (il suit les surfaces : sol, terrasse, table…) ; Ctrl + glisser = tourner
 let dragO=null;
 renderer.domElement.addEventListener("pointerdown",e=>{if(!editOn||e.button!==0||(tc&&tc.axis))return;
@@ -4253,7 +4289,7 @@ def window(state: dict) -> None:
                     say("Dernière modification annulée (Ctrl+Y pour rétablir)." if msg["action"] == "annuler"
                         else "Modification rétablie.")
                     continue
-                if msg.get("action") in ("obj_edit", "lum_save", "lum_import") and msg.get("_histo", True):
+                if msg.get("action") in ("obj_edit", "obj_multi", "lum_save", "lum_import") and msg.get("_histo", True):
                     _memorise()
                 if msg.get("action") == "choisir":
                     from tkinter import filedialog
@@ -4267,6 +4303,28 @@ def window(state: dict) -> None:
                     continue
                 if msg.get("action") == "apercu":
                     start_preview(msg)
+                    continue
+                if msg.get("action") == "obj_multi":         # rangee, pinceau, coller : plusieurs copies d'un coup
+                    lst = state.setdefault("objets", {}).setdefault(key, [])
+                    i = int(msg.get("i", -1))
+                    if 0 <= i < len(lst):
+                        base = {k_: v_ for k_, v_ in lst[i].items() if k_ != "traces"}
+                        n_ = 0
+                        for p_ in (msg.get("pts") or [])[:300]:
+                            o = dict(base, x=float(p_[0]), y=float(p_[1]), z=float(p_[2]))
+                            if len(p_) > 3:
+                                o["rotation"] = round(float(p_[3]) % 360, 1)
+                            if len(p_) > 4:
+                                o["echelle"] = round(float(base.get("echelle", 1.0)) * float(p_[4]), 3)
+                            try:
+                                o["traces"] = draw_object_marker(o)
+                            except Exception:  # noqa: BLE001
+                                o["traces"] = []
+                            lst.append(o)
+                            n_ += 1
+                        save_settings(state)
+                        OBJS.update(liste=objs_payload(), rev=OBJS["rev"] + 1)
+                        say(f"{n_} copie(s) de « {base.get('nom', 'objet')} » ajoutée(s) (Ctrl+Z dans la visionneuse pour annuler).")
                     continue
                 if msg.get("action") == "obj_edit":
                     lst = state.setdefault("objets", {}).setdefault(key, [])
